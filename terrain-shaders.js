@@ -313,6 +313,10 @@ const TerrainShaders = {
         uniform int   u_shadowSampleCount;
         uniform float u_shadowBlurRadius;
         uniform float u_shadowMaxDistance;
+        uniform float u_shadowVisibilityThreshold;
+        uniform float u_shadowEdgeSoftness;
+        uniform float u_shadowMaxOpacity;
+        uniform float u_shadowRayStepMultiplier;
         in  highp vec2  v_texCoord;
         in  highp float v_elevation;
         out vec4 fragColor;
@@ -324,17 +328,20 @@ const TerrainShaders = {
           if (u_shadowMaxDistance <= 0.0) {
             return 1.0;
           }
+          float stepMultiplier = max(u_shadowRayStepMultiplier, 0.1);
+          vec2 effectiveTexelStep = texelStep / stepMultiplier;
+          float stepDistance = metersPerPixel / stepMultiplier;
           float maxSlope = -1e6;
           vec2 samplePos = startPos;
           for (int i = 1; i <= MAX_SHADOW_STEPS; ++i) {
-            if (float(i) * metersPerPixel > u_shadowMaxDistance) {
+            float horizontalMeters = float(i) * stepDistance;
+            if (horizontalMeters > u_shadowMaxDistance) {
               break;
             }
-            samplePos += texelStep;
+            samplePos += effectiveTexelStep;
             if (samplePos.x < -1.0 || samplePos.x > 2.0 || samplePos.y < -1.0 || samplePos.y > 2.0) {
               break;
             }
-            float horizontalMeters = float(i) * metersPerPixel;
             if (horizontalMeters <= 0.0) {
               continue;
             }
@@ -343,7 +350,12 @@ const TerrainShaders = {
             maxSlope = max(maxSlope, slope);
           }
           float visibility = sunSlope - maxSlope;
-          return smoothstep(0.02, 0.18, visibility);
+          float threshold = max(u_shadowVisibilityThreshold, 0.0);
+          float softness = max(u_shadowEdgeSoftness, 0.0);
+          if (softness <= 0.0001) {
+            return visibility > threshold ? 1.0 : 0.0;
+          }
+          return smoothstep(threshold, threshold + softness, visibility);
         }
 
         float computeSunVisibility(vec2 pos, float currentElevation) {
@@ -399,7 +411,7 @@ const TerrainShaders = {
           float selfShadow = 1.0 - lambert;
           float castShadow = 1.0 - visibility;
           float combinedShadow = clamp(castShadow + (1.0 - castShadow) * selfShadow, 0.0, 1.0);
-          float alpha = 0.12 + 0.6 * combinedShadow;
+          float alpha = mix(0.12, clamp(u_shadowMaxOpacity, 0.0, 1.0), combinedShadow);
           vec3 shadowColor = vec3(0.0);
           fragColor = vec4(shadowColor, alpha);
         }`;
