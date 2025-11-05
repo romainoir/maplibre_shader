@@ -19,14 +19,13 @@ const TerrainShaders = {
     uniform vec2 u_latrange;
     
     float getElevationFromTexture(sampler2D tex, vec2 pos) {
-      vec4 data = texture(tex, pos);
-      // Precise RGB unpacking for Mapbox terrain RGB encoding
-      // Encoding: elevation = -10000 + ((R * 256 * 256 + G * 256 + B) * 0.1)
-      return dot(data.rgb * 255.0, vec3(6553.6, 25.6, 0.1)) - 10000.0;
+      vec3 data = texture(tex, pos).rgb * 255.0;
+      // Terrarium encoding: elevation = (R * 256 + G + B / 256) - 32768
+      return dot(data, vec3(256.0, 1.0, 1.0 / 256.0)) - 32768.0;
     }
-    
+
     vec2 clampTexCoord(vec2 pos) {
-      float border = 1.0 / 256.0;
+      float border = 1.0 / u_dimension.x;
       return clamp(pos, vec2(border), vec2(1.0 - border));
     }
     
@@ -51,7 +50,7 @@ const TerrainShaders = {
     vec2 computeSobelGradient(vec2 pos) {
       vec2 safePos = clampTexCoord(pos);
       float metersPerPixel = 1.5 * pow(2.0, 16.0 - u_zoom);
-      float metersPerTile  = metersPerPixel * 256.0;
+      float metersPerTile  = metersPerPixel * u_dimension.x;
       float delta = samplingDistance / metersPerTile;
       
       float tl = getElevationExtended(safePos + vec2(-delta, -delta));
