@@ -17,7 +17,7 @@ const TerrainShaders = {
     uniform vec2 u_dimension;
     uniform float u_zoom;
     uniform vec2 u_latrange;
-    
+
     float getElevationFromTexture(sampler2D tex, vec2 pos) {
       vec3 data = texture(tex, pos).rgb * 255.0;
       // Terrarium encoding: elevation = (R * 256 + G + B / 256) - 32768
@@ -28,21 +28,56 @@ const TerrainShaders = {
       float border = 1.0 / u_dimension.x;
       return clamp(pos, vec2(border), vec2(1.0 - border));
     }
-    
+
     float getElevationExtended(vec2 pos) {
-      if (pos.x < 0.0) {
-        return getElevationFromTexture(u_image_left, vec2(pos.x + 1.0, pos.y));
+      vec2 tilePos = pos;
+      vec2 offset = vec2(0.0);
+      for (int i = 0; i < 2; i++) {
+        if (tilePos.x < 0.0 && offset.x > -1.5) {
+          tilePos.x += 1.0;
+          offset.x -= 1.0;
+        }
+        if (tilePos.x > 1.0 && offset.x < 1.5) {
+          tilePos.x -= 1.0;
+          offset.x += 1.0;
+        }
+        if (tilePos.y < 0.0 && offset.y > -1.5) {
+          tilePos.y += 1.0;
+          offset.y -= 1.0;
+        }
+        if (tilePos.y > 1.0 && offset.y < 1.5) {
+          tilePos.y -= 1.0;
+          offset.y += 1.0;
+        }
       }
-      if (pos.x > 1.0) {
-        return getElevationFromTexture(u_image_right, vec2(pos.x - 1.0, pos.y));
+      offset = clamp(offset, vec2(-1.0), vec2(1.0));
+      tilePos = clampTexCoord(tilePos);
+
+      if (offset.x == -1.0 && offset.y == -1.0) {
+        return getElevationFromTexture(u_image_topLeft, tilePos);
       }
-      if (pos.y < 0.0) {
-        return getElevationFromTexture(u_image_top, vec2(pos.x, pos.y + 1.0));
+      if (offset.x == 1.0 && offset.y == -1.0) {
+        return getElevationFromTexture(u_image_topRight, tilePos);
       }
-      if (pos.y > 1.0) {
-        return getElevationFromTexture(u_image_bottom, vec2(pos.x, pos.y - 1.0));
+      if (offset.x == -1.0 && offset.y == 1.0) {
+        return getElevationFromTexture(u_image_bottomLeft, tilePos);
       }
-      return getElevationFromTexture(u_image, pos);
+      if (offset.x == 1.0 && offset.y == 1.0) {
+        return getElevationFromTexture(u_image_bottomRight, tilePos);
+      }
+      if (offset.x == -1.0) {
+        return getElevationFromTexture(u_image_left, tilePos);
+      }
+      if (offset.x == 1.0) {
+        return getElevationFromTexture(u_image_right, tilePos);
+      }
+      if (offset.y == -1.0) {
+        return getElevationFromTexture(u_image_top, tilePos);
+      }
+      if (offset.y == 1.0) {
+        return getElevationFromTexture(u_image_bottom, tilePos);
+      }
+      return getElevationFromTexture(u_image, tilePos);
     }
     
     const float samplingDistance = 0.5;
@@ -276,21 +311,28 @@ const TerrainShaders = {
         uniform float u_shadowStepSize;
         uniform float u_shadowHorizontalScale;
         uniform float u_shadowLengthFactor;
+        uniform vec2  u_sunDirection;
+        uniform float u_sunAltitudeTan;
+        uniform float u_sunAltitude;
         in  highp vec2  v_texCoord;
         in  highp float v_elevation;
         out vec4 fragColor;
 
         float computeShadow(vec2 pos, float currentElevation) {
+          if (u_sunAltitude <= 0.0) {
+            return 0.0;
+          }
           const int numSteps = 32;
           float stepSize  = u_shadowStepSize;
-          vec2  lightDir2D = normalize(vec2(0.5,0.5)) * u_shadowHorizontalScale;
-          float sunAngle     = acos(0.5);
-          float elevationStep = stepSize * tan(sunAngle) * u_shadowLengthFactor;
+          vec2  lightDir2D = normalize(u_sunDirection);
+          vec2  scaledDir = lightDir2D * u_shadowHorizontalScale;
+          float tanAltitude = max(u_sunAltitudeTan, 0.01);
+          float elevationStep = stepSize * tanAltitude * u_shadowLengthFactor;
           for (int i = 1; i < numSteps; i++) {
-            vec2 samplePos = pos + lightDir2D * stepSize * float(i);
+            vec2 samplePos = pos + scaledDir * stepSize * float(i);
             float sampleElev = getElevationExtended(samplePos);
             if (sampleElev > currentElevation + elevationStep * float(i)) {
-              return 0.5;
+              return 0.0;
             }
           }
           return 1.0;
@@ -299,10 +341,15 @@ const TerrainShaders = {
         void main(){
           vec2 grad   = computeSobelGradient(v_texCoord);
           vec3 normal = normalize(vec3(-grad, 1.0));
-          float diffuse = max(dot(normal, vec3(0,0,1)), 0.0);
+          float ambient = 0.25;
+          if (u_sunAltitude <= 0.0) {
+            fragColor = vec4(vec3(ambient), 1.0);
+            return;
+          }
+          vec3 sunVector = normalize(vec3(u_sunDirection.x, -u_sunDirection.y, max(u_sunAltitudeTan, 0.01)));
+          float diffuse = max(dot(normal, sunVector), 0.0);
           float shadow  = computeShadow(v_texCoord, v_elevation);
-          float ambient = 0.3;
-          float shading = ambient + (1.0 - ambient) * ((diffuse + shadow) * 0.5);
+          float shading = ambient + (1.0 - ambient) * diffuse * shadow;
           fragColor    = vec4(vec3(shading), 1.0);
         }`;
 
