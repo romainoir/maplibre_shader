@@ -318,7 +318,7 @@ const TerrainShaders = {
         out vec4 fragColor;
 
         const int MAX_SHADOW_STEPS = 512;
-        const int MAX_SHADOW_SAMPLES = 9;
+        const int MAX_SHADOW_SAMPLES = 64;
 
         float traceShadowRay(vec2 startPos, float currentElevation, vec2 texelStep, float metersPerPixel, float sunSlope) {
           if (u_shadowMaxDistance <= 0.0) {
