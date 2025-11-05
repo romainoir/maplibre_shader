@@ -10,7 +10,7 @@ const TerrainShaders = {
     uniform float u_zoom;
     uniform vec2 u_latrange;
 
-    const int MAX_TILE_TEXTURES = 16;
+    const int MAX_TILE_TEXTURES = 15;
     const int MAX_TILE_LOOKUP = 64;
 
     uniform int u_tileTextureCount;
@@ -66,8 +66,6 @@ const TerrainShaders = {
         elevation = getElevationFromTexture(u_tileSamplers[13], uv);
       } else if (samplerIndex == 14) {
         elevation = getElevationFromTexture(u_tileSamplers[14], uv);
-      } else if (samplerIndex == 15) {
-        elevation = getElevationFromTexture(u_tileSamplers[15], uv);
       }
       return elevation;
     }
