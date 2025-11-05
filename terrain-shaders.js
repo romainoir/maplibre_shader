@@ -348,12 +348,23 @@ const TerrainShaders = {
 
           float clampedAltitude = clamp(u_sunAltitude, -1.55334306, 1.55334306);
           float sunSlope = tan(clampedAltitude);
-          return sunSlope > maxSlope ? 1.0 : 0.0;
+          float visibility = sunSlope - maxSlope;
+          return smoothstep(0.0, 0.15, visibility);
         }
 
         void main(){
           float visibility = computeSunVisibility(v_texCoord, v_elevation);
-          fragColor = vec4(vec3(visibility), 1.0);
+          vec2 grad = computeSobelGradient(v_texCoord);
+          vec3 normal = normalize(vec3(-grad, 1.0));
+          float cosAltitude = cos(u_sunAltitude);
+          vec3 sunDir = normalize(vec3(u_sunDirection * cosAltitude, sin(u_sunAltitude)));
+          float lambert = max(dot(normal, sunDir), 0.0);
+          float selfShadow = 1.0 - lambert;
+          float castShadow = 1.0 - visibility;
+          float combinedShadow = clamp(castShadow + (1.0 - castShadow) * selfShadow, 0.0, 1.0);
+          float alpha = combinedShadow * 0.7;
+          vec3 shadowColor = vec3(0.0);
+          fragColor = vec4(shadowColor, alpha);
         }`;
 
       default:

@@ -439,15 +439,20 @@
       } else {
         gl.depthFunc(gl.LEQUAL);
         gl.clear(gl.DEPTH_BUFFER_BIT);
+        gl.enable(gl.BLEND);
         if (currentMode === "shadow") {
-          gl.disable(gl.BLEND);
+          gl.blendFuncSeparate(
+            gl.SRC_ALPHA,
+            gl.ONE_MINUS_SRC_ALPHA,
+            gl.ONE,
+            gl.ONE_MINUS_SRC_ALPHA
+          );
         } else {
-          gl.enable(gl.BLEND);
           gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
         }
         this.renderTiles(gl, shader, renderableTiles, tileManager);
       }
-      
+
       gl.disable(gl.BLEND);
     }
   };
