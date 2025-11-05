@@ -13,6 +13,10 @@
   let shadowSampleCount = 5;
   let shadowBlurRadius = 1.5;
   let shadowMaxDistance = 800; // meters
+  let shadowVisibilityThreshold = 0.02;
+  let shadowEdgeSoftness = 0.16;
+  let shadowMaxOpacity = 0.72;
+  let shadowRayStepMultiplier = 1.0;
   let samplingDistance = 0.5;
   let shadowDateValue = null;
   let shadowTimeValue = null;
@@ -161,6 +165,39 @@
     });
   }
 
+  const shadowEdgeSoftnessSlider = document.getElementById('shadowEdgeSoftnessSlider');
+  const shadowEdgeSoftnessValue = document.getElementById('shadowEdgeSoftnessValue');
+  if (shadowEdgeSoftnessSlider && shadowEdgeSoftnessValue) {
+    shadowEdgeSoftnessValue.textContent = shadowEdgeSoftness.toFixed(2);
+    shadowEdgeSoftnessSlider.addEventListener('input', (e) => {
+      shadowEdgeSoftness = Math.max(0, parseFloat(e.target.value));
+      shadowEdgeSoftnessValue.textContent = shadowEdgeSoftness.toFixed(2);
+      triggerShadowRepaint();
+    });
+  }
+
+  const shadowMaxOpacitySlider = document.getElementById('shadowMaxOpacitySlider');
+  const shadowMaxOpacityValue = document.getElementById('shadowMaxOpacityValue');
+  if (shadowMaxOpacitySlider && shadowMaxOpacityValue) {
+    shadowMaxOpacityValue.textContent = shadowMaxOpacity.toFixed(2);
+    shadowMaxOpacitySlider.addEventListener('input', (e) => {
+      shadowMaxOpacity = Math.min(1, Math.max(0, parseFloat(e.target.value)));
+      shadowMaxOpacityValue.textContent = shadowMaxOpacity.toFixed(2);
+      triggerShadowRepaint();
+    });
+  }
+
+  const shadowRayStepMultiplierSlider = document.getElementById('shadowRayStepMultiplierSlider');
+  const shadowRayStepMultiplierValue = document.getElementById('shadowRayStepMultiplierValue');
+  if (shadowRayStepMultiplierSlider && shadowRayStepMultiplierValue) {
+    shadowRayStepMultiplierValue.textContent = shadowRayStepMultiplier.toFixed(2);
+    shadowRayStepMultiplierSlider.addEventListener('input', (e) => {
+      shadowRayStepMultiplier = Math.max(0.25, parseFloat(e.target.value));
+      shadowRayStepMultiplierValue.textContent = shadowRayStepMultiplier.toFixed(2);
+      triggerShadowRepaint();
+    });
+  }
+
   const samplingDistanceSlider = document.getElementById('samplingDistanceSlider');
   const samplingDistanceValue = document.getElementById('samplingDistanceValue');
   if (samplingDistanceSlider && samplingDistanceValue) {
@@ -272,7 +309,11 @@
           'u_sunAltitude',
           'u_shadowSampleCount',
           'u_shadowBlurRadius',
-          'u_shadowMaxDistance'
+          'u_shadowMaxDistance',
+          'u_shadowVisibilityThreshold',
+          'u_shadowEdgeSoftness',
+          'u_shadowMaxOpacity',
+          'u_shadowRayStepMultiplier'
         );
       }
       const locations = {};
@@ -441,6 +482,18 @@
           }
           if (shader.locations.u_shadowMaxDistance) {
             gl.uniform1f(shader.locations.u_shadowMaxDistance, shadowMaxDistance);
+          }
+          if (shader.locations.u_shadowVisibilityThreshold) {
+            gl.uniform1f(shader.locations.u_shadowVisibilityThreshold, shadowVisibilityThreshold);
+          }
+          if (shader.locations.u_shadowEdgeSoftness) {
+            gl.uniform1f(shader.locations.u_shadowEdgeSoftness, shadowEdgeSoftness);
+          }
+          if (shader.locations.u_shadowMaxOpacity) {
+            gl.uniform1f(shader.locations.u_shadowMaxOpacity, shadowMaxOpacity);
+          }
+          if (shader.locations.u_shadowRayStepMultiplier) {
+            gl.uniform1f(shader.locations.u_shadowRayStepMultiplier, shadowRayStepMultiplier);
           }
         }
 
