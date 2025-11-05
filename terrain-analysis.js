@@ -92,6 +92,14 @@
     return { dirX, dirY, tanAltitude, altitude };
   }
 
+  function lngLatToTile(lat, lng, zoom) {
+    const scale = Math.pow(2, zoom);
+    const x = (lng + 180) / 360 * scale;
+    const sinLat = Math.sin(lat * Math.PI / 180);
+    const y = (0.5 - Math.log((1 + sinLat) / (1 - sinLat)) / (4 * Math.PI)) * scale;
+    return { x, y };
+  }
+
   function getTerrainTileManager(mapInstance) {
     if (!mapInstance || !mapInstance.terrain) return null;
     const terrain = mapInstance.terrain;
@@ -193,14 +201,6 @@
         'u_projection_tile_mercator_coords',
         'u_projection_fallback_matrix',
         'u_image',
-        'u_image_left',
-        'u_image_right',
-        'u_image_top',
-        'u_image_bottom',
-        'u_image_topLeft',
-        'u_image_topRight',
-        'u_image_bottomLeft',
-        'u_image_bottomRight',
         'u_dimension',
         'u_original_vertex_count',
         'u_terrain_unpack',
@@ -208,7 +208,15 @@
         'u_zoom',
         'u_latrange',
         'u_lightDir',
-        'u_shadowsEnabled'
+        'u_shadowsEnabled',
+        'u_tileTextureCount',
+        'u_tileLookupCount',
+        'u_tileLookup[0]',
+        'u_tileTransform[0]',
+        'u_tileSamplers[0]',
+        'u_globalTileOrigin',
+        'u_tileCoord',
+        'u_tileScale'
       ];
       if (currentMode === "snow") {
         uniforms.push('u_snow_altitude', 'u_snow_maxSlope');
@@ -225,123 +233,199 @@
       }
       const locations = {};
       uniforms.forEach(u => { locations[u] = gl.getUniformLocation(program, u); });
+      locations.u_tileLookup = locations['u_tileLookup[0]'];
+      locations.u_tileTransform = locations['u_tileTransform[0]'];
+      locations.u_tileSamplers = locations['u_tileSamplers[0]'];
+      delete locations['u_tileLookup[0]'];
+      delete locations['u_tileTransform[0]'];
+      delete locations['u_tileSamplers[0]'];
       const attributes = { a_pos: gl.getAttribLocation(program, 'a_pos') };
-      const result = { program, locations, attributes };
+      const maxTileSamplers = 16;
+      const maxTileLookups = 64;
+      const tileSamplerUnits = new Int32Array(maxTileSamplers);
+      for (let i = 0; i < maxTileSamplers; i++) tileSamplerUnits[i] = i;
+      const tileLookupScratch = new Int32Array(maxTileLookups * 4);
+      const tileTransformScratch = new Float32Array(maxTileLookups * 4);
+      const result = {
+        program,
+        locations,
+        attributes,
+        maxTileSamplers,
+        maxTileLookups,
+        tileSamplerUnits,
+        tileLookupScratch,
+        tileTransformScratch
+      };
       this.shaderMap.set(variantName, result);
       return result;
     },
   
     renderTiles(gl, shader, renderableTiles, tileManager) {
       if (!tileManager) return;
-      const bindTexture = (texture, unit, uniformName) => {
-        gl.activeTexture(gl.TEXTURE0 + unit);
-        gl.bindTexture(gl.TEXTURE_2D, texture);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-        gl.uniform1i(shader.locations[uniformName], unit);
-      };
-  
-      // Keep track of successfully rendered tiles for debugging
-      let renderedCount = 0;
-      let skippedCount = 0;
 
-      const terrainDataCache = new Map();
-      const textureCache = new Map();
-
+      const tileInfos = [];
       for (const tile of renderableTiles) {
         const sourceTile = tileManager.getSourceTile(tile.tileID, true);
         if (!sourceTile || sourceTile.tileID.key !== tile.tileID.key) continue;
         const terrainData = this.map.terrain.getTerrainData(tile.tileID);
         if (!terrainData || !terrainData.texture || terrainData.fallback) continue;
-        const canonical = tile.tileID.canonical;
-        const cacheKey = `${canonical.z}/${canonical.x}/${canonical.y}`;
-        terrainDataCache.set(tile.tileID.key, terrainData);
-        textureCache.set(cacheKey, terrainData.texture);
+        tileInfos.push({
+          tile,
+          terrainData,
+          canonical: tile.tileID.canonical
+        });
       }
 
-      const neighborOffsets = [
-        { uniform: 'u_image_left', dx: -1, dy: 0 },
-        { uniform: 'u_image_right', dx: 1, dy: 0 },
-        { uniform: 'u_image_top', dx: 0, dy: -1 },
-        { uniform: 'u_image_bottom', dx: 0, dy: 1 },
-        { uniform: 'u_image_topLeft', dx: -1, dy: -1 },
-        { uniform: 'u_image_topRight', dx: 1, dy: -1 },
-        { uniform: 'u_image_bottomLeft', dx: -1, dy: 1 },
-        { uniform: 'u_image_bottomRight', dx: 1, dy: 1 }
-      ];
+      if (tileInfos.length === 0) return;
 
-      const getNeighborTexture = (z, x, y, dx, dy, fallbackTexture) => {
-        const nx = x + dx;
-        const ny = y + dy;
-        const key = `${z}/${nx}/${ny}`;
-        if (textureCache.has(key)) return textureCache.get(key);
-        return fallbackTexture;
-      };
+      let baseZoom = -Infinity;
+      for (const info of tileInfos) {
+        baseZoom = Math.max(baseZoom, info.canonical.z);
+      }
+
+      const center = this.map.getCenter();
+      const centerTile = lngLatToTile(center.lat, center.lng, baseZoom);
+
+      tileInfos.sort((a, b) => {
+        const scaleA = Math.pow(2, baseZoom - a.canonical.z);
+        const scaleB = Math.pow(2, baseZoom - b.canonical.z);
+        const ax = a.canonical.x * scaleA + scaleA * 0.5;
+        const ay = a.canonical.y * scaleA + scaleA * 0.5;
+        const bx = b.canonical.x * scaleB + scaleB * 0.5;
+        const by = b.canonical.y * scaleB + scaleB * 0.5;
+        const da = Math.hypot(ax - centerTile.x, ay - centerTile.y);
+        const db = Math.hypot(bx - centerTile.x, by - centerTile.y);
+        return da - db;
+      });
+
+      const textureInfos = [];
+      const tileTextureUnit = new Map();
+      for (const info of tileInfos) {
+        const key = `${info.canonical.z}/${info.canonical.x}/${info.canonical.y}`;
+        if (tileTextureUnit.has(key)) continue;
+        if (textureInfos.length >= shader.maxTileSamplers) continue;
+        const zoomDiff = baseZoom - info.canonical.z;
+        const scale = Math.pow(2, zoomDiff);
+        const unit = textureInfos.length;
+        textureInfos.push({
+          texture: info.terrainData.texture,
+          canonical: info.canonical,
+          scale,
+          unit
+        });
+        tileTextureUnit.set(key, unit);
+      }
+
+      if (textureInfos.length === 0) return;
+
+      let globalMinX = Infinity;
+      let globalMinY = Infinity;
+      const lookupEntries = [];
+      for (const info of textureInfos) {
+        const scaleInt = Math.max(1, Math.round(info.scale));
+        const baseX = info.canonical.x * scaleInt;
+        const baseY = info.canonical.y * scaleInt;
+        globalMinX = Math.min(globalMinX, baseX);
+        globalMinY = Math.min(globalMinY, baseY);
+        for (let sx = 0; sx < scaleInt && lookupEntries.length < shader.maxTileLookups; sx++) {
+          for (let sy = 0; sy < scaleInt && lookupEntries.length < shader.maxTileLookups; sy++) {
+            lookupEntries.push({
+              x: baseX + sx,
+              y: baseY + sy,
+              textureIndex: info.unit,
+              uvScale: 1.0 / scaleInt,
+              uvOffsetX: sx / scaleInt,
+              uvOffsetY: sy / scaleInt
+            });
+          }
+        }
+      }
+
+      if (!Number.isFinite(globalMinX) || !Number.isFinite(globalMinY)) return;
+
+      const lookupCount = Math.min(lookupEntries.length, shader.maxTileLookups);
+      shader.tileLookupScratch.fill(0);
+      shader.tileTransformScratch.fill(0);
+      for (let i = 0; i < lookupCount; i++) {
+        const entry = lookupEntries[i];
+        shader.tileLookupScratch[i * 4 + 0] = entry.x;
+        shader.tileLookupScratch[i * 4 + 1] = entry.y;
+        shader.tileLookupScratch[i * 4 + 2] = entry.textureIndex;
+        shader.tileLookupScratch[i * 4 + 3] = 0;
+        shader.tileTransformScratch[i * 4 + 0] = entry.uvScale;
+        shader.tileTransformScratch[i * 4 + 1] = entry.uvScale;
+        shader.tileTransformScratch[i * 4 + 2] = entry.uvOffsetX;
+        shader.tileTransformScratch[i * 4 + 3] = entry.uvOffsetY;
+      }
+
+      if (shader.locations.u_tileSamplers) {
+        gl.uniform1iv(shader.locations.u_tileSamplers, shader.tileSamplerUnits);
+      }
+      if (shader.locations.u_tileTextureCount) {
+        gl.uniform1i(shader.locations.u_tileTextureCount, textureInfos.length);
+      }
+      if (shader.locations.u_tileLookupCount) {
+        gl.uniform1i(shader.locations.u_tileLookupCount, lookupCount);
+      }
+      if (shader.locations.u_tileLookup && lookupCount > 0) {
+        gl.uniform4iv(shader.locations.u_tileLookup, shader.tileLookupScratch.subarray(0, lookupCount * 4));
+      }
+      if (shader.locations.u_tileTransform && lookupCount > 0) {
+        gl.uniform4fv(shader.locations.u_tileTransform, shader.tileTransformScratch.subarray(0, lookupCount * 4));
+      }
+      if (shader.locations.u_globalTileOrigin) {
+        gl.uniform2f(shader.locations.u_globalTileOrigin, globalMinX, globalMinY);
+      }
+
+      for (const info of textureInfos) {
+        const unit = info.unit;
+        gl.activeTexture(gl.TEXTURE0 + unit);
+        gl.bindTexture(gl.TEXTURE_2D, info.texture);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      }
 
       const sunParams = currentMode === "shadow" ? computeSunParameters(this.map) : null;
+      let renderedCount = 0;
+      let skippedCount = 0;
 
-      for (const tile of renderableTiles) {
-        // Get the source tile to ensure we have the right tile for this position
-        const sourceTile = tileManager.getSourceTile(tile.tileID, true);
-
-        // Skip if no source tile or if it's a different tile (overscaled)
-        if (!sourceTile || sourceTile.tileID.key !== tile.tileID.key) {
-          if (DEBUG) console.log(`Skipping tile ${tile.tileID.key}: source tile mismatch or overscaled`);
+      for (const info of tileInfos) {
+        const { tile, terrainData, canonical } = info;
+        const textureIndex = tileTextureUnit.get(`${canonical.z}/${canonical.x}/${canonical.y}`);
+        if (textureIndex === undefined) {
           skippedCount++;
           continue;
         }
-        
-        // Get terrain data for the exact tile
-        const terrainData = terrainDataCache.get(tile.tileID.key) || this.map.terrain.getTerrainData(tile.tileID);
 
-        // Skip if no terrain data or texture
-        if (!terrainData || !terrainData.texture) {
-          if (DEBUG) console.log(`Skipping tile ${tile.tileID.key}: no terrain data or texture`);
-          skippedCount++;
-          continue;
-        }
-        
-        // Skip fallback tiles as they might not align properly
-        if (terrainData.fallback) {
-          if (DEBUG) console.log(`Skipping tile ${tile.tileID.key}: fallback tile`);
-          skippedCount++;
-          continue;
-        }
-        
         const mesh = getTileMesh(gl, tile);
-        if (!mesh) continue;
-        
+        if (!mesh) {
+          skippedCount++;
+          continue;
+        }
+
         gl.bindBuffer(gl.ARRAY_BUFFER, mesh.vbo);
         gl.enableVertexAttribArray(shader.attributes.a_pos);
         gl.vertexAttribPointer(shader.attributes.a_pos, 2, gl.SHORT, false, 4, 0);
         gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, mesh.ibo);
-        
-        // Only bind texture if it exists
-        if (terrainData.texture) {
-          bindTexture(terrainData.texture, 0, 'u_image');
-          if (currentMode === "shadow") {
-            const canonical = tile.tileID.canonical;
-            neighborOffsets.forEach((neighbor, index) => {
-              const texture = getNeighborTexture(
-                canonical.z,
-                canonical.x,
-                canonical.y,
-                neighbor.dx,
-                neighbor.dy,
-                terrainData.texture
-              );
-              bindTexture(texture, index + 1, neighbor.uniform);
-            });
-          }
+
+        if (shader.locations.u_image) {
+          gl.uniform1i(shader.locations.u_image, textureIndex);
+        }
+        if (shader.locations.u_tileCoord) {
+          gl.uniform2f(shader.locations.u_tileCoord, canonical.x, canonical.y);
+        }
+        const tileScale = Math.pow(2, baseZoom - canonical.z);
+        if (shader.locations.u_tileScale) {
+          gl.uniform1f(shader.locations.u_tileScale, tileScale);
         }
 
         const projectionData = this.map.transform.getProjectionData({
           overscaledTileID: tile.tileID,
           applyGlobeMatrix: true
         });
-        
+
         gl.uniform4f(shader.locations.u_projection_tile_mercator_coords,
           ...projectionData.tileMercatorCoords);
         gl.uniform4f(shader.locations.u_projection_clipping_plane, ...projectionData.clippingPlane);
@@ -352,21 +436,21 @@
         gl.uniform1i(shader.locations.u_original_vertex_count, mesh.originalVertexCount);
         gl.uniform1f(shader.locations.u_terrain_exaggeration, 1.0);
         const rgbaFactors = {
-            r: 256.0,
-            g: 1.0,
-            b: 1.0 / 256.0,
-            base: 32768.0
+          r: 256.0,
+          g: 1.0,
+          b: 1.0 / 256.0,
+          base: 32768.0
         };
         gl.uniform4f(
-            shader.locations.u_terrain_unpack,
-            rgbaFactors.r,
-            rgbaFactors.g,
-            rgbaFactors.b,
-            rgbaFactors.base
+          shader.locations.u_terrain_unpack,
+          rgbaFactors.r,
+          rgbaFactors.g,
+          rgbaFactors.b,
+          rgbaFactors.base
         );
         gl.uniform2f(shader.locations.u_latrange, 47.0, 45.0);
         gl.uniform1f(shader.locations.u_zoom, tile.tileID.canonical.z);
-        
+
         if (currentMode === "snow" && shader.locations.u_snow_altitude) {
           gl.uniform1f(shader.locations.u_snow_altitude, snowAltitude);
           gl.uniform1f(shader.locations.u_snow_maxSlope, snowMaxSlope);
