@@ -10,7 +10,13 @@
   const meshCache = new Map();
   let snowAltitude = 3000;
   let snowMaxSlope = 55; // in degrees
-  
+
+  function getTerrainTileManager(mapInstance) {
+    if (!mapInstance || !mapInstance.terrain) return null;
+    const terrain = mapInstance.terrain;
+    return terrain.tileManager || null;
+  }
+
   // Update UI button states and slider visibility based on current mode
   function updateButtons() {
     document.getElementById('normalBtn').classList.toggle('active', currentMode === "normal");
@@ -149,7 +155,8 @@
       return result;
     },
   
-    renderTiles(gl, shader, renderableTiles) {
+    renderTiles(gl, shader, renderableTiles, tileManager) {
+      if (!tileManager) return;
       const bindTexture = (texture, unit, uniformName) => {
         gl.activeTexture(gl.TEXTURE0 + unit);
         gl.bindTexture(gl.TEXTURE_2D, texture);
@@ -166,8 +173,8 @@
       
       for (const tile of renderableTiles) {
         // Get the source tile to ensure we have the right tile for this position
-        const sourceTile = this.map.terrain.sourceCache.getSourceTile(tile.tileID, true);
-        
+        const sourceTile = tileManager.getSourceTile(tile.tileID, true);
+
         // Skip if no source tile or if it's a different tile (overscaled)
         if (!sourceTile || sourceTile.tileID.key !== tile.tileID.key) {
           if (DEBUG) console.log(`Skipping tile ${tile.tileID.key}: source tile mismatch or overscaled`);
@@ -268,18 +275,24 @@
       }
       
       // Wait for tiles to stabilize after rapid movement
-      if (this.map.terrain.sourceCache.anyTilesAfterTime(Date.now() - 100)) {
+      const tileManager = getTerrainTileManager(this.map);
+      if (!tileManager) {
+        if (DEBUG) console.warn("Tile manager not available; skipping render");
         this.map.triggerRepaint();
         return;
       }
-      
+
+      if (tileManager.anyTilesAfterTime(Date.now() - 100)) {
+        this.map.triggerRepaint();
+        return;
+      }
+
       const shader = this.getShader(gl, matrix.shaderData);
       if (!shader) return;
       gl.useProgram(shader.program);
-      
-      const sourceCache = this.map.terrain.sourceCache;
-      const renderableTiles = sourceCache.getRenderableTiles();
-      
+
+      const renderableTiles = tileManager.getRenderableTiles();
+
       // Don't render if we have no tiles
       if (renderableTiles.length === 0) {
         if (DEBUG) console.log("No renderable tiles available");
@@ -295,8 +308,8 @@
         gl.depthFunc(gl.LESS);
         gl.colorMask(false, false, false, false);
         gl.clear(gl.DEPTH_BUFFER_BIT);
-        this.renderTiles(gl, shader, renderableTiles);
-        
+        this.renderTiles(gl, shader, renderableTiles, tileManager);
+
         gl.colorMask(true, true, true, true);
         gl.depthFunc(gl.LEQUAL);
         gl.enable(gl.BLEND);
@@ -306,7 +319,7 @@
           gl.ONE,
           gl.ONE_MINUS_SRC_ALPHA
         );
-        this.renderTiles(gl, shader, renderableTiles);
+        this.renderTiles(gl, shader, renderableTiles, tileManager);
       } else {
         gl.depthFunc(gl.LEQUAL);
         gl.clear(gl.DEPTH_BUFFER_BIT);
@@ -316,7 +329,7 @@
           gl.enable(gl.BLEND);
           gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
         }
-        this.renderTiles(gl, shader, renderableTiles);
+        this.renderTiles(gl, shader, renderableTiles, tileManager);
       }
       
       gl.disable(gl.BLEND);
@@ -364,8 +377,9 @@
   map.on('load', () => {
     console.log("Map loaded");
     map.setTerrain({ source: 'terrain', exaggeration: 1.0 });
-    if (map.terrain && map.terrain.sourceCache) {
-      map.terrain.sourceCache.deltaZoom = 0;
+    const tileManager = getTerrainTileManager(map);
+    if (tileManager && typeof tileManager.deltaZoom === 'number') {
+      tileManager.deltaZoom = 0;
     }
     console.log("Terrain layer initialized");
   });
