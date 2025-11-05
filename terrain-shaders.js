@@ -322,20 +322,35 @@ const TerrainShaders = {
           if (u_sunAltitude <= 0.0) {
             return 0.0;
           }
-          const int numSteps = 32;
-          float stepSize  = u_shadowStepSize;
+
+          const int MAX_STEPS = 96;
+          float metersPerPixel = 1.5 * pow(2.0, 16.0 - u_zoom);
+          float metersPerTile  = metersPerPixel * u_dimension.x;
+          float stepMeters     = max(u_shadowStepSize, metersPerPixel);
+          float stepSize       = stepMeters / metersPerTile;
+
           vec2  lightDir2D = normalize(u_sunDirection);
-          vec2  scaledDir = lightDir2D * u_shadowHorizontalScale;
+          vec2  scaledDir  = lightDir2D * u_shadowHorizontalScale * stepSize;
           float tanAltitude = max(u_sunAltitudeTan, 0.01);
-          float elevationStep = stepSize * tanAltitude * u_shadowLengthFactor;
-          for (int i = 1; i < numSteps; i++) {
-            vec2 samplePos = pos + scaledDir * stepSize * float(i);
+          float elevationStep = stepMeters * tanAltitude * u_shadowLengthFactor;
+          float heightBias    = metersPerPixel * 0.75;
+          int steps = int(clamp(u_shadowLengthFactor * 48.0, 8.0, float(MAX_STEPS)));
+
+          float visibility = 1.0;
+          for (int i = 1; i < MAX_STEPS; i++) {
+            if (i >= steps) {
+              break;
+            }
+            vec2 samplePos = pos + scaledDir * float(i);
             float sampleElev = getElevationExtended(samplePos);
-            if (sampleElev > currentElevation + elevationStep * float(i)) {
+            float maxElevation = currentElevation + elevationStep * float(i);
+            float diff = maxElevation - sampleElev + heightBias;
+            visibility = min(visibility, smoothstep(0.0, heightBias * 2.0, diff));
+            if (diff < 0.0) {
               return 0.0;
             }
           }
-          return 1.0;
+          return visibility;
         }
 
         void main(){
