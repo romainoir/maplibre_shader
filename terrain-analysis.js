@@ -12,6 +12,9 @@
   let snowMaxSlope = 55; // in degrees
   let shadowDateValue = null;
   let shadowTimeValue = null;
+  const SHADOW_STEP_BASE = 0.001;
+  const SHADOW_HORIZONTAL_SCALE = 0.5;
+  const SHADOW_LENGTH_FACTOR = 0.5;
 
   function getShadowDateTime() {
     const now = new Date();
@@ -22,27 +25,56 @@
 
   function initializeShadowDateTimeControls() {
     const now = new Date();
-    const defaultDate = now.toISOString().slice(0, 10);
-    const defaultTime = now.toISOString().slice(11, 16);
+    const currentYear = now.getFullYear();
+    const startOfYear = new Date(currentYear, 0, 1);
+    const isLeapYear = new Date(currentYear, 1, 29).getMonth() === 1;
+    const totalDays = isLeapYear ? 366 : 365;
+    const defaultDayIndex = Math.min(
+      Math.floor((now - startOfYear) / (24 * 60 * 60 * 1000)),
+      totalDays - 1
+    );
+    const defaultMinutes = now.getHours() * 60 + now.getMinutes();
 
-    const dateInput = document.getElementById('shadowDateInput');
-    const timeInput = document.getElementById('shadowTimeInput');
+    const dateSlider = document.getElementById('shadowDateSlider');
+    const dateValue = document.getElementById('shadowDateValue');
+    const timeSlider = document.getElementById('shadowTimeSlider');
+    const timeValue = document.getElementById('shadowTimeValue');
 
-    if (dateInput) {
-      dateInput.value = defaultDate;
-      shadowDateValue = defaultDate;
-      dateInput.addEventListener('change', (e) => {
-        shadowDateValue = e.target.value || defaultDate;
-        if (currentMode === "shadow") map.triggerRepaint();
+    const setDateFromSlider = (dayIndex) => {
+      const baseDate = new Date(currentYear, 0, 1);
+      baseDate.setDate(baseDate.getDate() + Number(dayIndex));
+      const isoDate = `${baseDate.getFullYear()}-${String(baseDate.getMonth() + 1).padStart(2, '0')}-${String(baseDate.getDate()).padStart(2, '0')}`;
+      shadowDateValue = isoDate;
+      if (dateValue) dateValue.textContent = isoDate;
+      if (currentMode === "shadow") map.triggerRepaint();
+    };
+
+    const setTimeFromSlider = (totalMinutes) => {
+      const minutes = Math.max(0, Math.min(1439, Number(totalMinutes)));
+      const hours = Math.floor(minutes / 60);
+      const mins = minutes % 60;
+      const isoTime = `${String(hours).padStart(2, '0')}:${String(mins).padStart(2, '0')}`;
+      shadowTimeValue = isoTime;
+      if (timeValue) timeValue.textContent = isoTime;
+      if (currentMode === "shadow") map.triggerRepaint();
+    };
+
+    if (dateSlider) {
+      dateSlider.max = totalDays - 1;
+      dateSlider.value = defaultDayIndex;
+      setDateFromSlider(Number(defaultDayIndex));
+      dateSlider.addEventListener('input', (e) => {
+        setDateFromSlider(e.target.value);
       });
     }
 
-    if (timeInput) {
-      timeInput.value = defaultTime;
-      shadowTimeValue = defaultTime;
-      timeInput.addEventListener('change', (e) => {
-        shadowTimeValue = e.target.value || defaultTime;
-        if (currentMode === "shadow") map.triggerRepaint();
+    if (timeSlider) {
+      timeSlider.max = 1439;
+      const roundedMinutes = Math.round(defaultMinutes / 15) * 15;
+      timeSlider.value = Math.min(1439, roundedMinutes);
+      setTimeFromSlider(Number(timeSlider.value));
+      timeSlider.addEventListener('input', (e) => {
+        setTimeFromSlider(e.target.value);
       });
     }
   }
@@ -88,18 +120,6 @@
     snowMaxSlope = parseFloat(e.target.value);
     document.getElementById('snowSlopeValue').textContent = e.target.value;
     if (currentMode === "snow") map.triggerRepaint();
-  });
-  document.getElementById('shadowStepSlider').addEventListener('input', (e) => {
-    document.getElementById('shadowStepValue').textContent = e.target.value;
-    if (currentMode === "shadow") map.triggerRepaint();
-  });
-  document.getElementById('shadowScaleSlider').addEventListener('input', (e) => {
-    document.getElementById('shadowScaleValue').textContent = e.target.value;
-    if (currentMode === "shadow") map.triggerRepaint();
-  });
-  document.getElementById('shadowLengthSlider').addEventListener('input', (e) => {
-    document.getElementById('shadowLengthValue').textContent = e.target.value;
-    if (currentMode === "shadow") map.triggerRepaint();
   });
 
   // Minimal getTileMesh: create or return cached mesh for a tile
@@ -354,10 +374,10 @@
         if (currentMode === "shadow" && shader.locations.u_shadowHorizontalScale) {
           const tileZoom = tile.tileID.canonical.z;
           const maxZoom = 16.0;
-          const adaptiveStep = parseFloat(document.getElementById('shadowStepSlider').value) * Math.pow(2, (maxZoom - tileZoom));
+          const adaptiveStep = SHADOW_STEP_BASE * Math.pow(2, (maxZoom - tileZoom));
           gl.uniform1f(shader.locations.u_shadowStepSize, adaptiveStep);
-          gl.uniform1f(shader.locations.u_shadowHorizontalScale, parseFloat(document.getElementById('shadowScaleSlider').value));
-          gl.uniform1f(shader.locations.u_shadowLengthFactor, parseFloat(document.getElementById('shadowLengthSlider').value));
+          gl.uniform1f(shader.locations.u_shadowHorizontalScale, SHADOW_HORIZONTAL_SCALE);
+          gl.uniform1f(shader.locations.u_shadowLengthFactor, SHADOW_LENGTH_FACTOR);
           if (sunParams && shader.locations.u_sunDirection && shader.locations.u_sunAltitudeTan) {
             gl.uniform2f(shader.locations.u_sunDirection, sunParams.dirX, sunParams.dirY);
             gl.uniform1f(shader.locations.u_sunAltitudeTan, sunParams.tanAltitude);
