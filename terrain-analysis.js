@@ -339,10 +339,10 @@
         },
         terrain: {
           type: 'raster-dem',
-          tiles: ['https://tiles.wifidb.net/data/swissalti3d_terrainrgb_0-16/{z}/{x}/{y}.webp'],
-          tileSize: 256,
-          maxzoom: 16,
-          encoding: 'mapbox'
+          tiles: ['https://tiles.mapterhorn.com/{z}/{x}/{y}.webp'],
+          tileSize: 512,
+          maxzoom: 17,
+          encoding: 'terrarium'
         }
       },
       layers: [
@@ -466,4 +466,5 @@
   });
   
   window.addEventListener('unload', () => { meshCache.clear(); });
+
 })();
