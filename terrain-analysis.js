@@ -10,6 +10,55 @@
   const meshCache = new Map();
   let snowAltitude = 3000;
   let snowMaxSlope = 55; // in degrees
+  let shadowDateValue = null;
+  let shadowTimeValue = null;
+
+  function getShadowDateTime() {
+    const now = new Date();
+    const dateStr = shadowDateValue || now.toISOString().slice(0, 10);
+    const timeStr = shadowTimeValue || now.toISOString().slice(11, 16);
+    return new Date(`${dateStr}T${timeStr}:00`);
+  }
+
+  function initializeShadowDateTimeControls() {
+    const now = new Date();
+    const defaultDate = now.toISOString().slice(0, 10);
+    const defaultTime = now.toISOString().slice(11, 16);
+
+    const dateInput = document.getElementById('shadowDateInput');
+    const timeInput = document.getElementById('shadowTimeInput');
+
+    if (dateInput) {
+      dateInput.value = defaultDate;
+      shadowDateValue = defaultDate;
+      dateInput.addEventListener('change', (e) => {
+        shadowDateValue = e.target.value || defaultDate;
+        if (currentMode === "shadow") map.triggerRepaint();
+      });
+    }
+
+    if (timeInput) {
+      timeInput.value = defaultTime;
+      shadowTimeValue = defaultTime;
+      timeInput.addEventListener('change', (e) => {
+        shadowTimeValue = e.target.value || defaultTime;
+        if (currentMode === "shadow") map.triggerRepaint();
+      });
+    }
+  }
+
+  function computeSunParameters(mapInstance) {
+    const center = mapInstance.getCenter();
+    const sunDate = getShadowDateTime();
+    const sunPos = SunCalc.getPosition(sunDate, center.lat, center.lng);
+    const azimuth = sunPos.azimuth;
+    const altitude = Math.max(sunPos.altitude, -0.01);
+    const horizontalMagnitude = Math.max(Math.cos(altitude), 0.0001);
+    const dirX = -Math.sin(azimuth) * horizontalMagnitude;
+    const dirY = Math.cos(azimuth) * horizontalMagnitude;
+    const tanAltitude = Math.tan(Math.max(altitude, 0.01));
+    return { dirX, dirY, tanAltitude, altitude };
+  }
 
   function getTerrainTileManager(mapInstance) {
     if (!mapInstance || !mapInstance.terrain) return null;
@@ -52,7 +101,7 @@
     document.getElementById('shadowLengthValue').textContent = e.target.value;
     if (currentMode === "shadow") map.triggerRepaint();
   });
-  
+
   // Minimal getTileMesh: create or return cached mesh for a tile
   function getTileMesh(gl, tile) {
     const key = `mesh_${tile.tileID.key}`;
@@ -145,7 +194,14 @@
         uniforms.push('u_snow_altitude', 'u_snow_maxSlope');
       }
       if (currentMode === "shadow") {
-        uniforms.push('u_shadowStepSize','u_shadowHorizontalScale','u_shadowLengthFactor');
+        uniforms.push(
+          'u_shadowStepSize',
+          'u_shadowHorizontalScale',
+          'u_shadowLengthFactor',
+          'u_sunDirection',
+          'u_sunAltitudeTan',
+          'u_sunAltitude'
+        );
       }
       const locations = {};
       uniforms.forEach(u => { locations[u] = gl.getUniformLocation(program, u); });
@@ -170,7 +226,42 @@
       // Keep track of successfully rendered tiles for debugging
       let renderedCount = 0;
       let skippedCount = 0;
-      
+
+      const terrainDataCache = new Map();
+      const textureCache = new Map();
+
+      for (const tile of renderableTiles) {
+        const sourceTile = tileManager.getSourceTile(tile.tileID, true);
+        if (!sourceTile || sourceTile.tileID.key !== tile.tileID.key) continue;
+        const terrainData = this.map.terrain.getTerrainData(tile.tileID);
+        if (!terrainData || !terrainData.texture || terrainData.fallback) continue;
+        const canonical = tile.tileID.canonical;
+        const cacheKey = `${canonical.z}/${canonical.x}/${canonical.y}`;
+        terrainDataCache.set(tile.tileID.key, terrainData);
+        textureCache.set(cacheKey, terrainData.texture);
+      }
+
+      const neighborOffsets = [
+        { uniform: 'u_image_left', dx: -1, dy: 0 },
+        { uniform: 'u_image_right', dx: 1, dy: 0 },
+        { uniform: 'u_image_top', dx: 0, dy: -1 },
+        { uniform: 'u_image_bottom', dx: 0, dy: 1 },
+        { uniform: 'u_image_topLeft', dx: -1, dy: -1 },
+        { uniform: 'u_image_topRight', dx: 1, dy: -1 },
+        { uniform: 'u_image_bottomLeft', dx: -1, dy: 1 },
+        { uniform: 'u_image_bottomRight', dx: 1, dy: 1 }
+      ];
+
+      const getNeighborTexture = (z, x, y, dx, dy, fallbackTexture) => {
+        const nx = x + dx;
+        const ny = y + dy;
+        const key = `${z}/${nx}/${ny}`;
+        if (textureCache.has(key)) return textureCache.get(key);
+        return fallbackTexture;
+      };
+
+      const sunParams = currentMode === "shadow" ? computeSunParameters(this.map) : null;
+
       for (const tile of renderableTiles) {
         // Get the source tile to ensure we have the right tile for this position
         const sourceTile = tileManager.getSourceTile(tile.tileID, true);
@@ -183,8 +274,8 @@
         }
         
         // Get terrain data for the exact tile
-        const terrainData = this.map.terrain.getTerrainData(tile.tileID);
-        
+        const terrainData = terrainDataCache.get(tile.tileID.key) || this.map.terrain.getTerrainData(tile.tileID);
+
         // Skip if no terrain data or texture
         if (!terrainData || !terrainData.texture) {
           if (DEBUG) console.log(`Skipping tile ${tile.tileID.key}: no terrain data or texture`);
@@ -210,8 +301,22 @@
         // Only bind texture if it exists
         if (terrainData.texture) {
           bindTexture(terrainData.texture, 0, 'u_image');
+          if (currentMode === "shadow") {
+            const canonical = tile.tileID.canonical;
+            neighborOffsets.forEach((neighbor, index) => {
+              const texture = getNeighborTexture(
+                canonical.z,
+                canonical.x,
+                canonical.y,
+                neighbor.dx,
+                neighbor.dy,
+                terrainData.texture
+              );
+              bindTexture(texture, index + 1, neighbor.uniform);
+            });
+          }
         }
-        
+
         const projectionData = this.map.transform.getProjectionData({
           overscaledTileID: tile.tileID,
           applyGlobeMatrix: true
@@ -253,8 +358,15 @@
           gl.uniform1f(shader.locations.u_shadowStepSize, adaptiveStep);
           gl.uniform1f(shader.locations.u_shadowHorizontalScale, parseFloat(document.getElementById('shadowScaleSlider').value));
           gl.uniform1f(shader.locations.u_shadowLengthFactor, parseFloat(document.getElementById('shadowLengthSlider').value));
+          if (sunParams && shader.locations.u_sunDirection && shader.locations.u_sunAltitudeTan) {
+            gl.uniform2f(shader.locations.u_sunDirection, sunParams.dirX, sunParams.dirY);
+            gl.uniform1f(shader.locations.u_sunAltitudeTan, sunParams.tanAltitude);
+            if (shader.locations.u_sunAltitude) {
+              gl.uniform1f(shader.locations.u_sunAltitude, sunParams.altitude);
+            }
+          }
         }
-        
+
         gl.drawElements(gl.TRIANGLES, mesh.indexCount, gl.UNSIGNED_SHORT, 0);
         renderedCount++;
       }
@@ -383,6 +495,8 @@
     }
     console.log("Terrain layer initialized");
   });
+
+  initializeShadowDateTimeControls();
   
   map.addControl(new maplibregl.NavigationControl({ showCompass: true, visualizePitch: true }));
   map.addControl(new maplibregl.GlobeControl());
