@@ -28,6 +28,11 @@ const TerrainShaders = {
       return dot(data, vec3(256.0, 1.0, 1.0 / 256.0)) - 32768.0;
     }
 
+    vec2 clampTexCoord(vec2 pos) {
+      float border = 1.0 / u_dimension.x;
+      return clamp(pos, vec2(border), vec2(1.0 - border));
+    }
+
     float sampleElevationFromSamplers(int samplerIndex, vec2 pos) {
       float elevation = 0.0;
       vec2 uv = clampTexCoord(pos);
@@ -65,11 +70,6 @@ const TerrainShaders = {
         elevation = getElevationFromTexture(u_tileSamplers[15], uv);
       }
       return elevation;
-    }
-
-    vec2 clampTexCoord(vec2 pos) {
-      float border = 1.0 / u_dimension.x;
-      return clamp(pos, vec2(border), vec2(1.0 - border));
     }
 
     int findTileLookupIndex(ivec2 tileIndex) {
