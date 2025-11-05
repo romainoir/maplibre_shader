@@ -17,6 +17,7 @@ const TerrainShaders = {
     uniform vec2 u_dimension;
     uniform float u_zoom;
     uniform vec2 u_latrange;
+    uniform float u_samplingDistance;
 
     float getElevationFromTexture(sampler2D tex, vec2 pos) {
       vec3 data = texture(tex, pos).rgb * 255.0;
@@ -80,14 +81,13 @@ const TerrainShaders = {
       return getElevationFromTexture(u_image, tilePos);
     }
     
-    const float samplingDistance = 0.5;
-    
     vec2 computeSobelGradient(vec2 pos) {
       vec2 safePos = clampTexCoord(pos);
       float metersPerPixel = 1.5 * pow(2.0, 16.0 - u_zoom);
       float metersPerTile  = metersPerPixel * u_dimension.x;
-      float delta = samplingDistance / metersPerTile;
-      
+      float sampleDist = max(u_samplingDistance, 0.0001);
+      float delta = sampleDist / metersPerTile;
+
       float tl = getElevationExtended(safePos + vec2(-delta, -delta));
       float tm = getElevationExtended(safePos + vec2(0.0,   -delta));
       float tr = getElevationExtended(safePos + vec2(delta,  -delta));
@@ -96,10 +96,10 @@ const TerrainShaders = {
       float bl = getElevationExtended(safePos + vec2(-delta,  delta));
       float bm = getElevationExtended(safePos + vec2(0.0,    delta));
       float br = getElevationExtended(safePos + vec2(delta,   delta));
-      
-      float gx = (-tl + tr - 2.0 * ml + 2.0 * mr - bl + br) / (8.0 * samplingDistance);
-      float gy = (-tl - 2.0 * tm - tr + bl + 2.0 * bm + br) / (8.0 * samplingDistance);
-      
+
+      float gx = (-tl + tr - 2.0 * ml + 2.0 * mr - bl + br) / (8.0 * sampleDist);
+      float gy = (-tl - 2.0 * tm - tr + bl + 2.0 * bm + br) / (8.0 * sampleDist);
+
       return vec2(gx, gy);
     }
   `,
@@ -310,16 +310,26 @@ const TerrainShaders = {
         ${this.commonFunctions}
         uniform vec2  u_sunDirection;
         uniform float u_sunAltitude;
+        uniform int   u_shadowSampleCount;
+        uniform float u_shadowBlurRadius;
+        uniform float u_shadowMaxDistance;
         in  highp vec2  v_texCoord;
         in  highp float v_elevation;
         out vec4 fragColor;
 
         const int MAX_SHADOW_STEPS = 512;
+        const int MAX_SHADOW_SAMPLES = 9;
 
         float traceShadowRay(vec2 startPos, float currentElevation, vec2 texelStep, float metersPerPixel, float sunSlope) {
+          if (u_shadowMaxDistance <= 0.0) {
+            return 1.0;
+          }
           float maxSlope = -1e6;
           vec2 samplePos = startPos;
           for (int i = 1; i <= MAX_SHADOW_STEPS; ++i) {
+            if (float(i) * metersPerPixel > u_shadowMaxDistance) {
+              break;
+            }
             samplePos += texelStep;
             if (samplePos.x < -1.0 || samplePos.x > 2.0 || samplePos.y < -1.0 || samplePos.y > 2.0) {
               break;
@@ -353,14 +363,28 @@ const TerrainShaders = {
           float sunSlope = tan(clampedAltitude);
 
           vec2 perpendicular = vec2(-horizontalDir.y, horizontalDir.x);
-          const int SAMPLE_COUNT = 5;
-          float offsets[SAMPLE_COUNT] = float[]( -1.5, -0.75, 0.0, 0.75, 1.5 );
-          float weights[SAMPLE_COUNT] = float[]( 0.1, 0.2, 0.4, 0.2, 0.1 );
-
+          int sampleCount = clamp(u_shadowSampleCount, 1, MAX_SHADOW_SAMPLES);
+          float radius = max(u_shadowBlurRadius, 0.0);
+          if (radius <= 0.0) {
+            sampleCount = 1;
+          }
           float visibility = 0.0;
-          for (int i = 0; i < SAMPLE_COUNT; ++i) {
-            vec2 offsetPos = pos + perpendicular * (offsets[i] / tileResolution);
-            visibility += weights[i] * traceShadowRay(offsetPos, currentElevation, texelStep, metersPerPixel, sunSlope);
+          float weightSum = 0.0;
+          for (int i = 0; i < MAX_SHADOW_SAMPLES; ++i) {
+            if (i >= sampleCount) {
+              break;
+            }
+            float idx = float(i) - 0.5 * float(sampleCount - 1);
+            float normalized = (sampleCount == 1) ? 0.0 : idx / float(sampleCount - 1);
+            float offsetAmount = (sampleCount == 1 || radius <= 0.0) ? 0.0 : normalized * radius;
+            vec2 offsetPos = pos + perpendicular * (offsetAmount / tileResolution);
+            float sigma = max(radius * 0.5, 0.0001);
+            float weight = (radius <= 0.0 || sampleCount == 1) ? 1.0 : exp(-0.5 * pow(offsetAmount / sigma, 2.0));
+            visibility += weight * traceShadowRay(offsetPos, currentElevation, texelStep, metersPerPixel, sunSlope);
+            weightSum += weight;
+          }
+          if (weightSum > 0.0) {
+            visibility /= weightSum;
           }
           return visibility;
         }

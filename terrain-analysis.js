@@ -10,8 +10,13 @@
   const meshCache = new Map();
   let snowAltitude = 3000;
   let snowMaxSlope = 55; // in degrees
+  let shadowSampleCount = 5;
+  let shadowBlurRadius = 1.5;
+  let shadowMaxDistance = 800; // meters
+  let samplingDistance = 0.5;
   let shadowDateValue = null;
   let shadowTimeValue = null;
+  let map;
 
   function getShadowDateTime() {
     const now = new Date();
@@ -43,7 +48,7 @@
       const isoDate = `${baseDate.getFullYear()}-${String(baseDate.getMonth() + 1).padStart(2, '0')}-${String(baseDate.getDate()).padStart(2, '0')}`;
       shadowDateValue = isoDate;
       if (dateValue) dateValue.textContent = isoDate;
-      if (currentMode === "shadow") map.triggerRepaint();
+      if (map && currentMode === "shadow") map.triggerRepaint();
     };
 
     const setTimeFromSlider = (totalMinutes) => {
@@ -53,7 +58,7 @@
       const isoTime = `${String(hours).padStart(2, '0')}:${String(mins).padStart(2, '0')}`;
       shadowTimeValue = isoTime;
       if (timeValue) timeValue.textContent = isoTime;
-      if (currentMode === "shadow") map.triggerRepaint();
+      if (map && currentMode === "shadow") map.triggerRepaint();
     };
 
     if (dateSlider) {
@@ -109,13 +114,65 @@
   document.getElementById('snowAltitudeSlider').addEventListener('input', (e) => {
     snowAltitude = parseFloat(e.target.value);
     document.getElementById('snowAltitudeValue').textContent = e.target.value;
-    if (currentMode === "snow") map.triggerRepaint();
+    if (map && currentMode === "snow") map.triggerRepaint();
   });
   document.getElementById('snowSlopeSlider').addEventListener('input', (e) => {
     snowMaxSlope = parseFloat(e.target.value);
     document.getElementById('snowSlopeValue').textContent = e.target.value;
-    if (currentMode === "snow") map.triggerRepaint();
+    if (map && currentMode === "snow") map.triggerRepaint();
   });
+
+  const triggerShadowRepaint = () => {
+    if (map && currentMode === "shadow") {
+      map.triggerRepaint();
+    }
+  };
+
+  const shadowSampleCountSlider = document.getElementById('shadowSampleCountSlider');
+  const shadowSampleCountValue = document.getElementById('shadowSampleCountValue');
+  if (shadowSampleCountSlider && shadowSampleCountValue) {
+    shadowSampleCountValue.textContent = shadowSampleCount.toString();
+    shadowSampleCountSlider.addEventListener('input', (e) => {
+      shadowSampleCount = Math.max(1, parseInt(e.target.value, 10));
+      shadowSampleCountValue.textContent = shadowSampleCount.toString();
+      triggerShadowRepaint();
+    });
+  }
+
+  const shadowBlurRadiusSlider = document.getElementById('shadowBlurRadiusSlider');
+  const shadowBlurRadiusValue = document.getElementById('shadowBlurRadiusValue');
+  if (shadowBlurRadiusSlider && shadowBlurRadiusValue) {
+    shadowBlurRadiusValue.textContent = shadowBlurRadius.toFixed(2);
+    shadowBlurRadiusSlider.addEventListener('input', (e) => {
+      shadowBlurRadius = Math.max(0, parseFloat(e.target.value));
+      shadowBlurRadiusValue.textContent = shadowBlurRadius.toFixed(2);
+      triggerShadowRepaint();
+    });
+  }
+
+  const shadowRayLengthSlider = document.getElementById('shadowRayLengthSlider');
+  const shadowRayLengthValue = document.getElementById('shadowRayLengthValue');
+  if (shadowRayLengthSlider && shadowRayLengthValue) {
+    shadowRayLengthValue.textContent = shadowMaxDistance.toFixed(0);
+    shadowRayLengthSlider.addEventListener('input', (e) => {
+      shadowMaxDistance = Math.max(0, parseFloat(e.target.value));
+      shadowRayLengthValue.textContent = shadowMaxDistance.toFixed(0);
+      triggerShadowRepaint();
+    });
+  }
+
+  const samplingDistanceSlider = document.getElementById('samplingDistanceSlider');
+  const samplingDistanceValue = document.getElementById('samplingDistanceValue');
+  if (samplingDistanceSlider && samplingDistanceValue) {
+    samplingDistanceValue.textContent = samplingDistance.toFixed(2);
+    samplingDistanceSlider.addEventListener('input', (e) => {
+      samplingDistance = Math.max(0.05, parseFloat(e.target.value));
+      samplingDistanceValue.textContent = samplingDistance.toFixed(2);
+      if (map) {
+        map.triggerRepaint();
+      }
+    });
+  }
 
   // Minimal getTileMesh: create or return cached mesh for a tile
   function getTileMesh(gl, tile) {
@@ -203,7 +260,8 @@
         'u_zoom',
         'u_latrange',
         'u_lightDir',
-        'u_shadowsEnabled'
+        'u_shadowsEnabled',
+        'u_samplingDistance'
       ];
       if (currentMode === "snow") {
         uniforms.push('u_snow_altitude', 'u_snow_maxSlope');
@@ -211,7 +269,10 @@
       if (currentMode === "shadow") {
         uniforms.push(
           'u_sunDirection',
-          'u_sunAltitude'
+          'u_sunAltitude',
+          'u_shadowSampleCount',
+          'u_shadowBlurRadius',
+          'u_shadowMaxDistance'
         );
       }
       const locations = {};
@@ -357,7 +418,10 @@
         );
         gl.uniform2f(shader.locations.u_latrange, 47.0, 45.0);
         gl.uniform1f(shader.locations.u_zoom, tile.tileID.canonical.z);
-        
+        if (shader.locations.u_samplingDistance) {
+          gl.uniform1f(shader.locations.u_samplingDistance, samplingDistance);
+        }
+
         if (currentMode === "snow" && shader.locations.u_snow_altitude) {
           gl.uniform1f(shader.locations.u_snow_altitude, snowAltitude);
           gl.uniform1f(shader.locations.u_snow_maxSlope, snowMaxSlope);
@@ -368,6 +432,15 @@
             if (shader.locations.u_sunAltitude) {
               gl.uniform1f(shader.locations.u_sunAltitude, sunParams.altitude);
             }
+          }
+          if (shader.locations.u_shadowSampleCount) {
+            gl.uniform1i(shader.locations.u_shadowSampleCount, shadowSampleCount);
+          }
+          if (shader.locations.u_shadowBlurRadius) {
+            gl.uniform1f(shader.locations.u_shadowBlurRadius, shadowBlurRadius);
+          }
+          if (shader.locations.u_shadowMaxDistance) {
+            gl.uniform1f(shader.locations.u_shadowMaxDistance, shadowMaxDistance);
           }
         }
 
@@ -458,7 +531,7 @@
   };
   
   // Map setup and initialization.
-  const map = new maplibregl.Map({
+  map = new maplibregl.Map({
     container: 'map',
     style: {
       version: 8,
