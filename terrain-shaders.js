@@ -38,6 +38,26 @@ const TerrainShaders = {
       return vec2(wrappedX, clampedY);
     }
 
+    float sampleTileTexture(int index, vec2 tilePos) {
+      if (index == 0) return getElevationFromTexture(u_tileTextures[0], tilePos);
+      if (index == 1) return getElevationFromTexture(u_tileTextures[1], tilePos);
+      if (index == 2) return getElevationFromTexture(u_tileTextures[2], tilePos);
+      if (index == 3) return getElevationFromTexture(u_tileTextures[3], tilePos);
+      if (index == 4) return getElevationFromTexture(u_tileTextures[4], tilePos);
+      if (index == 5) return getElevationFromTexture(u_tileTextures[5], tilePos);
+      if (index == 6) return getElevationFromTexture(u_tileTextures[6], tilePos);
+      if (index == 7) return getElevationFromTexture(u_tileTextures[7], tilePos);
+      if (index == 8) return getElevationFromTexture(u_tileTextures[8], tilePos);
+      if (index == 9) return getElevationFromTexture(u_tileTextures[9], tilePos);
+      if (index == 10) return getElevationFromTexture(u_tileTextures[10], tilePos);
+      if (index == 11) return getElevationFromTexture(u_tileTextures[11], tilePos);
+      if (index == 12) return getElevationFromTexture(u_tileTextures[12], tilePos);
+      if (index == 13) return getElevationFromTexture(u_tileTextures[13], tilePos);
+      if (index == 14) return getElevationFromTexture(u_tileTextures[14], tilePos);
+      if (index == 15) return getElevationFromTexture(u_tileTextures[15], tilePos);
+      return 0.0;
+    }
+
     float sampleElevationFromGlobal(vec2 globalTilePos) {
       vec2 wrappedPos = wrapGlobalTilePosition(globalTilePos);
       ivec2 tileCoord = ivec2(floor(wrappedPos));
@@ -52,7 +72,7 @@ const TerrainShaders = {
           continue;
         }
         if (info.x == tileCoord.x && info.y == tileCoord.y) {
-          return getElevationFromTexture(u_tileTextures[i], tilePos);
+          return sampleTileTexture(i, tilePos);
         }
       }
 
