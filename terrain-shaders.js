@@ -308,64 +308,52 @@ const TerrainShaders = {
         precision highp float;
         precision highp int;
         ${this.commonFunctions}
-        uniform float u_shadowStepSize;
-        uniform float u_shadowHorizontalScale;
-        uniform float u_shadowLengthFactor;
         uniform vec2  u_sunDirection;
-        uniform float u_sunAltitudeTan;
         uniform float u_sunAltitude;
         in  highp vec2  v_texCoord;
         in  highp float v_elevation;
         out vec4 fragColor;
 
-        float computeShadow(vec2 pos, float currentElevation) {
+        float computeSunVisibility(vec2 pos, float currentElevation) {
           if (u_sunAltitude <= 0.0) {
             return 0.0;
           }
 
-          const int MAX_STEPS = 96;
+          const int MAX_STEPS = 512;
+          vec2 horizontalDir = normalize(u_sunDirection);
+          if (length(horizontalDir) < 1e-5) {
+            return 1.0;
+          }
+          float tileResolution = u_dimension.x;
+          vec2 texelStep = horizontalDir / tileResolution;
           float metersPerPixel = 1.5 * pow(2.0, 16.0 - u_zoom);
-          float metersPerTile  = metersPerPixel * u_dimension.x;
-          float stepMeters     = max(u_shadowStepSize, metersPerPixel);
-          float stepSize       = stepMeters / metersPerTile;
+          float maxSlope = -1e6;
 
-          vec2  lightDir2D = normalize(u_sunDirection);
-          vec2  scaledDir  = lightDir2D * u_shadowHorizontalScale * stepSize;
-          float tanAltitude = max(u_sunAltitudeTan, 0.01);
-          float elevationStep = stepMeters * tanAltitude * u_shadowLengthFactor;
-          float heightBias    = metersPerPixel * 0.75;
-          int steps = int(clamp(u_shadowLengthFactor * 48.0, 8.0, float(MAX_STEPS)));
-
-          float visibility = 1.0;
-          for (int i = 1; i < MAX_STEPS; i++) {
-            if (i >= steps) {
+          vec2 samplePos = pos + texelStep;
+          for (int i = 1; i <= MAX_STEPS; ++i) {
+            if (samplePos.x < -1.0 || samplePos.x > 2.0 || samplePos.y < -1.0 || samplePos.y > 2.0) {
               break;
             }
-            vec2 samplePos = pos + scaledDir * float(i);
-            float sampleElev = getElevationExtended(samplePos);
-            float maxElevation = currentElevation + elevationStep * float(i);
-            float diff = maxElevation - sampleElev + heightBias;
-            visibility = min(visibility, smoothstep(0.0, heightBias * 2.0, diff));
-            if (diff < 0.0) {
-              return 0.0;
+            float horizontalPixels = float(i);
+            float horizontalMeters = horizontalPixels * metersPerPixel;
+            if (horizontalMeters <= 0.0) {
+              samplePos += texelStep;
+              continue;
             }
+            float sampleElevation = getElevationExtended(samplePos);
+            float slope = (sampleElevation - currentElevation) / horizontalMeters;
+            maxSlope = max(maxSlope, slope);
+            samplePos += texelStep;
           }
-          return visibility;
+
+          float clampedAltitude = clamp(u_sunAltitude, -1.55334306, 1.55334306);
+          float sunSlope = tan(clampedAltitude);
+          return sunSlope > maxSlope ? 1.0 : 0.0;
         }
 
         void main(){
-          vec2 grad   = computeSobelGradient(v_texCoord);
-          vec3 normal = normalize(vec3(-grad, 1.0));
-          float ambient = 0.25;
-          if (u_sunAltitude <= 0.0) {
-            fragColor = vec4(vec3(ambient), 1.0);
-            return;
-          }
-          vec3 sunVector = normalize(vec3(u_sunDirection.x, -u_sunDirection.y, max(u_sunAltitudeTan, 0.01)));
-          float diffuse = max(dot(normal, sunVector), 0.0);
-          float shadow  = computeShadow(v_texCoord, v_elevation);
-          float shading = ambient + (1.0 - ambient) * diffuse * shadow;
-          fragColor    = vec4(vec3(shading), 1.0);
+          float visibility = computeSunVisibility(v_texCoord, v_elevation);
+          fragColor = vec4(vec3(visibility), 1.0);
         }`;
 
       default:

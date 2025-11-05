@@ -12,9 +12,6 @@
   let snowMaxSlope = 55; // in degrees
   let shadowDateValue = null;
   let shadowTimeValue = null;
-  const SHADOW_STEP_BASE = 0.001;
-  const SHADOW_HORIZONTAL_SCALE = 0.5;
-  const SHADOW_LENGTH_FACTOR = 0.5;
 
   function getShadowDateTime() {
     const now = new Date();
@@ -85,11 +82,9 @@
     const sunPos = SunCalc.getPosition(sunDate, center.lat, center.lng);
     const azimuth = sunPos.azimuth;
     const altitude = Math.max(sunPos.altitude, -0.01);
-    const horizontalMagnitude = Math.max(Math.cos(altitude), 0.0001);
-    const dirX = -Math.sin(azimuth) * horizontalMagnitude;
-    const dirY = Math.cos(azimuth) * horizontalMagnitude;
-    const tanAltitude = Math.tan(Math.max(altitude, 0.01));
-    return { dirX, dirY, tanAltitude, altitude };
+    const dirX = -Math.sin(azimuth);
+    const dirY = Math.cos(azimuth);
+    return { dirX, dirY, altitude };
   }
 
   function getTerrainTileManager(mapInstance) {
@@ -215,11 +210,7 @@
       }
       if (currentMode === "shadow") {
         uniforms.push(
-          'u_shadowStepSize',
-          'u_shadowHorizontalScale',
-          'u_shadowLengthFactor',
           'u_sunDirection',
-          'u_sunAltitudeTan',
           'u_sunAltitude'
         );
       }
@@ -371,16 +362,9 @@
           gl.uniform1f(shader.locations.u_snow_altitude, snowAltitude);
           gl.uniform1f(shader.locations.u_snow_maxSlope, snowMaxSlope);
         }
-        if (currentMode === "shadow" && shader.locations.u_shadowHorizontalScale) {
-          const tileZoom = tile.tileID.canonical.z;
-          const maxZoom = 16.0;
-          const adaptiveStep = SHADOW_STEP_BASE * Math.pow(2, (maxZoom - tileZoom));
-          gl.uniform1f(shader.locations.u_shadowStepSize, adaptiveStep);
-          gl.uniform1f(shader.locations.u_shadowHorizontalScale, SHADOW_HORIZONTAL_SCALE);
-          gl.uniform1f(shader.locations.u_shadowLengthFactor, SHADOW_LENGTH_FACTOR);
-          if (sunParams && shader.locations.u_sunDirection && shader.locations.u_sunAltitudeTan) {
+        if (currentMode === "shadow" && shader.locations.u_sunDirection) {
+          if (sunParams) {
             gl.uniform2f(shader.locations.u_sunDirection, sunParams.dirX, sunParams.dirY);
-            gl.uniform1f(shader.locations.u_sunAltitudeTan, sunParams.tanAltitude);
             if (shader.locations.u_sunAltitude) {
               gl.uniform1f(shader.locations.u_sunAltitude, sunParams.altitude);
             }
