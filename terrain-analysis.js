@@ -270,7 +270,11 @@
       this.map = mapInstance;
       this.gl = gl;
       this.frameCount = 0;
-      this.maxTileTextures = Math.min(gl.getParameter(gl.MAX_TEXTURE_IMAGE_UNITS) || 16, 16);
+      const maxUnits = gl.getParameter(gl.MAX_TEXTURE_IMAGE_UNITS) || 16;
+      // Reserve one texture unit for the base tile sampler (u_image) used in both
+      // the vertex and fragment shaders. The remaining units can be dedicated to
+      // the array of neighbour tile samplers.
+      this.maxTileTextures = Math.max(1, Math.min(maxUnits - 1, 15));
     },
   
     getShader(gl, shaderDescription) {

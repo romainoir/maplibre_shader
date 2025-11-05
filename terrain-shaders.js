@@ -4,7 +4,7 @@ const TerrainShaders = {
   commonFunctions: `
     precision highp float;
     precision highp int;
-    const int MAX_TILE_TEXTURES = 16;
+    const int MAX_TILE_TEXTURES = 15;
     uniform sampler2D u_image;
     uniform vec4 u_terrain_unpack;
     uniform vec2 u_dimension;
@@ -54,7 +54,6 @@ const TerrainShaders = {
       if (index == 12) return getElevationFromTexture(u_tileTextures[12], tilePos);
       if (index == 13) return getElevationFromTexture(u_tileTextures[13], tilePos);
       if (index == 14) return getElevationFromTexture(u_tileTextures[14], tilePos);
-      if (index == 15) return getElevationFromTexture(u_tileTextures[15], tilePos);
       return 0.0;
     }
 
