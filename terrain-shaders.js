@@ -4,20 +4,18 @@ const TerrainShaders = {
   commonFunctions: `
     precision highp float;
     precision highp int;
+    const int MAX_TILE_TEXTURES = 16;
     uniform sampler2D u_image;
-    uniform sampler2D u_image_left;
-    uniform sampler2D u_image_right;
-    uniform sampler2D u_image_top;
-    uniform sampler2D u_image_bottom;
-    uniform sampler2D u_image_topLeft;
-    uniform sampler2D u_image_topRight;
-    uniform sampler2D u_image_bottomLeft;
-    uniform sampler2D u_image_bottomRight;
     uniform vec4 u_terrain_unpack;
     uniform vec2 u_dimension;
     uniform float u_zoom;
     uniform vec2 u_latrange;
     uniform float u_samplingDistance;
+    uniform int u_tileCount;
+    uniform sampler2D u_tileTextures[MAX_TILE_TEXTURES];
+    uniform ivec3 u_tileCoords[MAX_TILE_TEXTURES];
+    uniform ivec2 u_tileOrigin;
+    uniform int u_worldSize;
 
     float getElevationFromTexture(sampler2D tex, vec2 pos) {
       vec3 data = texture(tex, pos).rgb * 255.0;
@@ -30,57 +28,47 @@ const TerrainShaders = {
       return clamp(pos, vec2(border), vec2(1.0 - border));
     }
 
-    float getElevationExtended(vec2 pos) {
-      vec2 tilePos = pos;
-      vec2 offset = vec2(0.0);
-      for (int i = 0; i < 2; i++) {
-        if (tilePos.x < 0.0 && offset.x > -1.5) {
-          tilePos.x += 1.0;
-          offset.x -= 1.0;
-        }
-        if (tilePos.x > 1.0 && offset.x < 1.5) {
-          tilePos.x -= 1.0;
-          offset.x += 1.0;
-        }
-        if (tilePos.y < 0.0 && offset.y > -1.5) {
-          tilePos.y += 1.0;
-          offset.y -= 1.0;
-        }
-        if (tilePos.y > 1.0 && offset.y < 1.5) {
-          tilePos.y -= 1.0;
-          offset.y += 1.0;
-        }
+    vec2 wrapGlobalTilePosition(vec2 pos) {
+      float worldSize = float(max(u_worldSize, 1));
+      float wrappedX = mod(pos.x, worldSize);
+      if (wrappedX < 0.0) {
+        wrappedX += worldSize;
       }
-      offset = clamp(offset, vec2(-1.0), vec2(1.0));
-      tilePos = clampTexCoord(tilePos);
-
-      if (offset.x == -1.0 && offset.y == -1.0) {
-        return getElevationFromTexture(u_image_topLeft, tilePos);
-      }
-      if (offset.x == 1.0 && offset.y == -1.0) {
-        return getElevationFromTexture(u_image_topRight, tilePos);
-      }
-      if (offset.x == -1.0 && offset.y == 1.0) {
-        return getElevationFromTexture(u_image_bottomLeft, tilePos);
-      }
-      if (offset.x == 1.0 && offset.y == 1.0) {
-        return getElevationFromTexture(u_image_bottomRight, tilePos);
-      }
-      if (offset.x == -1.0) {
-        return getElevationFromTexture(u_image_left, tilePos);
-      }
-      if (offset.x == 1.0) {
-        return getElevationFromTexture(u_image_right, tilePos);
-      }
-      if (offset.y == -1.0) {
-        return getElevationFromTexture(u_image_top, tilePos);
-      }
-      if (offset.y == 1.0) {
-        return getElevationFromTexture(u_image_bottom, tilePos);
-      }
-      return getElevationFromTexture(u_image, tilePos);
+      float clampedY = clamp(pos.y, 0.0, worldSize - 1e-3);
+      return vec2(wrappedX, clampedY);
     }
-    
+
+    float sampleElevationFromGlobal(vec2 globalTilePos) {
+      vec2 wrappedPos = wrapGlobalTilePosition(globalTilePos);
+      ivec2 tileCoord = ivec2(floor(wrappedPos));
+      vec2 tilePos = clampTexCoord(wrappedPos - vec2(tileCoord));
+
+      for (int i = 0; i < MAX_TILE_TEXTURES; ++i) {
+        if (i >= u_tileCount) {
+          break;
+        }
+        ivec3 info = u_tileCoords[i];
+        if (info.z == 0) {
+          continue;
+        }
+        if (info.x == tileCoord.x && info.y == tileCoord.y) {
+          return getElevationFromTexture(u_tileTextures[i], tilePos);
+        }
+      }
+
+      if (tileCoord.x == u_tileOrigin.x && tileCoord.y == u_tileOrigin.y) {
+        return getElevationFromTexture(u_image, tilePos);
+      }
+
+      vec2 localFallback = clampTexCoord(fract(wrappedPos - vec2(u_tileOrigin)));
+      return getElevationFromTexture(u_image, localFallback);
+    }
+
+    float getElevationExtended(vec2 pos) {
+      vec2 globalPos = vec2(u_tileOrigin) + pos;
+      return sampleElevationFromGlobal(globalPos);
+    }
+
     vec2 computeSobelGradient(vec2 pos) {
       vec2 safePos = clampTexCoord(pos);
       float metersPerPixel = 1.5 * pow(2.0, 16.0 - u_zoom);
@@ -310,6 +298,8 @@ const TerrainShaders = {
         ${this.commonFunctions}
         uniform vec2  u_sunDirection;
         uniform float u_sunAltitude;
+        uniform vec3  u_sunWarmColor;
+        uniform float u_sunWarmIntensity;
         uniform int   u_shadowSampleCount;
         uniform float u_shadowBlurRadius;
         uniform float u_shadowMaxDistance;
@@ -411,9 +401,13 @@ const TerrainShaders = {
           float selfShadow = 1.0 - lambert;
           float castShadow = 1.0 - visibility;
           float combinedShadow = clamp(castShadow + (1.0 - castShadow) * selfShadow, 0.0, 1.0);
-          float alpha = mix(0.12, clamp(u_shadowMaxOpacity, 0.0, 1.0), combinedShadow);
-          vec3 shadowColor = vec3(0.0);
-          fragColor = vec4(shadowColor, alpha);
+          float maxOpacity = clamp(u_shadowMaxOpacity, 0.0, 1.0);
+          float shadowIntensity = clamp(combinedShadow * maxOpacity, 0.0, 1.0);
+          float baseBrightness = mix(1.0, 0.25, shadowIntensity);
+          float warmMix = clamp(u_sunWarmIntensity, 0.0, 1.0) * shadowIntensity;
+          vec3 warmTint = mix(vec3(1.0), clamp(u_sunWarmColor, 0.0, 1.0), warmMix);
+          vec3 finalColor = baseBrightness * warmTint;
+          fragColor = vec4(finalColor, 1.0);
         }`;
 
       default:

@@ -93,7 +93,35 @@
     const altitude = Math.max(sunPos.altitude, -0.01);
     const dirX = -Math.sin(azimuth);
     const dirY = Math.cos(azimuth);
-    return { dirX, dirY, altitude };
+    const times = SunCalc.getTimes(sunDate, center.lat, center.lng);
+    const toMillis = (date) => (date instanceof Date ? date.getTime() : null);
+    const nowMs = sunDate.getTime();
+    const warmWindowMs = 90 * 60 * 1000; // 90 minutes window around sunrise/sunset
+    const sunriseMs = toMillis(times.sunrise);
+    const sunsetMs = toMillis(times.sunset);
+    const sunriseIntensity = sunriseMs
+      ? Math.max(0, 1 - Math.abs(nowMs - sunriseMs) / warmWindowMs)
+      : 0;
+    const sunsetIntensity = sunsetMs
+      ? Math.max(0, 1 - Math.abs(nowMs - sunsetMs) / warmWindowMs)
+      : 0;
+    const altitudeDeg = altitude * (180 / Math.PI);
+    const lowAltitudeFactor = altitudeDeg > 0 ? Math.max(0, 1 - altitudeDeg / 20) : 0;
+    let warmIntensity = Math.max(sunriseIntensity, sunsetIntensity, lowAltitudeFactor);
+    warmIntensity = Math.min(1, Math.pow(warmIntensity, 0.85));
+    if (altitude <= 0) {
+      warmIntensity = 0;
+    }
+
+    const isMorning = sunriseIntensity >= sunsetIntensity;
+    const deepOrange = isMorning ? [1.0, 0.68, 0.30] : [1.0, 0.60, 0.24];
+    const softYellow = [1.0, 0.82, 0.38];
+    const altitudeBlend = Math.min(1, Math.max(0, altitudeDeg / 18));
+    const warmColor = deepOrange.map((c, i) =>
+      c * (1 - altitudeBlend) + softYellow[i] * altitudeBlend
+    );
+
+    return { dirX, dirY, altitude, warmColor, warmIntensity };
   }
 
   function getTerrainTileManager(mapInstance) {
@@ -238,10 +266,11 @@
     shaderMap: new Map(),
     frameCount: 0,
     
-    onAdd(mapInstance, gl) { 
-      this.map = mapInstance; 
+    onAdd(mapInstance, gl) {
+      this.map = mapInstance;
       this.gl = gl;
       this.frameCount = 0;
+      this.maxTileTextures = Math.min(gl.getParameter(gl.MAX_TEXTURE_IMAGE_UNITS) || 16, 16);
     },
   
     getShader(gl, shaderDescription) {
@@ -282,14 +311,6 @@
         'u_projection_tile_mercator_coords',
         'u_projection_fallback_matrix',
         'u_image',
-        'u_image_left',
-        'u_image_right',
-        'u_image_top',
-        'u_image_bottom',
-        'u_image_topLeft',
-        'u_image_topRight',
-        'u_image_bottomLeft',
-        'u_image_bottomRight',
         'u_dimension',
         'u_original_vertex_count',
         'u_terrain_unpack',
@@ -298,7 +319,12 @@
         'u_latrange',
         'u_lightDir',
         'u_shadowsEnabled',
-        'u_samplingDistance'
+        'u_samplingDistance',
+        'u_tileCount',
+        'u_tileOrigin',
+        'u_tileTextures[0]',
+        'u_tileCoords[0]',
+        'u_worldSize'
       ];
       if (currentMode === "snow") {
         uniforms.push('u_snow_altitude', 'u_snow_maxSlope');
@@ -307,6 +333,8 @@
         uniforms.push(
           'u_sunDirection',
           'u_sunAltitude',
+          'u_sunWarmColor',
+          'u_sunWarmIntensity',
           'u_shadowSampleCount',
           'u_shadowBlurRadius',
           'u_shadowMaxDistance',
@@ -326,16 +354,6 @@
   
     renderTiles(gl, shader, renderableTiles, tileManager) {
       if (!tileManager) return;
-      const bindTexture = (texture, unit, uniformName) => {
-        gl.activeTexture(gl.TEXTURE0 + unit);
-        gl.bindTexture(gl.TEXTURE_2D, texture);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-        gl.uniform1i(shader.locations[uniformName], unit);
-      };
-  
       // Keep track of successfully rendered tiles for debugging
       let renderedCount = 0;
       let skippedCount = 0;
@@ -354,23 +372,20 @@
         textureCache.set(cacheKey, terrainData.texture);
       }
 
-      const neighborOffsets = [
-        { uniform: 'u_image_left', dx: -1, dy: 0 },
-        { uniform: 'u_image_right', dx: 1, dy: 0 },
-        { uniform: 'u_image_top', dx: 0, dy: -1 },
-        { uniform: 'u_image_bottom', dx: 0, dy: 1 },
-        { uniform: 'u_image_topLeft', dx: -1, dy: -1 },
-        { uniform: 'u_image_topRight', dx: 1, dy: -1 },
-        { uniform: 'u_image_bottomLeft', dx: -1, dy: 1 },
-        { uniform: 'u_image_bottomRight', dx: 1, dy: 1 }
-      ];
+      const wrapTileIndex = (value, worldSize) => {
+        let result = value % worldSize;
+        if (result < 0) result += worldSize;
+        return result;
+      };
 
-      const getNeighborTexture = (z, x, y, dx, dy, fallbackTexture) => {
-        const nx = x + dx;
-        const ny = y + dy;
-        const key = `${z}/${nx}/${ny}`;
-        if (textureCache.has(key)) return textureCache.get(key);
-        return fallbackTexture;
+      const normalizeDelta = (delta, worldSize) => {
+        if (delta > worldSize / 2) {
+          return delta - worldSize;
+        }
+        if (delta < -worldSize / 2) {
+          return delta + worldSize;
+        }
+        return delta;
       };
 
       const sunParams = currentMode === "shadow" ? computeSunParameters(this.map) : null;
@@ -411,23 +426,86 @@
         gl.vertexAttribPointer(shader.attributes.a_pos, 2, gl.SHORT, false, 4, 0);
         gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, mesh.ibo);
         
-        // Only bind texture if it exists
-        if (terrainData.texture) {
-          bindTexture(terrainData.texture, 0, 'u_image');
-          if (currentMode === "shadow") {
-            const canonical = tile.tileID.canonical;
-            neighborOffsets.forEach((neighbor, index) => {
-              const texture = getNeighborTexture(
-                canonical.z,
-                canonical.x,
-                canonical.y,
-                neighbor.dx,
-                neighbor.dy,
-                terrainData.texture
-              );
-              bindTexture(texture, index + 1, neighbor.uniform);
-            });
-          }
+        const canonical = tile.tileID.canonical;
+        const worldSize = 1 << canonical.z;
+        const baseX = wrapTileIndex(canonical.x, worldSize);
+        const baseY = Math.max(0, Math.min(worldSize - 1, canonical.y));
+        const baseXInt = Math.round(baseX);
+        const baseYInt = Math.round(baseY);
+
+        const tileEntries = [];
+        const seenKeys = new Set();
+        const maxTextures = Math.max(1, this.maxTileTextures || 1);
+
+        const addEntry = (x, y, texture, distance) => {
+          const ix = Math.round(x);
+          const iy = Math.round(y);
+          const key = `${ix}/${iy}`;
+          if (seenKeys.has(key) || !texture) return;
+          seenKeys.add(key);
+          tileEntries.push({ texture, x: ix, y: iy, distance });
+        };
+
+        addEntry(baseXInt, baseYInt, terrainData.texture, 0);
+
+        const availableEntries = [];
+        textureCache.forEach((texture, key) => {
+          if (!texture) return;
+          const parts = key.split('/').map(Number);
+          if (parts.length !== 3) return;
+          const [tz, tx, ty] = parts;
+          if (tz !== canonical.z) return;
+          const wrappedX = Math.round(wrapTileIndex(tx, worldSize));
+          const wrappedY = Math.round(Math.max(0, Math.min(worldSize - 1, ty)));
+          if (wrappedX === baseXInt && wrappedY === baseYInt) return;
+          const deltaX = normalizeDelta(wrappedX - baseXInt, worldSize);
+          const deltaY = wrappedY - baseYInt;
+          const distance = Math.max(Math.abs(deltaX), Math.abs(deltaY));
+          availableEntries.push({ texture, x: wrappedX, y: wrappedY, distance });
+        });
+
+        availableEntries.sort((a, b) => a.distance - b.distance);
+        for (const entry of availableEntries) {
+          if (tileEntries.length >= maxTextures) break;
+          addEntry(entry.x, entry.y, entry.texture, entry.distance);
+        }
+
+        const tileCount = Math.min(tileEntries.length, maxTextures);
+        const textureUnits = new Int32Array(tileCount);
+        const coordData = new Int32Array(tileCount * 3);
+
+        for (let i = 0; i < tileCount; i++) {
+          const entry = tileEntries[i];
+          const unit = i;
+          gl.activeTexture(gl.TEXTURE0 + unit);
+          gl.bindTexture(gl.TEXTURE_2D, entry.texture);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+          textureUnits[i] = unit;
+          coordData[i * 3] = entry.x;
+          coordData[i * 3 + 1] = entry.y;
+          coordData[i * 3 + 2] = 1;
+        }
+
+        if (shader.locations.u_image && terrainData.texture) {
+          gl.uniform1i(shader.locations.u_image, 0);
+        }
+        if (shader.locations['u_tileTextures[0]'] && tileCount > 0) {
+          gl.uniform1iv(shader.locations['u_tileTextures[0]'], textureUnits);
+        }
+        if (shader.locations['u_tileCoords[0]'] && tileCount > 0) {
+          gl.uniform3iv(shader.locations['u_tileCoords[0]'], coordData);
+        }
+        if (shader.locations.u_tileCount) {
+          gl.uniform1i(shader.locations.u_tileCount, tileCount);
+        }
+        if (shader.locations.u_tileOrigin) {
+          gl.uniform2i(shader.locations.u_tileOrigin, baseXInt, baseYInt);
+        }
+        if (shader.locations.u_worldSize) {
+          gl.uniform1i(shader.locations.u_worldSize, worldSize);
         }
 
         const projectionData = this.map.transform.getProjectionData({
@@ -458,7 +536,7 @@
             rgbaFactors.base
         );
         gl.uniform2f(shader.locations.u_latrange, 47.0, 45.0);
-        gl.uniform1f(shader.locations.u_zoom, tile.tileID.canonical.z);
+        gl.uniform1f(shader.locations.u_zoom, canonical.z);
         if (shader.locations.u_samplingDistance) {
           gl.uniform1f(shader.locations.u_samplingDistance, samplingDistance);
         }
@@ -472,6 +550,17 @@
             gl.uniform2f(shader.locations.u_sunDirection, sunParams.dirX, sunParams.dirY);
             if (shader.locations.u_sunAltitude) {
               gl.uniform1f(shader.locations.u_sunAltitude, sunParams.altitude);
+            }
+            if (shader.locations.u_sunWarmColor && Array.isArray(sunParams.warmColor)) {
+              gl.uniform3f(
+                shader.locations.u_sunWarmColor,
+                sunParams.warmColor[0],
+                sunParams.warmColor[1],
+                sunParams.warmColor[2]
+              );
+            }
+            if (shader.locations.u_sunWarmIntensity) {
+              gl.uniform1f(shader.locations.u_sunWarmIntensity, sunParams.warmIntensity || 0);
             }
           }
           if (shader.locations.u_shadowSampleCount) {
