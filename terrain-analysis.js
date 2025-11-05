@@ -2,7 +2,7 @@
 (function() {
   const DEBUG = true;
   const EXTENT = 8192;
-  const TILE_SIZE = 256;
+  const TILE_SIZE = 512;
   const DEM_MAX_ZOOM = 16; // native DEM max zoom
   
   // Global state variables
@@ -220,10 +220,10 @@
         gl.uniform1i(shader.locations.u_original_vertex_count, mesh.originalVertexCount);
         gl.uniform1f(shader.locations.u_terrain_exaggeration, 1.0);
         const rgbaFactors = {
-            r: 65536.0 * 0.1,
-            g: 256.0 * 0.1,
-            b: 0.1,
-            base: 10000.0
+            r: 256.0,
+            g: 1.0,
+            b: 1.0 / 256.0,
+            base: 32768.0
         };
         gl.uniform4f(
             shader.locations.u_terrain_unpack,
