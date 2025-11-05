@@ -28,6 +28,45 @@ const TerrainShaders = {
       return dot(data, vec3(256.0, 1.0, 1.0 / 256.0)) - 32768.0;
     }
 
+    float sampleElevationFromSamplers(int samplerIndex, vec2 pos) {
+      float elevation = 0.0;
+      vec2 uv = clampTexCoord(pos);
+      if (samplerIndex == 0) {
+        elevation = getElevationFromTexture(u_tileSamplers[0], uv);
+      } else if (samplerIndex == 1) {
+        elevation = getElevationFromTexture(u_tileSamplers[1], uv);
+      } else if (samplerIndex == 2) {
+        elevation = getElevationFromTexture(u_tileSamplers[2], uv);
+      } else if (samplerIndex == 3) {
+        elevation = getElevationFromTexture(u_tileSamplers[3], uv);
+      } else if (samplerIndex == 4) {
+        elevation = getElevationFromTexture(u_tileSamplers[4], uv);
+      } else if (samplerIndex == 5) {
+        elevation = getElevationFromTexture(u_tileSamplers[5], uv);
+      } else if (samplerIndex == 6) {
+        elevation = getElevationFromTexture(u_tileSamplers[6], uv);
+      } else if (samplerIndex == 7) {
+        elevation = getElevationFromTexture(u_tileSamplers[7], uv);
+      } else if (samplerIndex == 8) {
+        elevation = getElevationFromTexture(u_tileSamplers[8], uv);
+      } else if (samplerIndex == 9) {
+        elevation = getElevationFromTexture(u_tileSamplers[9], uv);
+      } else if (samplerIndex == 10) {
+        elevation = getElevationFromTexture(u_tileSamplers[10], uv);
+      } else if (samplerIndex == 11) {
+        elevation = getElevationFromTexture(u_tileSamplers[11], uv);
+      } else if (samplerIndex == 12) {
+        elevation = getElevationFromTexture(u_tileSamplers[12], uv);
+      } else if (samplerIndex == 13) {
+        elevation = getElevationFromTexture(u_tileSamplers[13], uv);
+      } else if (samplerIndex == 14) {
+        elevation = getElevationFromTexture(u_tileSamplers[14], uv);
+      } else if (samplerIndex == 15) {
+        elevation = getElevationFromTexture(u_tileSamplers[15], uv);
+      }
+      return elevation;
+    }
+
     vec2 clampTexCoord(vec2 pos) {
       float border = 1.0 / u_dimension.x;
       return clamp(pos, vec2(border), vec2(1.0 - border));
@@ -61,7 +100,7 @@ const TerrainShaders = {
       }
       vec4 transform = u_tileTransform[lookupIndex];
       vec2 uv = localBase * transform.xy + transform.zw;
-      return getElevationFromTexture(u_tileSamplers[samplerIndex], clampTexCoord(uv));
+      return sampleElevationFromSamplers(samplerIndex, uv);
     }
 
     float getElevationGlobal(vec2 globalCoord) {
