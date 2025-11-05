@@ -240,7 +240,7 @@
       delete locations['u_tileTransform[0]'];
       delete locations['u_tileSamplers[0]'];
       const attributes = { a_pos: gl.getAttribLocation(program, 'a_pos') };
-      const maxTileSamplers = 16;
+      const maxTileSamplers = 15;
       const maxTileLookups = 64;
       const tileSamplerUnits = new Int32Array(maxTileSamplers);
       for (let i = 0; i < maxTileSamplers; i++) tileSamplerUnits[i] = i;
