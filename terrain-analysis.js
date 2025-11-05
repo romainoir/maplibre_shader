@@ -1,6 +1,6 @@
 /* terrain-analysis.js */
 (function() {
-  const DEBUG = true;
+  const DEBUG = false;
   const EXTENT = 8192;
   const TILE_SIZE = 512;
   const DEM_MAX_ZOOM = 16; // native DEM max zoom
