@@ -7,11 +7,14 @@
   const DEM_MAX_ZOOM = 16; // native DEM max zoom
   const TERRAIN_FLATTEN_EXAGGERATION = 1e-5;
   const TERRAIN_SOURCE_ID = 'terrain';
+  const HILLSHADE_NATIVE_LAYER_ID = 'terrain-hillshade-native';
   let lastTerrainSpecification = { source: TERRAIN_SOURCE_ID, exaggeration: 1.0 };
   let isTerrainFlattened = false;
-  
+
   // Global state variables
   let currentMode = ""; // "normal", "avalanche", "slope", "aspect", "snow", or "shadow"
+  let hillshadeMode = 'none'; // "none", "native", or "custom"
+  let lastCustomMode = 'normal';
   const meshCache = new Map();
   let snowAltitude = 3000;
   let snowMaxSlope = 55; // in degrees
@@ -499,14 +502,17 @@
 
   // Update UI button states and slider visibility based on current mode
   function updateButtons() {
-    document.getElementById('normalBtn').classList.toggle('active', currentMode === "normal");
-    document.getElementById('avalancheBtn').classList.toggle('active', currentMode === "avalanche");
-    document.getElementById('slopeBtn').classList.toggle('active', currentMode === "slope");
-    document.getElementById('aspectBtn').classList.toggle('active', currentMode === "aspect");
-    document.getElementById('snowBtn').classList.toggle('active', currentMode === "snow");
-    document.getElementById('shadowBtn').classList.toggle('active', currentMode === "shadow");
-    document.getElementById('snowSliderContainer').style.display = (currentMode === "snow") ? "block" : "none";
-    document.getElementById('shadowControls').style.display = (currentMode === "shadow") ? "flex" : "none";
+    const isCustomActive = hillshadeMode === 'custom';
+    document.getElementById('healShadeNativeBtn').classList.toggle('active', hillshadeMode === 'native');
+    document.getElementById('healShadeCustomBtn').classList.toggle('active', isCustomActive);
+    document.getElementById('normalBtn').classList.toggle('active', isCustomActive && currentMode === "normal");
+    document.getElementById('avalancheBtn').classList.toggle('active', isCustomActive && currentMode === "avalanche");
+    document.getElementById('slopeBtn').classList.toggle('active', isCustomActive && currentMode === "slope");
+    document.getElementById('aspectBtn').classList.toggle('active', isCustomActive && currentMode === "aspect");
+    document.getElementById('snowBtn').classList.toggle('active', isCustomActive && currentMode === "snow");
+    document.getElementById('shadowBtn').classList.toggle('active', isCustomActive && currentMode === "shadow");
+    document.getElementById('snowSliderContainer').style.display = (isCustomActive && currentMode === "snow") ? "block" : "none";
+    document.getElementById('shadowControls').style.display = (isCustomActive && currentMode === "shadow") ? "flex" : "none";
   }
   
   // Slider event listeners
@@ -526,6 +532,103 @@
       map.triggerRepaint();
     }
   };
+
+  function canModifyStyle() {
+    if (!map) return false;
+    if (typeof map.isStyleLoaded === 'function') {
+      return map.isStyleLoaded();
+    }
+    return true;
+  }
+
+  function ensureCustomTerrainLayer() {
+    if (!canModifyStyle()) return;
+    if (map.getLayer('terrain-normal')) return;
+    terrainNormalLayer.frameCount = 0;
+    map.addLayer(terrainNormalLayer);
+  }
+
+  function removeCustomTerrainLayer() {
+    if (!canModifyStyle()) return;
+    if (map.getLayer('terrain-normal')) {
+      map.removeLayer('terrain-normal');
+    }
+  }
+
+  function ensureNativeHillshadeLayer() {
+    if (!canModifyStyle()) return;
+    if (map.getLayer(HILLSHADE_NATIVE_LAYER_ID)) return;
+    const layerDefinition = {
+      id: HILLSHADE_NATIVE_LAYER_ID,
+      type: 'hillshade',
+      source: TERRAIN_SOURCE_ID
+    };
+    map.addLayer(layerDefinition);
+  }
+
+  function removeNativeHillshadeLayer() {
+    if (!canModifyStyle()) return;
+    if (map.getLayer(HILLSHADE_NATIVE_LAYER_ID)) {
+      map.removeLayer(HILLSHADE_NATIVE_LAYER_ID);
+    }
+  }
+
+  function enableCustomHillshade(mode) {
+    const styleReady = canModifyStyle();
+    const nextMode = mode || lastCustomMode || 'normal';
+    lastCustomMode = nextMode;
+    currentMode = nextMode;
+    hillshadeMode = 'custom';
+    if (styleReady) {
+      removeNativeHillshadeLayer();
+      ensureCustomTerrainLayer();
+    }
+    terrainNormalLayer.shaderMap.clear();
+    updateButtons();
+    if (styleReady && map) {
+      map.triggerRepaint();
+    }
+  }
+
+  function disableCustomHillshade() {
+    const styleReady = canModifyStyle();
+    if (styleReady) {
+      removeCustomTerrainLayer();
+    }
+    if (hillshadeMode === 'custom') {
+      hillshadeMode = 'none';
+    }
+    currentMode = '';
+    terrainNormalLayer.shaderMap.clear();
+    updateButtons();
+    if (styleReady && map) {
+      map.triggerRepaint();
+    }
+  }
+
+  function setNativeHillshadeEnabled(enabled) {
+    const styleReady = canModifyStyle();
+    if (enabled) {
+      if (styleReady) {
+        removeCustomTerrainLayer();
+        removeNativeHillshadeLayer();
+        ensureNativeHillshadeLayer();
+      }
+      hillshadeMode = 'native';
+      currentMode = '';
+    } else {
+      if (styleReady) {
+        removeNativeHillshadeLayer();
+      }
+      if (hillshadeMode === 'native') {
+        hillshadeMode = 'none';
+      }
+    }
+    updateButtons();
+    if (styleReady && map) {
+      map.triggerRepaint();
+    }
+  }
 
   const shadowSampleCountSlider = document.getElementById('shadowSampleCountSlider');
   const shadowSampleCountValue = document.getElementById('shadowSampleCountValue');
@@ -1111,6 +1214,12 @@
     console.log("Terrain layer initialized");
     recomputeShadowTimeBounds();
     updateSamplingDistanceForZoom();
+    if (hillshadeMode === 'native') {
+      ensureNativeHillshadeLayer();
+    } else if (hillshadeMode === 'custom' && currentMode) {
+      ensureCustomTerrainLayer();
+    }
+    updateButtons();
   });
 
   initializeShadowDateTimeControls();
@@ -1146,96 +1255,75 @@
   map.addControl(new maplibregl.TerrainControl());
   
   // Button click event listeners to toggle rendering modes.
-  document.getElementById('normalBtn').addEventListener('click', () => { 
-    currentMode = currentMode === "normal" ? "" : "normal";
-    if (currentMode === "normal") {
-      if (!map.getLayer("terrain-normal")) {
-        terrainNormalLayer.frameCount = 0; // Reset frame counter
-        map.addLayer(terrainNormalLayer);
+  const healShadeNativeBtn = document.getElementById('healShadeNativeBtn');
+  if (healShadeNativeBtn) {
+    healShadeNativeBtn.addEventListener('click', () => {
+      const enableNative = hillshadeMode !== 'native';
+      setNativeHillshadeEnabled(enableNative);
+    });
+  }
+
+  const healShadeCustomBtn = document.getElementById('healShadeCustomBtn');
+  if (healShadeCustomBtn) {
+    healShadeCustomBtn.addEventListener('click', () => {
+      if (hillshadeMode === 'custom') {
+        disableCustomHillshade();
+      } else {
+        enableCustomHillshade();
       }
+    });
+  }
+
+  document.getElementById('normalBtn').addEventListener('click', () => {
+    if (hillshadeMode === 'custom' && currentMode === "normal") {
+      disableCustomHillshade();
     } else {
-      if (map.getLayer("terrain-normal")) map.removeLayer("terrain-normal");
+      enableCustomHillshade("normal");
     }
-    terrainNormalLayer.shaderMap.clear();
-    updateButtons();
-    map.triggerRepaint();
   });
-  
-  document.getElementById('avalancheBtn').addEventListener('click', () => { 
-    currentMode = currentMode === "avalanche" ? "" : "avalanche";
-    if (currentMode === "avalanche") {
-      if (!map.getLayer("terrain-normal")) {
-        terrainNormalLayer.frameCount = 0; // Reset frame counter
-        map.addLayer(terrainNormalLayer);
-      }
+
+  document.getElementById('avalancheBtn').addEventListener('click', () => {
+    if (hillshadeMode === 'custom' && currentMode === "avalanche") {
+      disableCustomHillshade();
     } else {
-      if (map.getLayer("terrain-normal")) map.removeLayer("terrain-normal");
+      enableCustomHillshade("avalanche");
     }
-    terrainNormalLayer.shaderMap.clear();
-    updateButtons();
-    map.triggerRepaint();
   });
-  
-  document.getElementById('slopeBtn').addEventListener('click', () => { 
-    currentMode = currentMode === "slope" ? "" : "slope";
-    if (currentMode === "slope") {
-      if (!map.getLayer("terrain-normal")) {
-        terrainNormalLayer.frameCount = 0; // Reset frame counter
-        map.addLayer(terrainNormalLayer);
-      }
+
+  document.getElementById('slopeBtn').addEventListener('click', () => {
+    if (hillshadeMode === 'custom' && currentMode === "slope") {
+      disableCustomHillshade();
     } else {
-      if (map.getLayer("terrain-normal")) map.removeLayer("terrain-normal");
+      enableCustomHillshade("slope");
     }
-    terrainNormalLayer.shaderMap.clear();
-    updateButtons();
-    map.triggerRepaint();
   });
-  
-  document.getElementById('aspectBtn').addEventListener('click', () => { 
-    currentMode = currentMode === "aspect" ? "" : "aspect";
-    if (currentMode === "aspect") {
-      if (!map.getLayer("terrain-normal")) {
-        terrainNormalLayer.frameCount = 0; // Reset frame counter
-        map.addLayer(terrainNormalLayer);
-      }
+
+  document.getElementById('aspectBtn').addEventListener('click', () => {
+    if (hillshadeMode === 'custom' && currentMode === "aspect") {
+      disableCustomHillshade();
     } else {
-      if (map.getLayer("terrain-normal")) map.removeLayer("terrain-normal");
+      enableCustomHillshade("aspect");
     }
-    terrainNormalLayer.shaderMap.clear();
-    updateButtons();
-    map.triggerRepaint();
   });
-  
-  document.getElementById('snowBtn').addEventListener('click', () => { 
-    currentMode = currentMode === "snow" ? "" : "snow";
-    if (currentMode === "snow") {
-      if (!map.getLayer("terrain-normal")) {
-        terrainNormalLayer.frameCount = 0; // Reset frame counter
-        map.addLayer(terrainNormalLayer);
-      }
+
+  document.getElementById('snowBtn').addEventListener('click', () => {
+    if (hillshadeMode === 'custom' && currentMode === "snow") {
+      disableCustomHillshade();
     } else {
-      if (map.getLayer("terrain-normal")) map.removeLayer("terrain-normal");
+      enableCustomHillshade("snow");
     }
-    terrainNormalLayer.shaderMap.clear();
-    updateButtons();
-    map.triggerRepaint();
   });
-  
-  document.getElementById('shadowBtn').addEventListener('click', () => { 
-    currentMode = currentMode === "shadow" ? "" : "shadow";
-    if (currentMode === "shadow") {
-      if (!map.getLayer("terrain-normal")) {
-        terrainNormalLayer.frameCount = 0; // Reset frame counter
-        map.addLayer(terrainNormalLayer);
-      }
+
+  document.getElementById('shadowBtn').addEventListener('click', () => {
+    if (hillshadeMode === 'custom' && currentMode === "shadow") {
+      disableCustomHillshade();
     } else {
-      if (map.getLayer("terrain-normal")) map.removeLayer("terrain-normal");
+      enableCustomHillshade("shadow");
     }
-    terrainNormalLayer.shaderMap.clear();
-    updateButtons();
-    map.triggerRepaint();
   });
-  
+
+  updateButtons();
+
   window.addEventListener('unload', () => { meshCache.clear(); });
 
 })();
