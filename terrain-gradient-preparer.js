@@ -1,6 +1,8 @@
 /* terrain-gradient-preparer.js */
 const TerrainGradientPreparer = (function() {
   const GRADIENT_MAX_NEIGHBOR_OFFSET = 2;
+  const EARTH_CIRCUMFERENCE_METERS = 40075016.68557849;
+  const MIN_METERS_PER_PIXEL = 1e-6;
   const GRADIENT_NEIGHBOR_NAME_OVERRIDES = {
     '-1,0': 'u_image_left',
     '1,0': 'u_image_right',
@@ -53,6 +55,35 @@ const TerrainGradientPreparer = (function() {
   const GRADIENT_NEIGHBOR_FETCH_BLOCK = GRADIENT_NEIGHBOR_FETCH_CASES
     ? `\n${GRADIENT_NEIGHBOR_FETCH_CASES}\n`
     : '';
+
+  function computeTileCenterLatitude(canonical) {
+    if (!canonical) {
+      return 0;
+    }
+    const z = Math.max(0, canonical.z || 0);
+    const scale = Math.pow(2, z);
+    if (!Number.isFinite(scale) || scale <= 0) {
+      return 0;
+    }
+    const mercatorY = canonical.y + 0.5;
+    const n = Math.PI - (2 * Math.PI * mercatorY) / scale;
+    return (180 / Math.PI) * Math.atan(Math.sinh(n));
+  }
+
+  function computeMetersPerPixelForTile(canonical, tileSize) {
+    if (!canonical || !Number.isFinite(tileSize) || tileSize <= 0) {
+      return MIN_METERS_PER_PIXEL;
+    }
+    const lat = computeTileCenterLatitude(canonical);
+    const latRad = lat * Math.PI / 180;
+    const cosLat = Math.cos(latRad);
+    const scale = Math.pow(2, Math.max(0, canonical.z || 0)) * tileSize;
+    if (!Number.isFinite(scale) || scale <= 0) {
+      return MIN_METERS_PER_PIXEL;
+    }
+    const metersPerPixel = (EARTH_CIRCUMFERENCE_METERS * Math.abs(cosLat)) / scale;
+    return Math.max(metersPerPixel, MIN_METERS_PER_PIXEL);
+  }
 
   class GradientPreparer {
     constructor() {
@@ -145,6 +176,7 @@ ${GRADIENT_NEIGHBOR_UNIFORM_BLOCK}uniform vec4 u_terrain_unpack;
 uniform vec2 u_dimension;
 uniform float u_zoom;
 uniform float u_samplingDistance;
+uniform float u_metersPerPixel;
 float getElevationFromTexture(sampler2D tex, vec2 pos) {
   vec4 data = texture(tex, pos) * 255.0;
   return (data.r * u_terrain_unpack[0]
@@ -203,7 +235,7 @@ ${GRADIENT_NEIGHBOR_FETCH_BLOCK}  return getElevationFromTexture(u_image, tilePo
 }
 void main() {
   float sampleDist = max(u_samplingDistance, 0.0001);
-  float metersPerPixel = 1.5 * pow(2.0, 16.0 - u_zoom);
+  float metersPerPixel = max(u_metersPerPixel, 0.0001);
   float metersPerTile = metersPerPixel * u_dimension.x;
   float delta = sampleDist / metersPerTile;
   vec2 d = vec2(delta, delta);
@@ -234,7 +266,8 @@ void main() {
         u_terrain_unpack: gl.getUniformLocation(this.program, 'u_terrain_unpack'),
         u_dimension: gl.getUniformLocation(this.program, 'u_dimension'),
         u_zoom: gl.getUniformLocation(this.program, 'u_zoom'),
-        u_samplingDistance: gl.getUniformLocation(this.program, 'u_samplingDistance')
+        u_samplingDistance: gl.getUniformLocation(this.program, 'u_samplingDistance'),
+        u_metersPerPixel: gl.getUniformLocation(this.program, 'u_metersPerPixel')
       };
       GRADIENT_NEIGHBOR_OFFSETS.forEach(({ uniform }) => {
         this.uniforms[uniform] = gl.getUniformLocation(this.program, uniform);
@@ -445,6 +478,10 @@ void main() {
         gl.uniform4f(this.uniforms.u_terrain_unpack, rgbaFactors.r, rgbaFactors.g, rgbaFactors.b, rgbaFactors.base);
         gl.uniform2f(this.uniforms.u_dimension, tileSize, tileSize);
         gl.uniform1f(this.uniforms.u_zoom, canonical.z);
+        if (this.uniforms.u_metersPerPixel !== null) {
+          const metersPerPixel = computeMetersPerPixelForTile(canonical, tileSize);
+          gl.uniform1f(this.uniforms.u_metersPerPixel, metersPerPixel);
+        }
         gl.uniform1f(this.uniforms.u_samplingDistance, samplingDistance);
 
         gl.drawElements(gl.TRIANGLES, 6, gl.UNSIGNED_SHORT, 0);

@@ -30,6 +30,37 @@
   let map;
 
   const gradientPreparer = TerrainGradientPreparer.create();
+  const EARTH_CIRCUMFERENCE_METERS = 40075016.68557849;
+  const MIN_METERS_PER_PIXEL = 1e-6;
+
+  function computeTileCenterLatitude(canonical) {
+    if (!canonical) {
+      return 0;
+    }
+    const z = Math.max(0, canonical.z || 0);
+    const scale = Math.pow(2, z);
+    if (!Number.isFinite(scale) || scale <= 0) {
+      return 0;
+    }
+    const mercatorY = canonical.y + 0.5;
+    const n = Math.PI - (2 * Math.PI * mercatorY) / scale;
+    return (180 / Math.PI) * Math.atan(Math.sinh(n));
+  }
+
+  function computeMetersPerPixelForTile(canonical, tileSize) {
+    if (!canonical || !Number.isFinite(tileSize) || tileSize <= 0) {
+      return MIN_METERS_PER_PIXEL;
+    }
+    const lat = computeTileCenterLatitude(canonical);
+    const latRad = lat * Math.PI / 180;
+    const cosLat = Math.cos(latRad);
+    const scale = Math.pow(2, Math.max(0, canonical.z || 0)) * tileSize;
+    if (!Number.isFinite(scale) || scale <= 0) {
+      return MIN_METERS_PER_PIXEL;
+    }
+    const metersPerPixel = (EARTH_CIRCUMFERENCE_METERS * Math.abs(cosLat)) / scale;
+    return Math.max(metersPerPixel, MIN_METERS_PER_PIXEL);
+  }
   let recomputeShadowTimeBounds = () => {};
 
   function clamp(value, min, max) {
@@ -643,6 +674,7 @@
         'u_terrain_unpack',
         'u_terrain_exaggeration',
         'u_zoom',
+        'u_metersPerPixel',
         'u_latrange',
         'u_lightDir',
         'u_shadowsEnabled',
@@ -808,6 +840,10 @@
         }
         if (shader.locations.u_zoom != null) {
           gl.uniform1f(shader.locations.u_zoom, canonical.z);
+        }
+        const metersPerPixel = computeMetersPerPixelForTile(canonical, tileSize);
+        if (shader.locations.u_metersPerPixel != null) {
+          gl.uniform1f(shader.locations.u_metersPerPixel, metersPerPixel);
         }
         if (shader.locations.u_samplingDistance != null) {
           gl.uniform1f(shader.locations.u_samplingDistance, samplingDistance);
