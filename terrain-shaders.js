@@ -63,6 +63,7 @@ ${SHADER_NEIGHBOR_UNIFORM_BLOCK}    uniform sampler2D u_gradient;
     uniform vec4 u_terrain_unpack;
     uniform vec2 u_dimension;
     uniform float u_zoom;
+    uniform float u_metersPerPixel;
     uniform vec2 u_latrange;
     uniform float u_samplingDistance;
     uniform int u_usePrecomputedGradient;
@@ -131,7 +132,7 @@ ${SHADER_NEIGHBOR_FETCH_BLOCK}      return getElevationFromTexture(u_image, tile
         return precomputed;
       }
       vec2 safePos = pos;
-      float metersPerPixel = 1.5 * pow(2.0, 16.0 - u_zoom);
+      float metersPerPixel = max(u_metersPerPixel, 0.0001);
       float metersPerTile  = metersPerPixel * u_dimension.x;
       float sampleDist = max(u_samplingDistance, 0.0001);
       float delta = sampleDist / metersPerTile;
@@ -428,7 +429,7 @@ ${SHADER_NEIGHBOR_FETCH_BLOCK}      return getElevationFromTexture(u_image, tile
 
           float tileResolution = u_dimension.x;
           vec2 texelStep = horizontalDir / tileResolution;
-          float metersPerPixel = 1.5 * pow(2.0, 16.0 - u_zoom);
+          float metersPerPixel = max(u_metersPerPixel, 0.0001);
           float clampedAltitude = clamp(u_sunAltitude, -1.55334306, 1.55334306);
           float sunSlope = tan(clampedAltitude);
 
