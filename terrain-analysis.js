@@ -129,7 +129,10 @@
   let shadowEdgeSoftness = 0.01;
   let shadowMaxOpacity = 0.6;
   let shadowRayStepMultiplier = 1.0;
-  const MAX_DAYLIGHT_SAMPLES = 24;
+  const MAX_DAYLIGHT_SAMPLES = 16;
+  const DAYLIGHT_SAMPLE_INTERVAL_MINUTES = 90;
+  const DAYLIGHT_MIN_EFFECTIVE_ALTITUDE = 0.034906585; // ~2 degrees in radians
+  const DAYLIGHT_MIN_SAMPLE_COUNT = 4;
   const SHADOW_BUFFER_MINUTES = 30;
   const DEFAULT_DAYLIGHT_BOUNDS = { min: 360, max: 1080 };
   let shadowTimeBounds = { min: 0, max: 1439 };
@@ -757,41 +760,102 @@
     }
 
     const spanMs = Math.max(1, sunsetMs - sunriseMs);
+    const spanMinutes = spanMs / 60000;
+    const approxCount = Math.ceil(spanMinutes / DAYLIGHT_SAMPLE_INTERVAL_MINUTES) + 1;
     const rawSampleCount = Math.min(
       MAX_DAYLIGHT_SAMPLES,
-      Math.max(4, Math.round(spanMs / (60 * 60 * 1000)) + 1)
+      Math.max(DAYLIGHT_MIN_SAMPLE_COUNT, approxCount)
     );
 
     const params = createEmptyDaylightParameters();
-    params.sampleCount = rawSampleCount;
 
-    const timesMs = new Array(rawSampleCount);
+    const candidateTimes = new Array(rawSampleCount);
     for (let i = 0; i < rawSampleCount; i++) {
-      const t = rawSampleCount === 1
-        ? sunriseMs + spanMs * 0.5
-        : sunriseMs + (spanMs * i) / (rawSampleCount - 1);
-      timesMs[i] = Math.min(Math.max(t, sunriseMs), sunsetMs);
-      const sampleDate = new Date(timesMs[i]);
-      const sunPos = SunCalc.getPosition(sampleDate, center.lat, center.lng);
-      params.sunDirections[i * 2] = -Math.sin(sunPos.azimuth);
-      params.sunDirections[i * 2 + 1] = Math.cos(sunPos.azimuth);
-      params.sunAltitudes[i] = Math.max(sunPos.altitude, -0.05);
-      const normalized = spanMs > 0 ? (timesMs[i] - sunriseMs) / spanMs : 0.5;
-      params.sampleTimes[i] = Math.min(Math.max(normalized, 0), 1);
+      if (rawSampleCount === 1) {
+        candidateTimes[i] = sunriseMs + spanMs * 0.5;
+        continue;
+      }
+      const t = i / (rawSampleCount - 1);
+      const eased = 0.5 - 0.5 * Math.cos(Math.PI * t);
+      const clampedTime = sunriseMs + eased * spanMs;
+      candidateTimes[i] = Math.min(Math.max(clampedTime, sunriseMs), sunsetMs);
     }
 
-    for (let i = 0; i < rawSampleCount; i++) {
-      const prevTime = i === 0 ? timesMs[i] : timesMs[i - 1];
-      const nextTime = i === rawSampleCount - 1 ? timesMs[i] : timesMs[i + 1];
-      let left = timesMs[i] - prevTime;
-      let right = nextTime - timesMs[i];
+    const selectedTimes = [];
+    const selectedAltitudes = [];
+    const selectedDirections = [];
+    const selectedNormalizedTimes = [];
+
+    for (let i = 0; i < candidateTimes.length; i++) {
+      const sampleDate = new Date(candidateTimes[i]);
+      const sunPos = SunCalc.getPosition(sampleDate, center.lat, center.lng);
+      const altitude = Math.max(sunPos.altitude, -0.05);
+      if (altitude <= 0) {
+        continue;
+      }
+
+      const normalized = spanMs > 0 ? (candidateTimes[i] - sunriseMs) / spanMs : 0.5;
+      const clampedNormalized = Math.min(Math.max(normalized, 0), 1);
+      const isEdgeSample = (i === 0 || i === candidateTimes.length - 1);
+      const isFirstSelection = selectedTimes.length === 0;
+      const hasFewSamples = selectedTimes.length < 2;
+
+      if (!isEdgeSample && !isFirstSelection && !hasFewSamples && altitude < DAYLIGHT_MIN_EFFECTIVE_ALTITUDE) {
+        continue;
+      }
+
+      selectedTimes.push(candidateTimes[i]);
+      selectedAltitudes.push(altitude);
+      selectedDirections.push(-Math.sin(sunPos.azimuth));
+      selectedDirections.push(Math.cos(sunPos.azimuth));
+      selectedNormalizedTimes.push(clampedNormalized);
+    }
+
+    if (!selectedTimes.length) {
+      const midday = sunriseMs + spanMs * 0.5;
+      const sunPos = SunCalc.getPosition(new Date(midday), center.lat, center.lng);
+      if (sunPos.altitude <= 0) {
+        return fallback;
+      }
+      selectedTimes.push(midday);
+      selectedAltitudes.push(Math.max(sunPos.altitude, 0));
+      selectedDirections.push(-Math.sin(sunPos.azimuth));
+      selectedDirections.push(Math.cos(sunPos.azimuth));
+      selectedNormalizedTimes.push(0.5);
+    }
+
+    const effectiveCount = Math.min(selectedTimes.length, MAX_DAYLIGHT_SAMPLES);
+    params.sampleCount = effectiveCount;
+
+    for (let i = 0; i < effectiveCount; i++) {
+      params.sunDirections[i * 2] = selectedDirections[i * 2];
+      params.sunDirections[i * 2 + 1] = selectedDirections[i * 2 + 1];
+      params.sunAltitudes[i] = selectedAltitudes[i];
+      params.sampleTimes[i] = selectedNormalizedTimes[i];
+    }
+    for (let i = effectiveCount; i < MAX_DAYLIGHT_SAMPLES; i++) {
+      params.sunDirections[i * 2] = 0;
+      params.sunDirections[i * 2 + 1] = 0;
+      params.sunAltitudes[i] = 0;
+      params.sampleTimes[i] = 0;
+    }
+
+    for (let i = 0; i < effectiveCount; i++) {
+      const currentTime = selectedTimes[i];
+      const prevTime = i === 0 ? sunriseMs : selectedTimes[i - 1];
+      const nextTime = i === effectiveCount - 1 ? sunsetMs : selectedTimes[i + 1];
+      let left = currentTime - prevTime;
+      let right = nextTime - currentTime;
       if (i === 0) {
-        left = right;
-      } else if (i === rawSampleCount - 1) {
-        right = left;
+        left = Math.max(left, right);
+      } else if (i === effectiveCount - 1) {
+        right = Math.max(right, left);
       }
       const weightMs = Math.max(0, (left + right) * 0.5);
       params.sampleWeights[i] = spanMs > 0 ? weightMs / spanMs : 0;
+    }
+    for (let i = effectiveCount; i < MAX_DAYLIGHT_SAMPLES; i++) {
+      params.sampleWeights[i] = 0;
     }
 
     return params;

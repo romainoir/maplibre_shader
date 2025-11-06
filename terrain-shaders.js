@@ -1,6 +1,6 @@
 /* terrain-shaders.js */
 const SHADER_MAX_NEIGHBOR_OFFSET = 2;
-const DAYLIGHT_SHADER_SAMPLE_CAP = 24;
+const DAYLIGHT_SHADER_SAMPLE_CAP = 16;
 const SHADER_NEIGHBOR_NAME_OVERRIDES = {
   '-1,0': 'u_image_left',
   '1,0': 'u_image_right',
@@ -545,8 +545,8 @@ ${SHADER_NEIGHBOR_FETCH_BLOCK}      return getElevationFromTexture(u_image, tile
         in  highp float v_elevation;
         out vec4 fragColor;
 
-        const int MAX_DAYLIGHT_STEPS = 512;
-        const int MAX_DAYLIGHT_KERNEL_SAMPLES = 64;
+        const int MAX_DAYLIGHT_STEPS = 320;
+        const int MAX_DAYLIGHT_KERNEL_SAMPLES = 32;
         const int MAX_DAYLIGHT_SAMPLES = ${DAYLIGHT_SHADER_SAMPLE_CAP};
 
         float traceDaylightRay(vec2 startPos, float currentElevation, vec2 texelStep, float metersPerPixel, float sunSlope) {
