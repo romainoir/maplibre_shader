@@ -136,18 +136,25 @@ ${SHADER_NEIGHBOR_FETCH_BLOCK}      return getElevationFromTexture(u_image, tile
       float metersPerTile  = metersPerPixel * u_dimension.x;
       float sampleDist = max(u_samplingDistance, 0.0001);
       float delta = sampleDist / metersPerTile;
+      float delta2 = delta * 2.0;
+      float denom = 12.0 * sampleDist;
 
-      float tl = getElevationExtended(safePos + vec2(-delta, -delta));
-      float tm = getElevationExtended(safePos + vec2(0.0,   -delta));
-      float tr = getElevationExtended(safePos + vec2(delta,  -delta));
-      float ml = getElevationExtended(safePos + vec2(-delta,  0.0));
-      float mr = getElevationExtended(safePos + vec2(delta,   0.0));
-      float bl = getElevationExtended(safePos + vec2(-delta,  delta));
-      float bm = getElevationExtended(safePos + vec2(0.0,    delta));
-      float br = getElevationExtended(safePos + vec2(delta,   delta));
+      vec2 dx1 = vec2(delta, 0.0);
+      vec2 dx2 = vec2(delta2, 0.0);
+      vec2 dy1 = vec2(0.0, delta);
+      vec2 dy2 = vec2(0.0, delta2);
 
-      float gx = (-tl + tr - 2.0 * ml + 2.0 * mr - bl + br) / (8.0 * sampleDist);
-      float gy = (-tl - 2.0 * tm - tr + bl + 2.0 * bm + br) / (8.0 * sampleDist);
+      float leftFar = getElevationExtended(safePos - dx2);
+      float leftNear = getElevationExtended(safePos - dx1);
+      float rightNear = getElevationExtended(safePos + dx1);
+      float rightFar = getElevationExtended(safePos + dx2);
+      float topFar = getElevationExtended(safePos - dy2);
+      float topNear = getElevationExtended(safePos - dy1);
+      float bottomNear = getElevationExtended(safePos + dy1);
+      float bottomFar = getElevationExtended(safePos + dy2);
+
+      float gx = (leftFar - 8.0 * leftNear + 8.0 * rightNear - rightFar) / denom;
+      float gy = (topFar - 8.0 * topNear + 8.0 * bottomNear - bottomFar) / denom;
 
       return vec2(gx, gy);
     }
