@@ -1,6 +1,41 @@
 /* terrain-analysis.js */
 (function() {
   const DEBUG = false;
+  const HillshadeDebug = window.__MapLibreHillshadeDebug || null;
+  const hillshadeDebugEnabled = (() => {
+    try {
+      const searchParams = new URLSearchParams(window.location.search || '');
+      if (searchParams.has('hillshadeDebug')) {
+        return true;
+      }
+      return typeof window.location.hash === 'string' && window.location.hash.includes('hillshadeDebug');
+    } catch (error) {
+      if (DEBUG) console.warn('Failed to evaluate hillshade debug flag', error);
+      return false;
+    }
+  })();
+
+  if (HillshadeDebug && typeof HillshadeDebug.install === 'function') {
+    HillshadeDebug.install();
+    if (hillshadeDebugEnabled) {
+      HillshadeDebug.enable();
+      console.info('Hillshade debug instrumentation enabled.');
+    }
+    window.mapLibreHillshadeDebug = Object.freeze({
+      enable(options) {
+        HillshadeDebug.enable(options);
+        if (map) {
+          HillshadeDebug.attachToMap(map, { layerId: HILLSHADE_NATIVE_LAYER_ID, sourceId: TERRAIN_SOURCE_ID });
+        }
+      },
+      disable() {
+        HillshadeDebug.disable();
+      },
+      getDrawCalls: () => HillshadeDebug.getDrawCalls(),
+      getDemEvents: () => HillshadeDebug.getDemEvents(),
+      getDemSnapshots: () => HillshadeDebug.getDemSnapshots()
+    });
+  }
   const EXTENT = 8192;
   const TILE_SIZE = 512;
   const DEM_MAX_ZOOM = 16; // native DEM max zoom
@@ -767,6 +802,12 @@
     };
     map.addLayer(layerDefinition);
     updateHillshadePaintSettingsFromMap();
+    if (HillshadeDebug && typeof HillshadeDebug.attachToMap === 'function') {
+      HillshadeDebug.attachToMap(map, {
+        layerId: HILLSHADE_NATIVE_LAYER_ID,
+        sourceId: TERRAIN_SOURCE_ID
+      });
+    }
   }
 
   function removeNativeHillshadeLayer() {
@@ -1411,6 +1452,10 @@
     fadeDuration: 500
   });
 
+  if (HillshadeDebug && typeof HillshadeDebug.attachToMap === 'function') {
+    HillshadeDebug.attachToMap(map, { sourceId: TERRAIN_SOURCE_ID, autoHookLayer: false });
+  }
+
   const originalSetTerrain = map.setTerrain.bind(map);
   const originalGetTerrain = typeof map.getTerrain === 'function'
     ? map.getTerrain.bind(map)
@@ -1458,6 +1503,12 @@
     console.log("Terrain layer initialized");
     recomputeShadowTimeBounds();
     updateSamplingDistanceForZoom();
+    if (HillshadeDebug && typeof HillshadeDebug.attachToMap === 'function') {
+      HillshadeDebug.attachToMap(map, {
+        layerId: hillshadeMode === 'native' ? HILLSHADE_NATIVE_LAYER_ID : null,
+        sourceId: TERRAIN_SOURCE_ID
+      });
+    }
     if (hillshadeMode === 'native') {
       ensureNativeHillshadeLayer();
     } else if (hillshadeMode === 'custom' && currentMode) {
