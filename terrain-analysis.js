@@ -124,10 +124,35 @@
     return { dirX, dirY, altitude, warmColor, warmIntensity };
   }
 
+  let cachedTerrainInterface = null;
+
+  function getTerrainInterface(mapInstance) {
+    if (!mapInstance) {
+      return cachedTerrainInterface && cachedTerrainInterface.tileManager
+        ? cachedTerrainInterface
+        : null;
+    }
+
+    const fromPublicAPI = mapInstance.terrain;
+    if (fromPublicAPI && fromPublicAPI.tileManager) {
+      cachedTerrainInterface = fromPublicAPI;
+      return fromPublicAPI;
+    }
+
+    const painterTerrain = mapInstance.painter && mapInstance.painter.terrain;
+    if (painterTerrain && painterTerrain.tileManager) {
+      cachedTerrainInterface = painterTerrain;
+      return painterTerrain;
+    }
+
+    return cachedTerrainInterface && cachedTerrainInterface.tileManager
+      ? cachedTerrainInterface
+      : null;
+  }
+
   function getTerrainTileManager(mapInstance) {
-    if (!mapInstance || !mapInstance.terrain) return null;
-    const terrain = mapInstance.terrain;
-    return terrain.tileManager || null;
+    const terrainInterface = getTerrainInterface(mapInstance);
+    return terrainInterface ? terrainInterface.tileManager || null : null;
   }
 
   // Update UI button states and slider visibility based on current mode
@@ -356,8 +381,9 @@
       return result;
     },
   
-    renderTiles(gl, shader, renderableTiles, tileManager) {
-      if (!tileManager) return;
+    renderTiles(gl, shader, renderableTiles, terrainInterface) {
+      if (!terrainInterface || !terrainInterface.tileManager) return;
+      const tileManager = terrainInterface.tileManager;
       // Keep track of successfully rendered tiles for debugging
       let renderedCount = 0;
       let skippedCount = 0;
@@ -368,7 +394,9 @@
       for (const tile of renderableTiles) {
         const sourceTile = tileManager.getSourceTile(tile.tileID, true);
         if (!sourceTile || sourceTile.tileID.key !== tile.tileID.key) continue;
-        const terrainData = this.map.terrain.getTerrainData(tile.tileID);
+        const terrainData = terrainInterface.getTerrainData
+          ? terrainInterface.getTerrainData(tile.tileID)
+          : null;
         if (!terrainData || !terrainData.texture || terrainData.fallback) continue;
         const canonical = tile.tileID.canonical;
         const cacheKey = `${canonical.z}/${canonical.x}/${canonical.y}`;
@@ -380,16 +408,6 @@
         let result = value % worldSize;
         if (result < 0) result += worldSize;
         return result;
-      };
-
-      const normalizeDelta = (delta, worldSize) => {
-        if (delta > worldSize / 2) {
-          return delta - worldSize;
-        }
-        if (delta < -worldSize / 2) {
-          return delta + worldSize;
-        }
-        return delta;
       };
 
       const sunParams = currentMode === "shadow" ? computeSunParameters(this.map) : null;
@@ -406,7 +424,10 @@
         }
         
         // Get terrain data for the exact tile
-        const terrainData = terrainDataCache.get(tile.tileID.key) || this.map.terrain.getTerrainData(tile.tileID);
+        let terrainData = terrainDataCache.get(tile.tileID.key) || null;
+        if (!terrainData && terrainInterface && terrainInterface.getTerrainData) {
+          terrainData = terrainInterface.getTerrainData(tile.tileID);
+        }
 
         // Skip if no terrain data or texture
         if (!terrainData || !terrainData.texture) {
@@ -441,37 +462,39 @@
         const seenKeys = new Set();
         const maxTextures = Math.max(1, this.maxTileTextures || 1);
 
-        const addEntry = (x, y, texture, distance) => {
+        const addEntry = (x, y, texture) => {
           const ix = Math.round(x);
           const iy = Math.round(y);
           const key = `${ix}/${iy}`;
           if (seenKeys.has(key) || !texture) return;
           seenKeys.add(key);
-          tileEntries.push({ texture, x: ix, y: iy, distance });
+          tileEntries.push({ texture, x: ix, y: iy });
         };
 
-        addEntry(baseXInt, baseYInt, terrainData.texture, 0);
+        addEntry(baseXInt, baseYInt, terrainData.texture);
 
-        const availableEntries = [];
-        textureCache.forEach((texture, key) => {
-          if (!texture) return;
-          const parts = key.split('/').map(Number);
-          if (parts.length !== 3) return;
-          const [tz, tx, ty] = parts;
-          if (tz !== canonical.z) return;
-          const wrappedX = Math.round(wrapTileIndex(tx, worldSize));
-          const wrappedY = Math.round(Math.max(0, Math.min(worldSize - 1, ty)));
-          if (wrappedX === baseXInt && wrappedY === baseYInt) return;
-          const deltaX = normalizeDelta(wrappedX - baseXInt, worldSize);
-          const deltaY = wrappedY - baseYInt;
-          const distance = Math.max(Math.abs(deltaX), Math.abs(deltaY));
-          availableEntries.push({ texture, x: wrappedX, y: wrappedY, distance });
-        });
+        const lookupTexture = (x, y) => {
+          const wrappedX = Math.round(wrapTileIndex(x, worldSize));
+          const clampedY = Math.round(Math.max(0, Math.min(worldSize - 1, y)));
+          const key = `${canonical.z}/${wrappedX}/${clampedY}`;
+          return textureCache.get(key) || null;
+        };
 
-        availableEntries.sort((a, b) => a.distance - b.distance);
-        for (const entry of availableEntries) {
+        for (let radius = 1; tileEntries.length < maxTextures && radius <= maxTextures; radius++) {
+          let filled = false;
+          for (let dx = -radius; dx <= radius; dx++) {
+            for (let dy = -radius; dy <= radius; dy++) {
+              if (Math.max(Math.abs(dx), Math.abs(dy)) !== radius) continue;
+              const neighborX = baseXInt + dx;
+              const neighborY = baseYInt + dy;
+              const texture = lookupTexture(neighborX, neighborY);
+              if (!texture) continue;
+              addEntry(neighborX, neighborY, texture);
+              if (tileEntries.length >= maxTextures) { filled = true; break; }
+            }
+            if (filled) break;
+          }
           if (tileEntries.length >= maxTextures) break;
-          addEntry(entry.x, entry.y, entry.texture, entry.distance);
         }
 
         const tileCount = Math.min(tileEntries.length, maxTextures);
@@ -610,7 +633,8 @@
       }
       
       // Wait for tiles to stabilize after rapid movement
-      const tileManager = getTerrainTileManager(this.map);
+      const terrainInterface = getTerrainInterface(this.map);
+      const tileManager = terrainInterface ? terrainInterface.tileManager : null;
       if (!tileManager) {
         if (DEBUG) console.warn("Tile manager not available; skipping render");
         this.map.triggerRepaint();
@@ -643,7 +667,7 @@
         gl.depthFunc(gl.LESS);
         gl.colorMask(false, false, false, false);
         gl.clear(gl.DEPTH_BUFFER_BIT);
-        this.renderTiles(gl, shader, renderableTiles, tileManager);
+        this.renderTiles(gl, shader, renderableTiles, terrainInterface);
 
         gl.colorMask(true, true, true, true);
         gl.depthFunc(gl.LEQUAL);
@@ -654,7 +678,7 @@
           gl.ONE,
           gl.ONE_MINUS_SRC_ALPHA
         );
-        this.renderTiles(gl, shader, renderableTiles, tileManager);
+        this.renderTiles(gl, shader, renderableTiles, terrainInterface);
       } else {
         gl.depthFunc(gl.LEQUAL);
         gl.clear(gl.DEPTH_BUFFER_BIT);
@@ -669,7 +693,7 @@
         } else {
           gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
         }
-        this.renderTiles(gl, shader, renderableTiles, tileManager);
+        this.renderTiles(gl, shader, renderableTiles, terrainInterface);
       }
 
       gl.disable(gl.BLEND);
