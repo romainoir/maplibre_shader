@@ -22,6 +22,18 @@
   let shadowTimeValue = null;
   let map;
 
+  const gradientPreparer = TerrainGradientPreparer.create();
+  const NEIGHBOR_OFFSETS = [
+    { uniform: 'u_image_left', dx: -1, dy: 0 },
+    { uniform: 'u_image_right', dx: 1, dy: 0 },
+    { uniform: 'u_image_top', dx: 0, dy: -1 },
+    { uniform: 'u_image_bottom', dx: 0, dy: 1 },
+    { uniform: 'u_image_topLeft', dx: -1, dy: -1 },
+    { uniform: 'u_image_topRight', dx: 1, dy: -1 },
+    { uniform: 'u_image_bottomLeft', dx: -1, dy: 1 },
+    { uniform: 'u_image_bottomRight', dx: 1, dy: 1 }
+  ];
+
   function getShadowDateTime() {
     const now = new Date();
     const dateStr = shadowDateValue || now.toISOString().slice(0, 10);
@@ -258,6 +270,7 @@
     samplingDistanceSlider.addEventListener('input', (e) => {
       samplingDistance = Math.max(0.05, parseFloat(e.target.value));
       samplingDistanceValue.textContent = samplingDistance.toFixed(2);
+      gradientPreparer.invalidateAll();
       if (map) {
         map.triggerRepaint();
       }
@@ -295,6 +308,7 @@
       this.map = mapInstance;
       this.gl = gl;
       this.frameCount = 0;
+      gradientPreparer.initialize(gl);
     },
   
     getShader(gl, shaderDescription) {
@@ -343,6 +357,8 @@
         'u_image_topRight',
         'u_image_bottomLeft',
         'u_image_bottomRight',
+        'u_gradient',
+        'u_usePrecomputedGradient',
         'u_dimension',
         'u_original_vertex_count',
         'u_terrain_unpack',
@@ -379,64 +395,34 @@
       return result;
     },
   
-    renderTiles(gl, shader, renderableTiles, terrainInterface) {
-      if (!terrainInterface || !terrainInterface.tileManager) return;
-      const tileManager = terrainInterface.tileManager;
-      // Keep track of successfully rendered tiles for debugging
+    renderTiles(gl, shader, renderableTiles, terrainInterface, tileManager, terrainDataCache, textureCache) {
+      if (!terrainInterface || !tileManager) return;
       let renderedCount = 0;
       let skippedCount = 0;
-
-      const terrainDataCache = new Map();
-      const textureCache = new Map();
-
-      for (const tile of renderableTiles) {
-        const sourceTile = tileManager.getSourceTile(tile.tileID, true);
-        if (!sourceTile || sourceTile.tileID.key !== tile.tileID.key) continue;
-        const terrainData = terrainInterface && terrainInterface.getTerrainData
-          ? terrainInterface.getTerrainData(tile.tileID)
-          : null;
-        if (!terrainData || !terrainData.texture || terrainData.fallback) continue;
-        const canonical = tile.tileID.canonical;
-        const cacheKey = `${canonical.z}/${canonical.x}/${canonical.y}`;
-        terrainDataCache.set(tile.tileID.key, terrainData);
-        textureCache.set(cacheKey, terrainData.texture);
-      }
-
-      const neighborOffsets = [
-        { uniform: 'u_image_left', dx: -1, dy: 0 },
-        { uniform: 'u_image_right', dx: 1, dy: 0 },
-        { uniform: 'u_image_top', dx: 0, dy: -1 },
-        { uniform: 'u_image_bottom', dx: 0, dy: 1 },
-        { uniform: 'u_image_topLeft', dx: -1, dy: -1 },
-        { uniform: 'u_image_topRight', dx: 1, dy: -1 },
-        { uniform: 'u_image_bottomLeft', dx: -1, dy: 1 },
-        { uniform: 'u_image_bottomRight', dx: 1, dy: 1 }
-      ];
 
       const getNeighborTexture = (z, x, y, dx, dy, fallbackTexture) => {
         const nx = x + dx;
         const ny = y + dy;
         const key = `${z}/${nx}/${ny}`;
-        if (textureCache.has(key)) return textureCache.get(key);
-        return fallbackTexture;
+        return textureCache.has(key) ? textureCache.get(key) : fallbackTexture;
       };
 
       const bindTexture = (texture, unit, uniformName) => {
-        if (!shader.locations[uniformName]) return;
+        const location = shader.locations[uniformName];
+        if (!location || !texture) return;
         gl.activeTexture(gl.TEXTURE0 + unit);
         gl.bindTexture(gl.TEXTURE_2D, texture);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-        gl.uniform1i(shader.locations[uniformName], unit);
+        gl.uniform1i(location, unit);
       };
 
       const sunParams = currentMode === "shadow" ? computeSunParameters(this.map) : null;
 
       for (const tile of renderableTiles) {
         const sourceTile = tileManager.getSourceTile(tile.tileID, true);
-
         if (!sourceTile || sourceTile.tileID.key !== tile.tileID.key) {
           if (DEBUG) console.log(`Skipping tile ${tile.tileID.key}: source tile mismatch or overscaled`);
           skippedCount++;
@@ -469,11 +455,12 @@
         gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, mesh.ibo);
 
         const canonical = tile.tileID.canonical;
+        const tileSize = sourceTile.dem && sourceTile.dem.dim ? sourceTile.dem.dim : TILE_SIZE;
 
         if (terrainData.texture && shader.locations.u_image) {
           bindTexture(terrainData.texture, 0, 'u_image');
           if (currentMode === "shadow") {
-            neighborOffsets.forEach((neighbor, index) => {
+            NEIGHBOR_OFFSETS.forEach((neighbor, index) => {
               const texture = getNeighborTexture(
                 canonical.z,
                 canonical.x,
@@ -482,25 +469,34 @@
                 neighbor.dy,
                 terrainData.texture
               );
-              if (texture) {
-                bindTexture(texture, index + 1, neighbor.uniform);
-              }
+              bindTexture(texture, index + 1, neighbor.uniform);
             });
           }
+        }
+
+        const gradientTexture = gradientPreparer.getTexture(tile.tileID.key);
+        const hasGradient = !!gradientTexture;
+        if (shader.locations.u_usePrecomputedGradient) {
+          gl.uniform1i(shader.locations.u_usePrecomputedGradient, hasGradient ? 1 : 0);
+        }
+        if (hasGradient) {
+          bindTexture(gradientTexture, 9, 'u_gradient');
+        } else if (shader.locations.u_gradient) {
+          gl.uniform1i(shader.locations.u_gradient, 0);
         }
 
         const projectionData = this.map.transform.getProjectionData({
           overscaledTileID: tile.tileID,
           applyGlobeMatrix: true
         });
-        
+
         gl.uniform4f(shader.locations.u_projection_tile_mercator_coords,
           ...projectionData.tileMercatorCoords);
         gl.uniform4f(shader.locations.u_projection_clipping_plane, ...projectionData.clippingPlane);
         gl.uniform1f(shader.locations.u_projection_transition, projectionData.projectionTransition);
         gl.uniformMatrix4fv(shader.locations.u_projection_matrix, false, projectionData.mainMatrix);
         gl.uniformMatrix4fv(shader.locations.u_projection_fallback_matrix, false, projectionData.fallbackMatrix);
-        gl.uniform2f(shader.locations.u_dimension, TILE_SIZE, TILE_SIZE);
+        gl.uniform2f(shader.locations.u_dimension, tileSize, tileSize);
         gl.uniform1i(shader.locations.u_original_vertex_count, mesh.originalVertexCount);
         gl.uniform1f(shader.locations.u_terrain_exaggeration, 1.0);
         const rgbaFactors = {
@@ -541,11 +537,11 @@
               );
             }
             if (shader.locations.u_sunWarmIntensity) {
-              gl.uniform1f(shader.locations.u_sunWarmIntensity, sunParams.warmIntensity || 0);
+              gl.uniform1f(shader.locations.u_sunWarmIntensity, sunParams.warmIntensity);
             }
           }
           if (shader.locations.u_shadowSampleCount) {
-            gl.uniform1i(shader.locations.u_shadowSampleCount, shadowSampleCount);
+            gl.uniform1i(shader.locations.u_shadowSampleCount, Math.floor(shadowSampleCount));
           }
           if (shader.locations.u_shadowBlurRadius) {
             gl.uniform1f(shader.locations.u_shadowBlurRadius, shadowBlurRadius);
@@ -570,12 +566,12 @@
         gl.drawElements(gl.TRIANGLES, mesh.indexCount, gl.UNSIGNED_SHORT, 0);
         renderedCount++;
       }
-      
+
       if (DEBUG && (renderedCount > 0 || skippedCount > 0)) {
         console.log(`Rendered ${renderedCount} tiles, skipped ${skippedCount} tiles`);
       }
-    },
-  
+    }
+
     render(gl, matrix) {
       // Increment frame counter
       this.frameCount++;
@@ -600,10 +596,6 @@
         return;
       }
 
-      const shader = this.getShader(gl, matrix.shaderData);
-      if (!shader) return;
-      gl.useProgram(shader.program);
-
       const renderableTiles = tileManager.getRenderableTiles();
 
       // Don't render if we have no tiles
@@ -612,16 +604,46 @@
         this.map.triggerRepaint();
         return;
       }
-      
+
+      const terrainDataCache = new Map();
+      const textureCache = new Map();
+      for (const tile of renderableTiles) {
+        const sourceTile = tileManager.getSourceTile(tile.tileID, true);
+        if (!sourceTile || sourceTile.tileID.key !== tile.tileID.key) continue;
+        const terrainData = terrainInterface && terrainInterface.getTerrainData
+          ? terrainInterface.getTerrainData(tile.tileID)
+          : null;
+        if (!terrainData || !terrainData.texture || terrainData.fallback) continue;
+        const canonical = tile.tileID.canonical;
+        const cacheKey = `${canonical.z}/${canonical.x}/${canonical.y}`;
+        terrainDataCache.set(tile.tileID.key, terrainData);
+        textureCache.set(cacheKey, terrainData.texture);
+      }
+
+      gradientPreparer.prepare({
+        gl,
+        renderableTiles,
+        tileManager,
+        terrainInterface,
+        terrainDataCache,
+        textureCache,
+        neighborOffsets: NEIGHBOR_OFFSETS,
+        samplingDistance
+      });
+
+      const shader = this.getShader(gl, matrix.shaderData);
+      if (!shader) return;
+      gl.useProgram(shader.program);
+
       gl.enable(gl.CULL_FACE);
       gl.cullFace(gl.BACK);
       gl.enable(gl.DEPTH_TEST);
-      
+
       if (currentMode === "snow" || currentMode === "slope") {
         gl.depthFunc(gl.LESS);
         gl.colorMask(false, false, false, false);
         gl.clear(gl.DEPTH_BUFFER_BIT);
-        this.renderTiles(gl, shader, renderableTiles, terrainInterface);
+        this.renderTiles(gl, shader, renderableTiles, terrainInterface, tileManager, terrainDataCache, textureCache);
 
         gl.colorMask(true, true, true, true);
         gl.depthFunc(gl.LEQUAL);
@@ -632,7 +654,7 @@
           gl.ONE,
           gl.ONE_MINUS_SRC_ALPHA
         );
-        this.renderTiles(gl, shader, renderableTiles, terrainInterface);
+        this.renderTiles(gl, shader, renderableTiles, terrainInterface, tileManager, terrainDataCache, textureCache);
       } else {
         gl.depthFunc(gl.LEQUAL);
         gl.clear(gl.DEPTH_BUFFER_BIT);
@@ -647,7 +669,7 @@
         } else {
           gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
         }
-        this.renderTiles(gl, shader, renderableTiles, terrainInterface);
+        this.renderTiles(gl, shader, renderableTiles, terrainInterface, tileManager, terrainDataCache, textureCache);
       }
 
       gl.disable(gl.BLEND);

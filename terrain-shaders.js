@@ -13,11 +13,13 @@ const TerrainShaders = {
     uniform sampler2D u_image_topRight;
     uniform sampler2D u_image_bottomLeft;
     uniform sampler2D u_image_bottomRight;
+    uniform sampler2D u_gradient;
     uniform vec4 u_terrain_unpack;
     uniform vec2 u_dimension;
     uniform float u_zoom;
     uniform vec2 u_latrange;
     uniform float u_samplingDistance;
+    uniform int u_usePrecomputedGradient;
 
     float getElevationFromTexture(sampler2D tex, vec2 pos) {
       vec3 data = texture(tex, pos).rgb * 255.0;
@@ -82,6 +84,11 @@ const TerrainShaders = {
     }
 
     vec2 computeSobelGradient(vec2 pos) {
+      if (u_usePrecomputedGradient == 1) {
+        vec2 safePos = clampTexCoord(pos);
+        vec2 precomputed = texture(u_gradient, safePos).rg;
+        return precomputed;
+      }
       vec2 safePos = pos;
       float metersPerPixel = 1.5 * pow(2.0, 16.0 - u_zoom);
       float metersPerTile  = metersPerPixel * u_dimension.x;
