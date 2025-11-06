@@ -116,7 +116,7 @@
   }
 
   // Global state variables
-  let currentMode = ""; // "hillshade", "normal", "avalanche", "slope", "aspect", "snow", or "shadow"
+  let currentMode = ""; // "hillshade", "normal", "avalanche", "slope", "aspect", "snow", "shadow", or "daylight"
   let hillshadeMode = 'none'; // "none", "native", or "custom"
   let lastCustomMode = 'hillshade';
   const meshCache = new Map();
@@ -129,6 +129,10 @@
   let shadowEdgeSoftness = 0.01;
   let shadowMaxOpacity = 0.6;
   let shadowRayStepMultiplier = 1.0;
+  const MAX_DAYLIGHT_SAMPLES = 16;
+  const DAYLIGHT_SAMPLE_INTERVAL_MINUTES = 90;
+  const DAYLIGHT_MIN_EFFECTIVE_ALTITUDE = 0.034906585; // ~2 degrees in radians
+  const DAYLIGHT_MIN_SAMPLE_COUNT = 4;
   const SHADOW_BUFFER_MINUTES = 30;
   const DEFAULT_DAYLIGHT_BOUNDS = { min: 360, max: 1080 };
   let shadowTimeBounds = { min: 0, max: 1439 };
@@ -587,7 +591,7 @@
         timeSlider.value = minutes;
       }
       if (timeValue) timeValue.textContent = isoTime;
-      if (map && currentMode === "shadow") map.triggerRepaint();
+      if (map && (currentMode === "shadow" || currentMode === "daylight")) map.triggerRepaint();
     };
 
     const updateShadowTimeBounds = (preferredMinutes = null) => {
@@ -644,7 +648,7 @@
       shadowDateValue = isoDate;
       if (dateValue) dateValue.textContent = isoDate;
       updateShadowTimeBounds();
-      if (map && currentMode === "shadow") map.triggerRepaint();
+      if (map && (currentMode === "shadow" || currentMode === "daylight")) map.triggerRepaint();
     };
 
     if (dateSlider) {
@@ -710,6 +714,151 @@
     );
 
     return { dirX, dirY, altitude, warmColor, warmIntensity };
+  }
+
+  function createEmptyDaylightParameters() {
+    return {
+      sampleCount: 0,
+      sunDirections: new Float32Array(MAX_DAYLIGHT_SAMPLES * 2),
+      sunAltitudes: new Float32Array(MAX_DAYLIGHT_SAMPLES),
+      sampleWeights: new Float32Array(MAX_DAYLIGHT_SAMPLES),
+      sampleTimes: new Float32Array(MAX_DAYLIGHT_SAMPLES)
+    };
+  }
+
+  function computeDaylightParameters(mapInstance) {
+    if (!mapInstance) {
+      return createEmptyDaylightParameters();
+    }
+
+    const center = mapInstance.getCenter();
+    const baseDate = getShadowDateTime();
+    const times = SunCalc.getTimes(baseDate, center.lat, center.lng);
+    const sunriseDate = times.sunrise instanceof Date ? times.sunrise : null;
+    const sunsetDate = times.sunset instanceof Date ? times.sunset : null;
+
+    const fallback = createEmptyDaylightParameters();
+
+    let sunriseMs = sunriseDate ? sunriseDate.getTime() : null;
+    let sunsetMs = sunsetDate ? sunsetDate.getTime() : null;
+
+    if (sunriseMs === null || sunsetMs === null || !Number.isFinite(sunriseMs) || !Number.isFinite(sunsetMs) || sunsetMs <= sunriseMs) {
+      const midday = new Date(baseDate);
+      midday.setHours(12, 0, 0, 0);
+      const sunPos = SunCalc.getPosition(midday, center.lat, center.lng);
+      const altitude = Math.max(sunPos.altitude, 0);
+      if (altitude <= 0) {
+        return fallback;
+      }
+      fallback.sampleCount = 1;
+      fallback.sunDirections[0] = -Math.sin(sunPos.azimuth);
+      fallback.sunDirections[1] = Math.cos(sunPos.azimuth);
+      fallback.sunAltitudes[0] = altitude;
+      fallback.sampleWeights[0] = 1;
+      fallback.sampleTimes[0] = 0.5;
+      return fallback;
+    }
+
+    const spanMs = Math.max(1, sunsetMs - sunriseMs);
+    const spanMinutes = spanMs / 60000;
+    const approxCount = Math.ceil(spanMinutes / DAYLIGHT_SAMPLE_INTERVAL_MINUTES) + 1;
+    const rawSampleCount = Math.min(
+      MAX_DAYLIGHT_SAMPLES,
+      Math.max(DAYLIGHT_MIN_SAMPLE_COUNT, approxCount)
+    );
+
+    const params = createEmptyDaylightParameters();
+
+    const candidateTimes = new Array(rawSampleCount);
+    for (let i = 0; i < rawSampleCount; i++) {
+      if (rawSampleCount === 1) {
+        candidateTimes[i] = sunriseMs + spanMs * 0.5;
+        continue;
+      }
+      const t = i / (rawSampleCount - 1);
+      const eased = 0.5 - 0.5 * Math.cos(Math.PI * t);
+      const clampedTime = sunriseMs + eased * spanMs;
+      candidateTimes[i] = Math.min(Math.max(clampedTime, sunriseMs), sunsetMs);
+    }
+
+    const selectedTimes = [];
+    const selectedAltitudes = [];
+    const selectedDirections = [];
+    const selectedNormalizedTimes = [];
+
+    for (let i = 0; i < candidateTimes.length; i++) {
+      const sampleDate = new Date(candidateTimes[i]);
+      const sunPos = SunCalc.getPosition(sampleDate, center.lat, center.lng);
+      const altitude = Math.max(sunPos.altitude, -0.05);
+      if (altitude <= 0) {
+        continue;
+      }
+
+      const normalized = spanMs > 0 ? (candidateTimes[i] - sunriseMs) / spanMs : 0.5;
+      const clampedNormalized = Math.min(Math.max(normalized, 0), 1);
+      const isEdgeSample = (i === 0 || i === candidateTimes.length - 1);
+      const isFirstSelection = selectedTimes.length === 0;
+      const hasFewSamples = selectedTimes.length < 2;
+
+      if (!isEdgeSample && !isFirstSelection && !hasFewSamples && altitude < DAYLIGHT_MIN_EFFECTIVE_ALTITUDE) {
+        continue;
+      }
+
+      selectedTimes.push(candidateTimes[i]);
+      selectedAltitudes.push(altitude);
+      selectedDirections.push(-Math.sin(sunPos.azimuth));
+      selectedDirections.push(Math.cos(sunPos.azimuth));
+      selectedNormalizedTimes.push(clampedNormalized);
+    }
+
+    if (!selectedTimes.length) {
+      const midday = sunriseMs + spanMs * 0.5;
+      const sunPos = SunCalc.getPosition(new Date(midday), center.lat, center.lng);
+      if (sunPos.altitude <= 0) {
+        return fallback;
+      }
+      selectedTimes.push(midday);
+      selectedAltitudes.push(Math.max(sunPos.altitude, 0));
+      selectedDirections.push(-Math.sin(sunPos.azimuth));
+      selectedDirections.push(Math.cos(sunPos.azimuth));
+      selectedNormalizedTimes.push(0.5);
+    }
+
+    const effectiveCount = Math.min(selectedTimes.length, MAX_DAYLIGHT_SAMPLES);
+    params.sampleCount = effectiveCount;
+
+    for (let i = 0; i < effectiveCount; i++) {
+      params.sunDirections[i * 2] = selectedDirections[i * 2];
+      params.sunDirections[i * 2 + 1] = selectedDirections[i * 2 + 1];
+      params.sunAltitudes[i] = selectedAltitudes[i];
+      params.sampleTimes[i] = selectedNormalizedTimes[i];
+    }
+    for (let i = effectiveCount; i < MAX_DAYLIGHT_SAMPLES; i++) {
+      params.sunDirections[i * 2] = 0;
+      params.sunDirections[i * 2 + 1] = 0;
+      params.sunAltitudes[i] = 0;
+      params.sampleTimes[i] = 0;
+    }
+
+    for (let i = 0; i < effectiveCount; i++) {
+      const currentTime = selectedTimes[i];
+      const prevTime = i === 0 ? sunriseMs : selectedTimes[i - 1];
+      const nextTime = i === effectiveCount - 1 ? sunsetMs : selectedTimes[i + 1];
+      let left = currentTime - prevTime;
+      let right = nextTime - currentTime;
+      if (i === 0) {
+        left = Math.max(left, right);
+      } else if (i === effectiveCount - 1) {
+        right = Math.max(right, left);
+      }
+      const weightMs = Math.max(0, (left + right) * 0.5);
+      params.sampleWeights[i] = spanMs > 0 ? weightMs / spanMs : 0;
+    }
+    for (let i = effectiveCount; i < MAX_DAYLIGHT_SAMPLES; i++) {
+      params.sampleWeights[i] = 0;
+    }
+
+    return params;
   }
 
   let cachedTerrainInterface = null;
@@ -792,13 +941,17 @@
     if (shadowBtn) {
       shadowBtn.classList.toggle('active', isCustomActive && currentMode === "shadow");
     }
+    const daylightBtn = document.getElementById('daylightBtn');
+    if (daylightBtn) {
+      daylightBtn.classList.toggle('active', isCustomActive && currentMode === "daylight");
+    }
     const snowSliderContainer = document.getElementById('snowSliderContainer');
     if (snowSliderContainer) {
       snowSliderContainer.style.display = (isCustomActive && currentMode === "snow") ? "block" : "none";
     }
     const shadowControls = document.getElementById('shadowControls');
     if (shadowControls) {
-      shadowControls.style.display = (isCustomActive && currentMode === "shadow") ? "flex" : "none";
+      shadowControls.style.display = (isCustomActive && (currentMode === "shadow" || currentMode === "daylight")) ? "flex" : "none";
     }
   }
   
@@ -815,7 +968,7 @@
   });
 
   const triggerShadowRepaint = () => {
-    if (map && currentMode === "shadow") {
+    if (map && (currentMode === "shadow" || currentMode === "daylight")) {
       map.triggerRepaint();
     }
   };
@@ -1093,12 +1246,8 @@
       if (currentMode === "snow") {
         uniforms.push('u_snow_altitude', 'u_snow_maxSlope');
       }
-      if (currentMode === "shadow") {
+      if (currentMode === "shadow" || currentMode === "daylight") {
         uniforms.push(
-          'u_sunDirection',
-          'u_sunAltitude',
-          'u_sunWarmColor',
-          'u_sunWarmIntensity',
           'u_shadowSampleCount',
           'u_shadowBlurRadius',
           'u_shadowMaxDistance',
@@ -1107,6 +1256,22 @@
           'u_shadowMaxOpacity',
           'u_shadowRayStepMultiplier'
         );
+        if (currentMode === "shadow") {
+          uniforms.push(
+            'u_sunDirection',
+            'u_sunAltitude',
+            'u_sunWarmColor',
+            'u_sunWarmIntensity'
+          );
+        } else {
+          uniforms.push(
+            'u_daylightSampleCount',
+            'u_daylightSunDir[0]',
+            'u_daylightSunAltitude[0]',
+            'u_daylightSampleWeight[0]',
+            'u_daylightSampleTime[0]'
+          );
+        }
       }
       const locations = {};
       uniforms.forEach(u => { locations[u] = gl.getUniformLocation(program, u); });
@@ -1158,6 +1323,7 @@
       };
 
       const sunParams = currentMode === "shadow" ? computeSunParameters(this.map) : null;
+      const daylightParams = currentMode === "daylight" ? computeDaylightParameters(this.map) : null;
       const gradientTextureUnit = NEIGHBOR_OFFSETS.length + 1;
       const hillshadeUniforms = currentMode === "hillshade"
         ? getHillshadeUniformsForCustomLayer(this.map)
@@ -1211,7 +1377,7 @@
 
         if (terrainData.texture && shader.locations.u_image != null) {
           bindTexture(terrainData.texture, 0, 'u_image');
-          if (currentMode === "shadow") {
+          if (currentMode === "shadow" || currentMode === "daylight") {
             NEIGHBOR_OFFSETS.forEach((neighbor, index) => {
               const texture = getNeighborTexture(
                 tile.tileID,
@@ -1322,27 +1488,44 @@
               gl.uniform1f(shader.locations.u_sunWarmIntensity, sunParams.warmIntensity);
             }
           }
-          if (shader.locations.u_shadowSampleCount != null) {
-            gl.uniform1i(shader.locations.u_shadowSampleCount, Math.floor(shadowSampleCount));
+        } else if (currentMode === "daylight" && daylightParams) {
+          if (shader.locations.u_daylightSampleCount != null) {
+            gl.uniform1i(shader.locations.u_daylightSampleCount, daylightParams.sampleCount);
           }
-          if (shader.locations.u_shadowBlurRadius != null) {
-            gl.uniform1f(shader.locations.u_shadowBlurRadius, shadowBlurRadius);
+          if (shader.locations['u_daylightSunDir[0]'] != null) {
+            gl.uniform2fv(shader.locations['u_daylightSunDir[0]'], daylightParams.sunDirections);
           }
-          if (shader.locations.u_shadowMaxDistance != null) {
-            gl.uniform1f(shader.locations.u_shadowMaxDistance, shadowMaxDistance);
+          if (shader.locations['u_daylightSunAltitude[0]'] != null) {
+            gl.uniform1fv(shader.locations['u_daylightSunAltitude[0]'], daylightParams.sunAltitudes);
           }
-          if (shader.locations.u_shadowVisibilityThreshold != null) {
-            gl.uniform1f(shader.locations.u_shadowVisibilityThreshold, shadowVisibilityThreshold);
+          if (shader.locations['u_daylightSampleWeight[0]'] != null) {
+            gl.uniform1fv(shader.locations['u_daylightSampleWeight[0]'], daylightParams.sampleWeights);
           }
-          if (shader.locations.u_shadowEdgeSoftness != null) {
-            gl.uniform1f(shader.locations.u_shadowEdgeSoftness, shadowEdgeSoftness);
+          if (shader.locations['u_daylightSampleTime[0]'] != null) {
+            gl.uniform1fv(shader.locations['u_daylightSampleTime[0]'], daylightParams.sampleTimes);
           }
-          if (shader.locations.u_shadowMaxOpacity != null) {
-            gl.uniform1f(shader.locations.u_shadowMaxOpacity, shadowMaxOpacity);
-          }
-          if (shader.locations.u_shadowRayStepMultiplier != null) {
-            gl.uniform1f(shader.locations.u_shadowRayStepMultiplier, shadowRayStepMultiplier);
-          }
+        }
+
+        if ((currentMode === "shadow" || currentMode === "daylight") && shader.locations.u_shadowSampleCount != null) {
+          gl.uniform1i(shader.locations.u_shadowSampleCount, Math.floor(shadowSampleCount));
+        }
+        if ((currentMode === "shadow" || currentMode === "daylight") && shader.locations.u_shadowBlurRadius != null) {
+          gl.uniform1f(shader.locations.u_shadowBlurRadius, shadowBlurRadius);
+        }
+        if ((currentMode === "shadow" || currentMode === "daylight") && shader.locations.u_shadowMaxDistance != null) {
+          gl.uniform1f(shader.locations.u_shadowMaxDistance, shadowMaxDistance);
+        }
+        if ((currentMode === "shadow" || currentMode === "daylight") && shader.locations.u_shadowVisibilityThreshold != null) {
+          gl.uniform1f(shader.locations.u_shadowVisibilityThreshold, shadowVisibilityThreshold);
+        }
+        if ((currentMode === "shadow" || currentMode === "daylight") && shader.locations.u_shadowEdgeSoftness != null) {
+          gl.uniform1f(shader.locations.u_shadowEdgeSoftness, shadowEdgeSoftness);
+        }
+        if ((currentMode === "shadow" || currentMode === "daylight") && shader.locations.u_shadowMaxOpacity != null) {
+          gl.uniform1f(shader.locations.u_shadowMaxOpacity, shadowMaxOpacity);
+        }
+        if ((currentMode === "shadow" || currentMode === "daylight") && shader.locations.u_shadowRayStepMultiplier != null) {
+          gl.uniform1f(shader.locations.u_shadowRayStepMultiplier, shadowRayStepMultiplier);
         }
 
         gl.drawElements(gl.TRIANGLES, mesh.indexCount, gl.UNSIGNED_SHORT, 0);
@@ -1457,7 +1640,7 @@
         gl.depthFunc(gl.LEQUAL);
         gl.clear(gl.DEPTH_BUFFER_BIT);
         gl.enable(gl.BLEND);
-        if (currentMode === "shadow") {
+        if (currentMode === "shadow" || currentMode === "daylight") {
           gl.blendFuncSeparate(
             gl.SRC_ALPHA,
             gl.ONE_MINUS_SRC_ALPHA,
@@ -1585,7 +1768,7 @@
 
   map.on('zoomend', () => {
     updateSamplingDistanceForZoom();
-    if (currentMode === "shadow") {
+    if (currentMode === "shadow" || currentMode === "daylight") {
       map.triggerRepaint();
     }
   });
@@ -1676,6 +1859,17 @@
       enableCustomHillshade("shadow");
     }
   });
+
+  const daylightBtnEl = document.getElementById('daylightBtn');
+  if (daylightBtnEl) {
+    daylightBtnEl.addEventListener('click', () => {
+      if (hillshadeMode === 'custom' && currentMode === "daylight") {
+        disableCustomHillshade();
+      } else {
+        enableCustomHillshade("daylight");
+      }
+    });
+  }
 
   updateButtons();
 
