@@ -3,6 +3,7 @@
   const DEBUG = false;
   const EXTENT = 8192;
   const TILE_SIZE = 512;
+  const TILE_GRANULARITY = 128;
   const DEM_MAX_ZOOM = 16; // native DEM max zoom
   const TERRAIN_FLATTEN_EXAGGERATION = 1e-5;
   const TERRAIN_SOURCE_ID = 'terrain';
@@ -596,17 +597,19 @@
   function getTileMesh(gl, tile) {
     const key = `mesh_${tile.tileID.key}`;
     if (meshCache.has(key)) return meshCache.get(key);
-    const meshBuffers = maplibregl.createTileMesh({ granularity: 128, generateBorders: false, extent: EXTENT }, '16bit');
+    const meshBuffers = maplibregl.createTileMesh({ granularity: TILE_GRANULARITY, generateBorders: true, extent: EXTENT }, '16bit');
     const vertices = new Int16Array(meshBuffers.vertices);
     const indices = new Int16Array(meshBuffers.indices);
-    const vertexCount = vertices.length / 2;
+    const totalVertexCount = vertices.length / 2;
+    const computedOriginalCount = (TILE_GRANULARITY + 1) * (TILE_GRANULARITY + 1);
+    const originalVertexCount = Math.min(totalVertexCount, computedOriginalCount);
     const vbo = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
     gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
     const ibo = gl.createBuffer();
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
     gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW);
-    const mesh = { vbo, ibo, indexCount: indices.length, originalVertexCount: vertexCount };
+    const mesh = { vbo, ibo, indexCount: indices.length, originalVertexCount };
     meshCache.set(key, mesh);
     return mesh;
   }

@@ -201,9 +201,11 @@ ${SHADER_NEIGHBOR_FETCH_BLOCK}      return getElevationFromTexture(u_image, tile
         precision highp int;
         ${this.commonFunctions}
         in  highp vec2 v_texCoord;
+        in  highp float v_isWall;
         out vec4 fragColor;
         void main() {
-          vec2 grad   = computeSobelGradient(v_texCoord);
+          vec2 tex    = (v_isWall > 0.5) ? clampTexCoord(v_texCoord) : v_texCoord;
+          vec2 grad   = computeSobelGradient(tex);
           vec3 normal = normalize(vec3(-grad, 1.0));
           fragColor   = vec4(normal * 0.5 + 0.5, 1.0);
         }`;
@@ -214,13 +216,15 @@ ${SHADER_NEIGHBOR_FETCH_BLOCK}      return getElevationFromTexture(u_image, tile
         precision highp int;
         ${this.commonFunctions}
         in  highp vec2 v_texCoord;
+        in  highp float v_isWall;
         out vec4 fragColor;
         float computeSlopeDegrees(vec2 pos) {
           vec2 g = computeSobelGradient(pos);
           return degrees(atan(length(g)));
         }
         void main() {
-          float slope = computeSlopeDegrees(v_texCoord);
+          vec2 tex = (v_isWall > 0.5) ? clampTexCoord(v_texCoord) : v_texCoord;
+          float slope = computeSlopeDegrees(tex);
           float alpha = smoothstep(30.0, 35.0, slope);
           vec3 color  = slope < 30.0 ? vec3(0.0) :
                         slope < 35.0 ? vec3(226.0,190.0,27.0)/255.0 :
@@ -236,6 +240,7 @@ ${SHADER_NEIGHBOR_FETCH_BLOCK}      return getElevationFromTexture(u_image, tile
         precision highp int;
         ${this.commonFunctions}
         in  highp vec2 v_texCoord;
+        in  highp float v_isWall;
         out vec4 fragColor;
         float computeSlopeDegrees(vec2 pos) {
           vec2 g = computeSobelGradient(pos);
@@ -260,7 +265,8 @@ ${SHADER_NEIGHBOR_FETCH_BLOCK}      return getElevationFromTexture(u_image, tile
           return colors[8];
         }
         void main() {
-          float slope   = computeSlopeDegrees(v_texCoord);
+          vec2 tex      = (v_isWall > 0.5) ? clampTexCoord(v_texCoord) : v_texCoord;
+          float slope   = computeSlopeDegrees(tex);
           vec3 color    = getColorForSlope(slope);
           fragColor     = vec4(color, 0.7);
         }`;
@@ -271,9 +277,11 @@ ${SHADER_NEIGHBOR_FETCH_BLOCK}      return getElevationFromTexture(u_image, tile
         precision highp int;
         ${this.commonFunctions}
         in  highp vec2 v_texCoord;
+        in  highp float v_isWall;
         out vec4 fragColor;
         void main() {
-          vec2 grad = computeSobelGradient(v_texCoord);
+          vec2 tex  = (v_isWall > 0.5) ? clampTexCoord(v_texCoord) : v_texCoord;
+          vec2 grad = computeSobelGradient(tex);
           grad = -grad;
           float aspect = mod(degrees(atan(grad.x, grad.y)) + 180.0, 360.0);
           vec3 color;
@@ -296,6 +304,7 @@ ${SHADER_NEIGHBOR_FETCH_BLOCK}      return getElevationFromTexture(u_image, tile
         uniform float u_snow_altitude;
         uniform float u_snow_maxSlope;
         in vec2 v_texCoord;
+        in highp float v_isWall;
         in float v_elevation;
         out vec4 fragColor;
         float computeSlopeDegrees(vec2 pos) {
@@ -332,9 +341,10 @@ ${SHADER_NEIGHBOR_FETCH_BLOCK}      return getElevationFromTexture(u_image, tile
             return vec4(color, snowDepth);
         }
         void main() {
-            vec2 grad = computeSobelGradient(v_texCoord);
+            vec2 tex = (v_isWall > 0.5) ? clampTexCoord(v_texCoord) : v_texCoord;
+            vec2 grad = computeSobelGradient(tex);
             float aspect = getAspect(grad);
-            float slope  = computeSlopeDegrees(clampTexCoord(v_texCoord));
+            float slope  = computeSlopeDegrees(tex);
             float altitudeMask = smoothstep(
                 u_snow_altitude + 100.0,
                 u_snow_altitude + 200.0,
@@ -368,6 +378,7 @@ ${SHADER_NEIGHBOR_FETCH_BLOCK}      return getElevationFromTexture(u_image, tile
         uniform float u_shadowMaxOpacity;
         uniform float u_shadowRayStepMultiplier;
         in  highp vec2  v_texCoord;
+        in  highp float v_isWall;
         in  highp float v_elevation;
         out vec4 fragColor;
 
@@ -461,8 +472,9 @@ ${SHADER_NEIGHBOR_FETCH_BLOCK}      return getElevationFromTexture(u_image, tile
         }
 
         void main(){
-          float visibility = computeSunVisibility(v_texCoord, v_elevation);
-          vec2 grad = computeSobelGradient(v_texCoord);
+          vec2 tex = (v_isWall > 0.5) ? clampTexCoord(v_texCoord) : v_texCoord;
+          float visibility = computeSunVisibility(tex, v_elevation);
+          vec2 grad = computeSobelGradient(tex);
           vec3 normal = normalize(vec3(-grad, 1.0));
           float cosAltitude = cos(u_sunAltitude);
           vec3 sunDir = normalize(vec3(u_sunDirection * cosAltitude, sin(u_sunAltitude)));
