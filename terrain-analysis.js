@@ -3,7 +3,6 @@
   const DEBUG = false;
   const EXTENT = 8192;
   const TILE_SIZE = 512;
-  const TILE_GRANULARITY = 128;
   const DEM_MAX_ZOOM = 16; // native DEM max zoom
   const TERRAIN_FLATTEN_EXAGGERATION = 1e-5;
   const TERRAIN_SOURCE_ID = 'terrain';
@@ -12,9 +11,9 @@
   let isTerrainFlattened = false;
 
   // Global state variables
-  let currentMode = ""; // "normal", "avalanche", "slope", "aspect", "snow", or "shadow"
+  let currentMode = ""; // "hillshade", "normal", "avalanche", "slope", "aspect", "snow", or "shadow"
   let hillshadeMode = 'none'; // "none", "native", or "custom"
-  let lastCustomMode = 'normal';
+  let lastCustomMode = 'hillshade';
   const meshCache = new Map();
   let snowAltitude = 3000;
   let snowMaxSlope = 55; // in degrees
@@ -503,16 +502,46 @@
   // Update UI button states and slider visibility based on current mode
   function updateButtons() {
     const isCustomActive = hillshadeMode === 'custom';
-    document.getElementById('healShadeNativeBtn').classList.toggle('active', hillshadeMode === 'native');
-    document.getElementById('healShadeCustomBtn').classList.toggle('active', isCustomActive);
-    document.getElementById('normalBtn').classList.toggle('active', isCustomActive && currentMode === "normal");
-    document.getElementById('avalancheBtn').classList.toggle('active', isCustomActive && currentMode === "avalanche");
-    document.getElementById('slopeBtn').classList.toggle('active', isCustomActive && currentMode === "slope");
-    document.getElementById('aspectBtn').classList.toggle('active', isCustomActive && currentMode === "aspect");
-    document.getElementById('snowBtn').classList.toggle('active', isCustomActive && currentMode === "snow");
-    document.getElementById('shadowBtn').classList.toggle('active', isCustomActive && currentMode === "shadow");
-    document.getElementById('snowSliderContainer').style.display = (isCustomActive && currentMode === "snow") ? "block" : "none";
-    document.getElementById('shadowControls').style.display = (isCustomActive && currentMode === "shadow") ? "flex" : "none";
+    const hillShadeNativeBtn = document.getElementById('hillShadeNativeBtn');
+    if (hillShadeNativeBtn) {
+      hillShadeNativeBtn.classList.toggle('active', hillshadeMode === 'native');
+    }
+    const hillShadeCustomBtn = document.getElementById('hillShadeCustomBtn');
+    if (hillShadeCustomBtn) {
+      hillShadeCustomBtn.classList.toggle('active', isCustomActive && currentMode === "hillshade");
+    }
+    const normalBtn = document.getElementById('normalBtn');
+    if (normalBtn) {
+      normalBtn.classList.toggle('active', isCustomActive && currentMode === "normal");
+    }
+    const avalancheBtn = document.getElementById('avalancheBtn');
+    if (avalancheBtn) {
+      avalancheBtn.classList.toggle('active', isCustomActive && currentMode === "avalanche");
+    }
+    const slopeBtn = document.getElementById('slopeBtn');
+    if (slopeBtn) {
+      slopeBtn.classList.toggle('active', isCustomActive && currentMode === "slope");
+    }
+    const aspectBtn = document.getElementById('aspectBtn');
+    if (aspectBtn) {
+      aspectBtn.classList.toggle('active', isCustomActive && currentMode === "aspect");
+    }
+    const snowBtn = document.getElementById('snowBtn');
+    if (snowBtn) {
+      snowBtn.classList.toggle('active', isCustomActive && currentMode === "snow");
+    }
+    const shadowBtn = document.getElementById('shadowBtn');
+    if (shadowBtn) {
+      shadowBtn.classList.toggle('active', isCustomActive && currentMode === "shadow");
+    }
+    const snowSliderContainer = document.getElementById('snowSliderContainer');
+    if (snowSliderContainer) {
+      snowSliderContainer.style.display = (isCustomActive && currentMode === "snow") ? "block" : "none";
+    }
+    const shadowControls = document.getElementById('shadowControls');
+    if (shadowControls) {
+      shadowControls.style.display = (isCustomActive && currentMode === "shadow") ? "flex" : "none";
+    }
   }
   
   // Slider event listeners
@@ -575,7 +604,7 @@
 
   function enableCustomHillshade(mode) {
     const styleReady = canModifyStyle();
-    const nextMode = mode || lastCustomMode || 'normal';
+    const nextMode = mode || lastCustomMode || 'hillshade';
     lastCustomMode = nextMode;
     currentMode = nextMode;
     hillshadeMode = 'custom';
@@ -700,19 +729,17 @@
   function getTileMesh(gl, tile) {
     const key = `mesh_${tile.tileID.key}`;
     if (meshCache.has(key)) return meshCache.get(key);
-    const meshBuffers = maplibregl.createTileMesh({ granularity: TILE_GRANULARITY, generateBorders: true, extent: EXTENT }, '16bit');
+    const meshBuffers = maplibregl.createTileMesh({ granularity: 128, generateBorders: false, extent: EXTENT }, '16bit');
     const vertices = new Int16Array(meshBuffers.vertices);
     const indices = new Int16Array(meshBuffers.indices);
-    const totalVertexCount = vertices.length / 2;
-    const computedOriginalCount = (TILE_GRANULARITY + 1) * (TILE_GRANULARITY + 1);
-    const originalVertexCount = Math.min(totalVertexCount, computedOriginalCount);
+    const vertexCount = vertices.length / 2;
     const vbo = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
     gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
     const ibo = gl.createBuffer();
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
     gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW);
-    const mesh = { vbo, ibo, indexCount: indices.length, originalVertexCount };
+    const mesh = { vbo, ibo, indexCount: indices.length, originalVertexCount: vertexCount };
     meshCache.set(key, mesh);
     return mesh;
   }
@@ -1255,21 +1282,21 @@
   map.addControl(new maplibregl.TerrainControl());
   
   // Button click event listeners to toggle rendering modes.
-  const healShadeNativeBtn = document.getElementById('healShadeNativeBtn');
-  if (healShadeNativeBtn) {
-    healShadeNativeBtn.addEventListener('click', () => {
+  const hillShadeNativeBtn = document.getElementById('hillShadeNativeBtn');
+  if (hillShadeNativeBtn) {
+    hillShadeNativeBtn.addEventListener('click', () => {
       const enableNative = hillshadeMode !== 'native';
       setNativeHillshadeEnabled(enableNative);
     });
   }
 
-  const healShadeCustomBtn = document.getElementById('healShadeCustomBtn');
-  if (healShadeCustomBtn) {
-    healShadeCustomBtn.addEventListener('click', () => {
-      if (hillshadeMode === 'custom') {
+  const hillShadeCustomBtn = document.getElementById('hillShadeCustomBtn');
+  if (hillShadeCustomBtn) {
+    hillShadeCustomBtn.addEventListener('click', () => {
+      if (hillshadeMode === 'custom' && currentMode === 'hillshade') {
         disableCustomHillshade();
       } else {
-        enableCustomHillshade();
+        enableCustomHillshade('hillshade');
       }
     });
   }
