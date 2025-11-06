@@ -1,5 +1,59 @@
 /* terrain-gradient-preparer.js */
 const TerrainGradientPreparer = (function() {
+  const GRADIENT_MAX_NEIGHBOR_OFFSET = 2;
+  const GRADIENT_NEIGHBOR_NAME_OVERRIDES = {
+    '-1,0': 'u_image_left',
+    '1,0': 'u_image_right',
+    '0,-1': 'u_image_top',
+    '0,1': 'u_image_bottom',
+    '-1,-1': 'u_image_topLeft',
+    '1,-1': 'u_image_topRight',
+    '-1,1': 'u_image_bottomLeft',
+    '1,1': 'u_image_bottomRight'
+  };
+
+  function gradientFormatOffsetPart(value) {
+    if (value === 0) {
+      return '0';
+    }
+    const prefix = value < 0 ? 'm' : 'p';
+    return `${prefix}${Math.abs(value)}`;
+  }
+
+  function gradientUniformNameForOffset(dx, dy) {
+    const key = `${dx},${dy}`;
+    if (GRADIENT_NEIGHBOR_NAME_OVERRIDES[key]) {
+      return GRADIENT_NEIGHBOR_NAME_OVERRIDES[key];
+    }
+    return `u_image_${gradientFormatOffsetPart(dx)}_${gradientFormatOffsetPart(dy)}`;
+  }
+
+  function gradientBuildNeighborOffsets(maxOffset) {
+    const offsets = [];
+    for (let dy = -maxOffset; dy <= maxOffset; dy++) {
+      for (let dx = -maxOffset; dx <= maxOffset; dx++) {
+        if (dx === 0 && dy === 0) continue;
+        if (Math.abs(dx) + Math.abs(dy) > maxOffset) continue;
+        offsets.push({ dx, dy, uniform: gradientUniformNameForOffset(dx, dy) });
+      }
+    }
+    return offsets;
+  }
+
+  const GRADIENT_NEIGHBOR_OFFSETS = gradientBuildNeighborOffsets(GRADIENT_MAX_NEIGHBOR_OFFSET);
+  const GRADIENT_NEIGHBOR_UNIFORM_DECLARATIONS = GRADIENT_NEIGHBOR_OFFSETS
+    .map(({ uniform }) => `uniform sampler2D ${uniform};`)
+    .join('\n');
+  const GRADIENT_NEIGHBOR_UNIFORM_BLOCK = GRADIENT_NEIGHBOR_UNIFORM_DECLARATIONS
+    ? `${GRADIENT_NEIGHBOR_UNIFORM_DECLARATIONS}\n`
+    : '';
+  const GRADIENT_NEIGHBOR_FETCH_CASES = GRADIENT_NEIGHBOR_OFFSETS
+    .map(({ dx, dy, uniform }) => `  if (offset == ivec2(${dx}, ${dy})) return getElevationFromTexture(${uniform}, tilePos);`)
+    .join('\n');
+  const GRADIENT_NEIGHBOR_FETCH_BLOCK = GRADIENT_NEIGHBOR_FETCH_CASES
+    ? `\n${GRADIENT_NEIGHBOR_FETCH_CASES}\n`
+    : '';
+
   class GradientPreparer {
     constructor() {
       this.gl = null;
@@ -81,86 +135,90 @@ const TerrainGradientPreparer = (function() {
         + `  gl_Position = vec4(a_pos, 0.0, 1.0);\n`
         + `}`;
 
-      const fragmentSource = `#version 300 es\n`
-        + `precision highp float;\n`
-        + `precision highp int;\n`
-        + `in vec2 v_texCoord;\n`
-        + `out vec4 fragColor;\n`
-        + `uniform sampler2D u_image;\n`
-        + `uniform sampler2D u_image_left;\n`
-        + `uniform sampler2D u_image_right;\n`
-        + `uniform sampler2D u_image_top;\n`
-        + `uniform sampler2D u_image_bottom;\n`
-        + `uniform sampler2D u_image_topLeft;\n`
-        + `uniform sampler2D u_image_topRight;\n`
-        + `uniform sampler2D u_image_bottomLeft;\n`
-        + `uniform sampler2D u_image_bottomRight;\n`
-        + `uniform vec4 u_terrain_unpack;\n`
-        + `uniform vec2 u_dimension;\n`
-        + `uniform float u_zoom;\n`
-        + `uniform float u_samplingDistance;\n`
-        + `float getElevationFromTexture(sampler2D tex, vec2 pos) {\n`
-        + `  vec4 data = texture(tex, pos) * 255.0;\n`
-        + `  return (data.r * u_terrain_unpack[0]\n`
-        + `        + data.g * u_terrain_unpack[1]\n`
-        + `        + data.b * u_terrain_unpack[2])\n`
-        + `        - u_terrain_unpack[3];\n`
-        + `}\n`
-        + `vec2 clampTexCoord(vec2 pos) {\n`
-        + `  float border = 0.5 / u_dimension.x;\n`
-        + `  return clamp(pos, vec2(border), vec2(1.0 - border));\n`
-        + `}\n`
-        + `float getElevationExtended(vec2 pos) {\n`
-        + `  vec2 tilePos = pos;\n`
-        + `  vec2 offset = vec2(0.0);\n`
-        + `  for (int i = 0; i < 2; i++) {\n`
-        + `    if (tilePos.x < 0.0 && offset.x > -1.5) {\n`
-        + `      tilePos.x += 1.0;\n`
-        + `      offset.x -= 1.0;\n`
-        + `    }\n`
-        + `    if (tilePos.x > 1.0 && offset.x < 1.5) {\n`
-        + `      tilePos.x -= 1.0;\n`
-        + `      offset.x += 1.0;\n`
-        + `    }\n`
-        + `    if (tilePos.y < 0.0 && offset.y > -1.5) {\n`
-        + `      tilePos.y += 1.0;\n`
-        + `      offset.y -= 1.0;\n`
-        + `    }\n`
-        + `    if (tilePos.y > 1.0 && offset.y < 1.5) {\n`
-        + `      tilePos.y -= 1.0;\n`
-        + `      offset.y += 1.0;\n`
-        + `    }\n`
-        + `  }\n`
-        + `  offset = clamp(offset, vec2(-1.0), vec2(1.0));\n`
-        + `  tilePos = clampTexCoord(tilePos);\n`
-        + `  if (offset.x == -1.0 && offset.y == -1.0) return getElevationFromTexture(u_image_topLeft, tilePos);\n`
-        + `  if (offset.x == 1.0 && offset.y == -1.0) return getElevationFromTexture(u_image_topRight, tilePos);\n`
-        + `  if (offset.x == -1.0 && offset.y == 1.0) return getElevationFromTexture(u_image_bottomLeft, tilePos);\n`
-        + `  if (offset.x == 1.0 && offset.y == 1.0) return getElevationFromTexture(u_image_bottomRight, tilePos);\n`
-        + `  if (offset.x == -1.0) return getElevationFromTexture(u_image_left, tilePos);\n`
-        + `  if (offset.x == 1.0) return getElevationFromTexture(u_image_right, tilePos);\n`
-        + `  if (offset.y == -1.0) return getElevationFromTexture(u_image_top, tilePos);\n`
-        + `  if (offset.y == 1.0) return getElevationFromTexture(u_image_bottom, tilePos);\n`
-        + `  return getElevationFromTexture(u_image, tilePos);\n`
-        + `}\n`
-        + `void main() {\n`
-        + `  float sampleDist = max(u_samplingDistance, 0.0001);\n`
-        + `  float metersPerPixel = 1.5 * pow(2.0, 16.0 - u_zoom);\n`
-        + `  float metersPerTile = metersPerPixel * u_dimension.x;\n`
-        + `  float delta = sampleDist / metersPerTile;\n`
-        + `  vec2 d = vec2(delta, delta);\n`
-        + `  float tl = getElevationExtended(v_texCoord - d);\n`
-        + `  float tm = getElevationExtended(v_texCoord + vec2(0.0, -delta));\n`
-        + `  float tr = getElevationExtended(v_texCoord + vec2(delta, -delta));\n`
-        + `  float ml = getElevationExtended(v_texCoord + vec2(-delta, 0.0));\n`
-        + `  float mr = getElevationExtended(v_texCoord + vec2(delta, 0.0));\n`
-        + `  float bl = getElevationExtended(v_texCoord + vec2(-delta, delta));\n`
-        + `  float bm = getElevationExtended(v_texCoord + vec2(0.0, delta));\n`
-        + `  float br = getElevationExtended(v_texCoord + vec2(delta, delta));\n`
-        + `  float gx = (-tl + tr - 2.0 * ml + 2.0 * mr - bl + br) / (8.0 * sampleDist);\n`
-        + `  float gy = (-tl - 2.0 * tm - tr + bl + 2.0 * bm + br) / (8.0 * sampleDist);\n`
-        + `  fragColor = vec4(gx, gy, 0.0, 1.0);\n`
-        + `}`;
+      const fragmentSource = `#version 300 es
+precision highp float;
+precision highp int;
+in vec2 v_texCoord;
+out vec4 fragColor;
+uniform sampler2D u_image;
+${GRADIENT_NEIGHBOR_UNIFORM_BLOCK}uniform vec4 u_terrain_unpack;
+uniform vec2 u_dimension;
+uniform float u_zoom;
+uniform float u_samplingDistance;
+float getElevationFromTexture(sampler2D tex, vec2 pos) {
+  vec4 data = texture(tex, pos) * 255.0;
+  return (data.r * u_terrain_unpack[0]
+        + data.g * u_terrain_unpack[1]
+        + data.b * u_terrain_unpack[2])
+        - u_terrain_unpack[3];
+}
+vec2 clampTexCoord(vec2 pos) {
+  float border = 0.5 / u_dimension.x;
+  return clamp(pos, vec2(border), vec2(1.0 - border));
+}
+float getElevationExtended(vec2 pos) {
+  vec2 tilePos = pos;
+  ivec2 offset = ivec2(0);
+  const int MAX_OFFSET = ${GRADIENT_MAX_NEIGHBOR_OFFSET};
+  for (int i = 0; i < ${GRADIENT_MAX_NEIGHBOR_OFFSET * 4}; ++i) {
+    bool adjusted = false;
+    if (tilePos.x < 0.0) {
+      int nextOffsetX = offset.x - 1;
+      if (nextOffsetX >= -MAX_OFFSET && abs(nextOffsetX) + abs(offset.y) <= MAX_OFFSET) {
+        tilePos.x += 1.0;
+        offset.x = nextOffsetX;
+        adjusted = true;
+      }
+    } else if (tilePos.x > 1.0) {
+      int nextOffsetX = offset.x + 1;
+      if (nextOffsetX <= MAX_OFFSET && abs(nextOffsetX) + abs(offset.y) <= MAX_OFFSET) {
+        tilePos.x -= 1.0;
+        offset.x = nextOffsetX;
+        adjusted = true;
+      }
+    }
+    if (tilePos.y < 0.0) {
+      int nextOffsetY = offset.y - 1;
+      if (nextOffsetY >= -MAX_OFFSET && abs(offset.x) + abs(nextOffsetY) <= MAX_OFFSET) {
+        tilePos.y += 1.0;
+        offset.y = nextOffsetY;
+        adjusted = true;
+      }
+    } else if (tilePos.y > 1.0) {
+      int nextOffsetY = offset.y + 1;
+      if (nextOffsetY <= MAX_OFFSET && abs(offset.x) + abs(nextOffsetY) <= MAX_OFFSET) {
+        tilePos.y -= 1.0;
+        offset.y = nextOffsetY;
+        adjusted = true;
+      }
+    }
+    if (!adjusted) {
+      break;
+    }
+  }
+  offset.x = clamp(offset.x, -MAX_OFFSET, MAX_OFFSET);
+  offset.y = clamp(offset.y, -MAX_OFFSET, MAX_OFFSET);
+  tilePos = clampTexCoord(tilePos);
+${GRADIENT_NEIGHBOR_FETCH_BLOCK}  return getElevationFromTexture(u_image, tilePos);
+}
+void main() {
+  float sampleDist = max(u_samplingDistance, 0.0001);
+  float metersPerPixel = 1.5 * pow(2.0, 16.0 - u_zoom);
+  float metersPerTile = metersPerPixel * u_dimension.x;
+  float delta = sampleDist / metersPerTile;
+  vec2 d = vec2(delta, delta);
+  float tl = getElevationExtended(v_texCoord - d);
+  float tm = getElevationExtended(v_texCoord + vec2(0.0, -delta));
+  float tr = getElevationExtended(v_texCoord + vec2(delta, -delta));
+  float ml = getElevationExtended(v_texCoord + vec2(-delta, 0.0));
+  float mr = getElevationExtended(v_texCoord + vec2(delta, 0.0));
+  float bl = getElevationExtended(v_texCoord + vec2(-delta, delta));
+  float bm = getElevationExtended(v_texCoord + vec2(0.0, delta));
+  float br = getElevationExtended(v_texCoord + vec2(delta, delta));
+  float gx = (-tl + tr - 2.0 * ml + 2.0 * mr - bl + br) / (8.0 * sampleDist);
+  float gy = (-tl - 2.0 * tm - tr + bl + 2.0 * bm + br) / (8.0 * sampleDist);
+  fragColor = vec4(gx, gy, 0.0, 1.0);
+}`;
 
       this.program = this.createProgram(gl, vertexSource, fragmentSource);
       if (!this.program) {
@@ -173,19 +231,14 @@ const TerrainGradientPreparer = (function() {
       };
       this.uniforms = {
         u_image: gl.getUniformLocation(this.program, 'u_image'),
-        u_image_left: gl.getUniformLocation(this.program, 'u_image_left'),
-        u_image_right: gl.getUniformLocation(this.program, 'u_image_right'),
-        u_image_top: gl.getUniformLocation(this.program, 'u_image_top'),
-        u_image_bottom: gl.getUniformLocation(this.program, 'u_image_bottom'),
-        u_image_topLeft: gl.getUniformLocation(this.program, 'u_image_topLeft'),
-        u_image_topRight: gl.getUniformLocation(this.program, 'u_image_topRight'),
-        u_image_bottomLeft: gl.getUniformLocation(this.program, 'u_image_bottomLeft'),
-        u_image_bottomRight: gl.getUniformLocation(this.program, 'u_image_bottomRight'),
         u_terrain_unpack: gl.getUniformLocation(this.program, 'u_terrain_unpack'),
         u_dimension: gl.getUniformLocation(this.program, 'u_dimension'),
         u_zoom: gl.getUniformLocation(this.program, 'u_zoom'),
         u_samplingDistance: gl.getUniformLocation(this.program, 'u_samplingDistance')
       };
+      GRADIENT_NEIGHBOR_OFFSETS.forEach(({ uniform }) => {
+        this.uniforms[uniform] = gl.getUniformLocation(this.program, uniform);
+      });
 
       const quadVertices = new Float32Array([
         -1.0, -1.0,
@@ -381,14 +434,10 @@ const TerrainGradientPreparer = (function() {
 
         this.bindInputTexture(gl, 0, terrainData.texture, this.uniforms.u_image);
 
-        this.bindInputTexture(gl, 1, neighborTextures[0], this.uniforms.u_image_left);
-        this.bindInputTexture(gl, 2, neighborTextures[1], this.uniforms.u_image_right);
-        this.bindInputTexture(gl, 3, neighborTextures[2], this.uniforms.u_image_top);
-        this.bindInputTexture(gl, 4, neighborTextures[3], this.uniforms.u_image_bottom);
-        this.bindInputTexture(gl, 5, neighborTextures[4], this.uniforms.u_image_topLeft);
-        this.bindInputTexture(gl, 6, neighborTextures[5], this.uniforms.u_image_topRight);
-        this.bindInputTexture(gl, 7, neighborTextures[6], this.uniforms.u_image_bottomLeft);
-        this.bindInputTexture(gl, 8, neighborTextures[7], this.uniforms.u_image_bottomRight);
+        neighborOffsets.forEach((offset, index) => {
+          const location = this.uniforms[offset.uniform] || null;
+          this.bindInputTexture(gl, index + 1, neighborTextures[index], location);
+        });
 
         gl.uniform4f(this.uniforms.u_terrain_unpack, rgbaFactors.r, rgbaFactors.g, rgbaFactors.b, rgbaFactors.base);
         gl.uniform2f(this.uniforms.u_dimension, tileSize, tileSize);
