@@ -200,27 +200,37 @@ ${SHADER_NEIGHBOR_FETCH_BLOCK}      return getElevationFromTexture(u_image, tile
         precision highp float;
         precision highp int;
         ${this.commonFunctions}
+        uniform vec3  u_hillshade_highlight_color;
+        uniform vec3  u_hillshade_shadow_color;
+        uniform vec3  u_hillshade_accent_color;
+        uniform float u_hillshade_exaggeration;
+        uniform vec2  u_hillshade_light_dir;
+        uniform float u_hillshade_light_altitude;
+        uniform float u_hillshade_opacity;
         in  highp vec2 v_texCoord;
         out vec4 fragColor;
+
+        vec3 getHillshadeLightVector() {
+          float cosAlt = cos(u_hillshade_light_altitude);
+          vec2 dir = normalize(u_hillshade_light_dir);
+          return normalize(vec3(dir.x * cosAlt, dir.y * cosAlt, sin(u_hillshade_light_altitude)));
+        }
+
+        vec3 evaluateHillshade(vec2 grad) {
+          vec2 scaledGrad = grad * u_hillshade_exaggeration;
+          vec3 normal = normalize(vec3(-scaledGrad.x, -scaledGrad.y, 1.0));
+          vec3 lightDir = getHillshadeLightVector();
+          float diffuse = clamp(dot(normal, lightDir), -1.0, 1.0);
+          float shade = clamp(0.5 + 0.5 * diffuse, 0.0, 1.0);
+          vec3 baseColor = mix(u_hillshade_shadow_color, u_hillshade_highlight_color, shade);
+          float accent = pow(clamp(1.0 - normal.z, 0.0, 1.0), 2.0);
+          return mix(baseColor, u_hillshade_accent_color, accent);
+        }
+
         void main() {
           vec2 grad = computeSobelGradient(v_texCoord);
-          vec3 normal = normalize(vec3(-grad, 1.0));
-          float azimuth = radians(315.0);
-          float altitude = radians(45.0);
-          float cosAlt = cos(altitude);
-          vec3 lightDir = normalize(vec3(
-            sin(azimuth) * cosAlt,
-            cos(azimuth) * cosAlt,
-            sin(altitude)
-          ));
-          float diffuse = dot(normal, lightDir);
-          float shade = clamp(diffuse * 0.5 + 0.5, 0.0, 1.0);
-          vec3 shadowTint = vec3(0.63, 0.69, 0.76);
-          vec3 highlightTint = vec3(0.98, 0.94, 0.86);
-          vec3 baseColor = vec3(0.6);
-          vec3 litColor = mix(shadowTint, highlightTint, shade);
-          vec3 color = mix(baseColor, litColor, 0.85);
-          fragColor = vec4(color, 1.0);
+          vec3 color = evaluateHillshade(grad);
+          fragColor = vec4(color, u_hillshade_opacity);
         }`;
 
       case "normal":
