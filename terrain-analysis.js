@@ -19,12 +19,58 @@
   let shadowEdgeSoftness = 0.16;
   let shadowMaxOpacity = 0.72;
   let shadowRayStepMultiplier = 1.0;
-  let samplingDistance = 0.5;
+  const SHADOW_BUFFER_MINUTES = 30;
+  const DEFAULT_DAYLIGHT_BOUNDS = { min: 360, max: 1080 };
+  let shadowTimeBounds = { min: 0, max: 1439 };
+  let samplingDistance = 0.35;
   let shadowDateValue = null;
   let shadowTimeValue = null;
   let map;
 
   const gradientPreparer = TerrainGradientPreparer.create();
+  let recomputeShadowTimeBounds = () => {};
+
+  function clamp(value, min, max) {
+    return Math.max(min, Math.min(max, value));
+  }
+
+  function minutesToIsoTime(totalMinutes) {
+    const minutes = clamp(Math.round(totalMinutes), 0, 1439);
+    const hours = Math.floor(minutes / 60);
+    const mins = minutes % 60;
+    return `${String(hours).padStart(2, '0')}:${String(mins).padStart(2, '0')}`;
+  }
+
+  function isoTimeToMinutes(isoTime) {
+    if (!isoTime || typeof isoTime !== 'string') return null;
+    const [hoursStr, minutesStr] = isoTime.split(':');
+    const hours = Number(hoursStr);
+    const minutes = Number(minutesStr);
+    if (!Number.isFinite(hours) || !Number.isFinite(minutes)) {
+      return null;
+    }
+    return hours * 60 + minutes;
+  }
+
+  function computeSamplingDistanceForZoom(zoom) {
+    if (!Number.isFinite(zoom)) {
+      return samplingDistance;
+    }
+    const base = 0.35;
+    const scaled = base * Math.pow(2, 14 - zoom);
+    return clamp(scaled, 0.2, 3.0);
+  }
+
+  function updateSamplingDistanceForZoom() {
+    if (!map) return;
+    const zoom = map.getZoom();
+    const newDistance = computeSamplingDistanceForZoom(zoom);
+    if (!Number.isFinite(newDistance)) return;
+    if (Math.abs(newDistance - samplingDistance) > 0.01) {
+      samplingDistance = newDistance;
+      gradientPreparer.invalidateAll();
+    }
+  }
 
   /**
    * MapLibre GL JS 5.11.0 ships a Mercator transform helper that throws a
@@ -173,7 +219,11 @@
   function getShadowDateTime() {
     const now = new Date();
     const dateStr = shadowDateValue || now.toISOString().slice(0, 10);
-    const timeStr = shadowTimeValue || now.toISOString().slice(11, 16);
+    const nowMinutes = now.getHours() * 60 + now.getMinutes();
+    const storedMinutes = isoTimeToMinutes(shadowTimeValue);
+    const minutes = storedMinutes !== null ? storedMinutes : nowMinutes;
+    const clampedMinutes = clamp(minutes, shadowTimeBounds.min, shadowTimeBounds.max);
+    const timeStr = minutesToIsoTime(clampedMinutes);
     return new Date(`${dateStr}T${timeStr}:00`);
   }
 
@@ -193,23 +243,77 @@
     const dateValue = document.getElementById('shadowDateValue');
     const timeSlider = document.getElementById('shadowTimeSlider');
     const timeValue = document.getElementById('shadowTimeValue');
-
-    const setDateFromSlider = (dayIndex) => {
+    const dateFromDayIndex = (dayIndex) => {
       const baseDate = new Date(currentYear, 0, 1);
       baseDate.setDate(baseDate.getDate() + Number(dayIndex));
-      const isoDate = `${baseDate.getFullYear()}-${String(baseDate.getMonth() + 1).padStart(2, '0')}-${String(baseDate.getDate()).padStart(2, '0')}`;
-      shadowDateValue = isoDate;
-      if (dateValue) dateValue.textContent = isoDate;
-      if (map && currentMode === "shadow") map.triggerRepaint();
+      return baseDate;
     };
 
     const setTimeFromSlider = (totalMinutes) => {
-      const minutes = Math.max(0, Math.min(1439, Number(totalMinutes)));
-      const hours = Math.floor(minutes / 60);
-      const mins = minutes % 60;
-      const isoTime = `${String(hours).padStart(2, '0')}:${String(mins).padStart(2, '0')}`;
+      const minutes = clamp(Number(totalMinutes), shadowTimeBounds.min, shadowTimeBounds.max);
+      const isoTime = minutesToIsoTime(minutes);
       shadowTimeValue = isoTime;
+      if (timeSlider && Number(timeSlider.value) !== minutes) {
+        timeSlider.value = minutes;
+      }
       if (timeValue) timeValue.textContent = isoTime;
+      if (map && currentMode === "shadow") map.triggerRepaint();
+    };
+
+    const updateShadowTimeBounds = (preferredMinutes = null) => {
+      const center = map ? map.getCenter() : { lat: 0, lng: 0 };
+      const isoDate = shadowDateValue;
+      const targetDate = isoDate
+        ? (() => {
+            const [yearStr, monthStr, dayStr] = isoDate.split('-');
+            return new Date(Number(yearStr), Number(monthStr) - 1, Number(dayStr));
+          })()
+        : dateFromDayIndex(defaultDayIndex);
+
+      const times = SunCalc.getTimes(targetDate, center.lat, center.lng);
+      const sunriseMinutes = times.sunrise instanceof Date
+        ? times.sunrise.getHours() * 60 + times.sunrise.getMinutes()
+        : null;
+      const sunsetMinutes = times.sunset instanceof Date
+        ? times.sunset.getHours() * 60 + times.sunset.getMinutes()
+        : null;
+
+      let minMinutes = sunriseMinutes !== null && Number.isFinite(sunriseMinutes)
+        ? clamp(Math.round(sunriseMinutes) - SHADOW_BUFFER_MINUTES, 0, 1439)
+        : DEFAULT_DAYLIGHT_BOUNDS.min;
+      let maxMinutes = sunsetMinutes !== null && Number.isFinite(sunsetMinutes)
+        ? clamp(Math.round(sunsetMinutes) + SHADOW_BUFFER_MINUTES, 0, 1439)
+        : DEFAULT_DAYLIGHT_BOUNDS.max;
+
+      if (maxMinutes <= minMinutes) {
+        minMinutes = DEFAULT_DAYLIGHT_BOUNDS.min;
+        maxMinutes = DEFAULT_DAYLIGHT_BOUNDS.max;
+      }
+
+      shadowTimeBounds = { min: minMinutes, max: maxMinutes };
+
+      if (timeSlider) {
+        timeSlider.min = minMinutes;
+        timeSlider.max = maxMinutes;
+        timeSlider.step = 1;
+      }
+
+      const storedMinutes = isoTimeToMinutes(shadowTimeValue);
+      const desiredMinutes = preferredMinutes !== null
+        ? preferredMinutes
+        : (storedMinutes !== null ? storedMinutes : defaultMinutes);
+
+      setTimeFromSlider(clamp(desiredMinutes, shadowTimeBounds.min, shadowTimeBounds.max));
+    };
+
+    recomputeShadowTimeBounds = (preferredMinutes) => updateShadowTimeBounds(preferredMinutes);
+
+    const setDateFromSlider = (dayIndex) => {
+      const baseDate = dateFromDayIndex(dayIndex);
+      const isoDate = `${baseDate.getFullYear()}-${String(baseDate.getMonth() + 1).padStart(2, '0')}-${String(baseDate.getDate()).padStart(2, '0')}`;
+      shadowDateValue = isoDate;
+      if (dateValue) dateValue.textContent = isoDate;
+      updateShadowTimeBounds();
       if (map && currentMode === "shadow") map.triggerRepaint();
     };
 
@@ -223,13 +327,19 @@
     }
 
     if (timeSlider) {
-      timeSlider.max = 1439;
-      const roundedMinutes = Math.round(defaultMinutes / 15) * 15;
-      timeSlider.value = Math.min(1439, roundedMinutes);
-      setTimeFromSlider(Number(timeSlider.value));
+      const roundedMinutes = Math.round(defaultMinutes);
+      timeSlider.value = roundedMinutes;
+      timeSlider.step = 1;
+      updateShadowTimeBounds(roundedMinutes);
       timeSlider.addEventListener('input', (e) => {
-        setTimeFromSlider(e.target.value);
+        const minutes = clamp(Number(e.target.value), shadowTimeBounds.min, shadowTimeBounds.max);
+        if (minutes !== Number(e.target.value)) {
+          e.target.value = minutes;
+        }
+        setTimeFromSlider(minutes);
       });
+    } else {
+      updateShadowTimeBounds();
     }
   }
 
@@ -291,6 +401,17 @@
     if (painterTerrain && painterTerrain.tileManager) {
       cachedTerrainInterface = painterTerrain;
       return painterTerrain;
+    }
+
+    const hasTerrain = Boolean(mapInstance.terrain || (mapInstance.painter && mapInstance.painter.terrain));
+    if (!hasTerrain) {
+      cachedTerrainInterface = null;
+      return null;
+    }
+
+    if (cachedTerrainInterface && !cachedTerrainInterface.tileManager) {
+      cachedTerrainInterface = null;
+      return null;
     }
 
     return cachedTerrainInterface && cachedTerrainInterface.tileManager
@@ -396,20 +517,6 @@
       shadowRayStepMultiplier = Math.max(0.25, parseFloat(e.target.value));
       shadowRayStepMultiplierValue.textContent = shadowRayStepMultiplier.toFixed(2);
       triggerShadowRepaint();
-    });
-  }
-
-  const samplingDistanceSlider = document.getElementById('samplingDistanceSlider');
-  const samplingDistanceValue = document.getElementById('samplingDistanceValue');
-  if (samplingDistanceSlider && samplingDistanceValue) {
-    samplingDistanceValue.textContent = samplingDistance.toFixed(2);
-    samplingDistanceSlider.addEventListener('input', (e) => {
-      samplingDistance = Math.max(0.05, parseFloat(e.target.value));
-      samplingDistanceValue.textContent = samplingDistance.toFixed(2);
-      gradientPreparer.invalidateAll();
-      if (map) {
-        map.triggerRepaint();
-      }
     });
   }
 
@@ -769,6 +876,8 @@
         textureCache.set(cacheKey, terrainData.texture);
       }
 
+      updateSamplingDistanceForZoom();
+
       gradientPreparer.prepare({
         gl,
         renderableTiles,
@@ -885,9 +994,32 @@
       tileManager.deltaZoom = 0;
     }
     console.log("Terrain layer initialized");
+    recomputeShadowTimeBounds();
+    updateSamplingDistanceForZoom();
   });
 
   initializeShadowDateTimeControls();
+
+  map.on('moveend', () => {
+    recomputeShadowTimeBounds();
+  });
+
+  map.on('zoomend', () => {
+    updateSamplingDistanceForZoom();
+    if (currentMode === "shadow") {
+      map.triggerRepaint();
+    }
+  });
+
+  map.on('terrain', () => {
+    cachedTerrainInterface = null;
+    gradientPreparer.invalidateAll();
+    terrainNormalLayer.shaderMap.clear();
+    if (map.getLayer('terrain-normal')) {
+      terrainNormalLayer.frameCount = 0;
+      map.triggerRepaint();
+    }
+  });
   
   map.addControl(new maplibregl.NavigationControl({ showCompass: true, visualizePitch: true }));
   map.addControl(new maplibregl.GlobeControl());
