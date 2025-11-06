@@ -7,6 +7,26 @@
   const TERRAIN_FLATTEN_EXAGGERATION = 1e-5;
   const TERRAIN_SOURCE_ID = 'terrain';
   const HILLSHADE_NATIVE_LAYER_ID = 'terrain-hillshade-native';
+  const DEFAULT_HILLSHADE_SETTINGS = {
+    highlightColor: [1.0, 1.0, 1.0],
+    shadowColor: [0.0, 0.0, 0.0],
+    accentColor: [0.0, 0.0, 0.0],
+    exaggeration: 0.5,
+    illuminationDirection: 335,
+    illuminationAnchor: 'viewport',
+    lightAltitude: 45,
+    opacity: 1.0
+  };
+  let hillshadePaintSettings = {
+    highlightColor: DEFAULT_HILLSHADE_SETTINGS.highlightColor.slice(),
+    shadowColor: DEFAULT_HILLSHADE_SETTINGS.shadowColor.slice(),
+    accentColor: DEFAULT_HILLSHADE_SETTINGS.accentColor.slice(),
+    exaggeration: DEFAULT_HILLSHADE_SETTINGS.exaggeration,
+    illuminationDirection: DEFAULT_HILLSHADE_SETTINGS.illuminationDirection,
+    illuminationAnchor: DEFAULT_HILLSHADE_SETTINGS.illuminationAnchor,
+    lightAltitude: DEFAULT_HILLSHADE_SETTINGS.lightAltitude,
+    opacity: DEFAULT_HILLSHADE_SETTINGS.opacity
+  };
   let lastTerrainSpecification = { source: TERRAIN_SOURCE_ID, exaggeration: 1.0 };
   let isTerrainFlattened = false;
 
@@ -68,6 +88,159 @@
 
   function clamp(value, min, max) {
     return Math.max(min, Math.min(max, value));
+  }
+
+  function clamp01(value) {
+    if (!Number.isFinite(value)) return 0;
+    return clamp(value, 0, 1);
+  }
+
+  function degreesToRadians(value) {
+    return (Number.isFinite(value) ? value : 0) * Math.PI / 180;
+  }
+
+  function normalizeVec2(vec) {
+    if (!vec || vec.length < 2) return [0, 1];
+    const x = Number(vec[0]);
+    const y = Number(vec[1]);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+      return [0, 1];
+    }
+    const length = Math.hypot(x, y);
+    if (!Number.isFinite(length) || length === 0) {
+      return [0, 1];
+    }
+    return [x / length, y / length];
+  }
+
+  function copyColorArray(color, fallback) {
+    const base = Array.isArray(fallback) ? fallback : DEFAULT_HILLSHADE_SETTINGS.highlightColor;
+    if (!Array.isArray(color) || color.length < 3) {
+      return base.slice();
+    }
+    return [
+      clamp01(color[0]),
+      clamp01(color[1]),
+      clamp01(color[2])
+    ];
+  }
+
+  function parseHexComponent(component) {
+    return clamp01(parseInt(component, 16) / 255);
+  }
+
+  function parseHexColor(value, fallback) {
+    const cleaned = value.replace('#', '');
+    if (cleaned.length === 3) {
+      return [
+        parseHexComponent(cleaned[0] + cleaned[0]),
+        parseHexComponent(cleaned[1] + cleaned[1]),
+        parseHexComponent(cleaned[2] + cleaned[2])
+      ];
+    }
+    if (cleaned.length >= 6) {
+      return [
+        parseHexComponent(cleaned.slice(0, 2)),
+        parseHexComponent(cleaned.slice(2, 4)),
+        parseHexComponent(cleaned.slice(4, 6))
+      ];
+    }
+    return fallback.slice();
+  }
+
+  function parseRgbColor(value, fallback) {
+    const match = value.match(/rgba?\s*\(([^)]+)\)/i);
+    if (!match) return fallback.slice();
+    const parts = match[1].split(',').map(part => part.trim()).slice(0, 3);
+    if (parts.length < 3) return fallback.slice();
+    const components = parts.map(part => {
+      if (part.endsWith('%')) {
+        const num = parseFloat(part) / 100;
+        return clamp01(num);
+      }
+      const num = parseFloat(part);
+      if (!Number.isFinite(num)) return 0;
+      return num > 1 ? clamp01(num / 255) : clamp01(num);
+    });
+    return copyColorArray(components, fallback);
+  }
+
+  function toColorArray(value, fallback) {
+    if (Array.isArray(value)) {
+      const normalized = value.map(component => {
+        const num = Number(component);
+        if (!Number.isFinite(num)) return 0;
+        return num > 1 ? clamp01(num / 255) : clamp01(num);
+      });
+      return copyColorArray(normalized, fallback);
+    }
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (trimmed.startsWith('#')) {
+        return parseHexColor(trimmed, fallback);
+      }
+      if (trimmed.startsWith('rgb')) {
+        return parseRgbColor(trimmed, fallback);
+      }
+    }
+    return fallback.slice();
+  }
+
+  function updateHillshadePaintSettingsFromMap() {
+    if (!map || typeof map.getLayer !== 'function' || !map.getLayer(HILLSHADE_NATIVE_LAYER_ID)) {
+      return;
+    }
+    const highlight = map.getPaintProperty(HILLSHADE_NATIVE_LAYER_ID, 'hillshade-highlight-color');
+    const shadow = map.getPaintProperty(HILLSHADE_NATIVE_LAYER_ID, 'hillshade-shadow-color');
+    const accent = map.getPaintProperty(HILLSHADE_NATIVE_LAYER_ID, 'hillshade-accent-color');
+    const exaggeration = map.getPaintProperty(HILLSHADE_NATIVE_LAYER_ID, 'hillshade-exaggeration');
+    const direction = map.getPaintProperty(HILLSHADE_NATIVE_LAYER_ID, 'hillshade-illumination-direction');
+    const anchor = map.getPaintProperty(HILLSHADE_NATIVE_LAYER_ID, 'hillshade-illumination-anchor');
+    const opacity = map.getPaintProperty(HILLSHADE_NATIVE_LAYER_ID, 'hillshade-opacity');
+
+    hillshadePaintSettings.highlightColor = toColorArray(highlight, DEFAULT_HILLSHADE_SETTINGS.highlightColor);
+    hillshadePaintSettings.shadowColor = toColorArray(shadow, DEFAULT_HILLSHADE_SETTINGS.shadowColor);
+    hillshadePaintSettings.accentColor = toColorArray(accent, DEFAULT_HILLSHADE_SETTINGS.accentColor);
+
+    if (Number.isFinite(exaggeration)) {
+      hillshadePaintSettings.exaggeration = exaggeration;
+    }
+    if (Number.isFinite(direction)) {
+      hillshadePaintSettings.illuminationDirection = direction;
+    }
+    if (typeof anchor === 'string') {
+      hillshadePaintSettings.illuminationAnchor = anchor;
+    }
+    if (Number.isFinite(opacity)) {
+      hillshadePaintSettings.opacity = clamp01(opacity);
+    }
+  }
+
+  function computeHillshadeLightDirection(settings, mapInstance) {
+    const anchor = settings.illuminationAnchor || DEFAULT_HILLSHADE_SETTINGS.illuminationAnchor;
+    const baseDirection = Number.isFinite(settings.illuminationDirection)
+      ? settings.illuminationDirection
+      : DEFAULT_HILLSHADE_SETTINGS.illuminationDirection;
+    const bearing = mapInstance && typeof mapInstance.getBearing === 'function'
+      ? mapInstance.getBearing()
+      : 0;
+    const adjusted = anchor === 'viewport' ? baseDirection - bearing : baseDirection;
+    const azimuth = degreesToRadians(adjusted);
+    const dir = [Math.sin(azimuth), Math.cos(azimuth)];
+    return normalizeVec2(dir);
+  }
+
+  function getHillshadeUniformsForCustomLayer(mapInstance) {
+    const settings = hillshadePaintSettings;
+    return {
+      highlightColor: copyColorArray(settings.highlightColor, DEFAULT_HILLSHADE_SETTINGS.highlightColor),
+      shadowColor: copyColorArray(settings.shadowColor, DEFAULT_HILLSHADE_SETTINGS.shadowColor),
+      accentColor: copyColorArray(settings.accentColor, DEFAULT_HILLSHADE_SETTINGS.accentColor),
+      exaggeration: Number.isFinite(settings.exaggeration) ? settings.exaggeration : DEFAULT_HILLSHADE_SETTINGS.exaggeration,
+      opacity: Number.isFinite(settings.opacity) ? clamp01(settings.opacity) : DEFAULT_HILLSHADE_SETTINGS.opacity,
+      lightDir: computeHillshadeLightDirection(settings, mapInstance),
+      lightAltitude: degreesToRadians(settings.lightAltitude || DEFAULT_HILLSHADE_SETTINGS.lightAltitude)
+    };
   }
 
   function minutesToIsoTime(totalMinutes) {
@@ -593,11 +766,13 @@
       source: TERRAIN_SOURCE_ID
     };
     map.addLayer(layerDefinition);
+    updateHillshadePaintSettingsFromMap();
   }
 
   function removeNativeHillshadeLayer() {
     if (!canModifyStyle()) return;
     if (map.getLayer(HILLSHADE_NATIVE_LAYER_ID)) {
+      updateHillshadePaintSettingsFromMap();
       map.removeLayer(HILLSHADE_NATIVE_LAYER_ID);
     }
   }
@@ -813,6 +988,17 @@
         'u_shadowsEnabled',
         'u_samplingDistance'
       ];
+      if (currentMode === "hillshade") {
+        uniforms.push(
+          'u_hillshade_highlight_color',
+          'u_hillshade_shadow_color',
+          'u_hillshade_accent_color',
+          'u_hillshade_exaggeration',
+          'u_hillshade_light_dir',
+          'u_hillshade_light_altitude',
+          'u_hillshade_opacity'
+        );
+      }
       if (currentMode === "snow") {
         uniforms.push('u_snow_altitude', 'u_snow_maxSlope');
       }
@@ -862,8 +1048,39 @@
         gl.uniform1i(location, unit);
       };
 
+      const setVec3Uniform = (uniformName, values) => {
+        const location = shader.locations[uniformName];
+        if (!location || !values || values.length < 3) return;
+        gl.uniform3f(location, values[0], values[1], values[2]);
+      };
+
+      const setVec2Uniform = (uniformName, values) => {
+        const location = shader.locations[uniformName];
+        if (!location || !values || values.length < 2) return;
+        gl.uniform2f(location, values[0], values[1]);
+      };
+
+      const setFloatUniform = (uniformName, value) => {
+        const location = shader.locations[uniformName];
+        if (!location || !Number.isFinite(value)) return;
+        gl.uniform1f(location, value);
+      };
+
       const sunParams = currentMode === "shadow" ? computeSunParameters(this.map) : null;
       const gradientTextureUnit = NEIGHBOR_OFFSETS.length + 1;
+      const hillshadeUniforms = currentMode === "hillshade"
+        ? getHillshadeUniformsForCustomLayer(this.map)
+        : null;
+
+      if (hillshadeUniforms) {
+        setVec3Uniform('u_hillshade_highlight_color', hillshadeUniforms.highlightColor);
+        setVec3Uniform('u_hillshade_shadow_color', hillshadeUniforms.shadowColor);
+        setVec3Uniform('u_hillshade_accent_color', hillshadeUniforms.accentColor);
+        setFloatUniform('u_hillshade_exaggeration', hillshadeUniforms.exaggeration);
+        setVec2Uniform('u_hillshade_light_dir', hillshadeUniforms.lightDir);
+        setFloatUniform('u_hillshade_light_altitude', hillshadeUniforms.lightAltitude);
+        setFloatUniform('u_hillshade_opacity', hillshadeUniforms.opacity);
+      }
 
       for (const tile of renderableTiles) {
         const sourceTile = tileManager.getSourceTile(tile.tileID, true);
