@@ -4,8 +4,10 @@
   const EXTENT = 8192;
   const TILE_SIZE = 512;
   const DEM_MAX_ZOOM = 16; // native DEM max zoom
+  const TERRAIN_FLATTEN_EXAGGERATION = 1e-5;
   const TERRAIN_SOURCE_ID = 'terrain';
   let lastTerrainSpecification = { source: TERRAIN_SOURCE_ID, exaggeration: 1.0 };
+  let isTerrainFlattened = false;
   
   // Global state variables
   let currentMode = ""; // "normal", "avalanche", "slope", "aspect", "snow", or "shadow"
@@ -57,7 +59,8 @@
       return samplingDistance;
     }
     const base = 0.35;
-    const scaled = base * Math.pow(2, 14 - zoom);
+    const effectiveZoom = Math.min(Math.max(zoom, 0), DEM_MAX_ZOOM);
+    const scaled = base * Math.pow(2, 14 - effectiveZoom);
     return clamp(scaled, 0.2, 3.0);
   }
 
@@ -440,6 +443,9 @@
 
     const hasTerrain = Boolean(mapInstance.terrain || (mapInstance.painter && mapInstance.painter.terrain));
     if (!hasTerrain) {
+      if (isTerrainFlattened && cachedTerrainInterface && cachedTerrainInterface.tileManager) {
+        return cachedTerrainInterface;
+      }
       cachedTerrainInterface = null;
       return null;
     }
@@ -681,7 +687,7 @@
 
       const bindTexture = (texture, unit, uniformName) => {
         const location = shader.locations[uniformName];
-        if (!location || !texture) return;
+        if (location == null || !texture) return;
         gl.activeTexture(gl.TEXTURE0 + unit);
         gl.bindTexture(gl.TEXTURE_2D, texture);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
@@ -693,6 +699,7 @@
 
       const sunParams = currentMode === "shadow" ? computeSunParameters(this.map) : null;
       const gradientTextureUnit = NEIGHBOR_OFFSETS.length + 1;
+      const zoomForSampling = Math.max(0, Math.min(this.map ? this.map.getZoom() : 0, DEM_MAX_ZOOM));
 
       for (const tile of renderableTiles) {
         const sourceTile = tileManager.getSourceTile(tile.tileID, true);
@@ -730,7 +737,7 @@
         const canonical = tile.tileID.canonical;
         const tileSize = sourceTile.dem && sourceTile.dem.dim ? sourceTile.dem.dim : TILE_SIZE;
 
-        if (terrainData.texture && shader.locations.u_image) {
+        if (terrainData.texture && shader.locations.u_image != null) {
           bindTexture(terrainData.texture, 0, 'u_image');
           if (currentMode === "shadow") {
             NEIGHBOR_OFFSETS.forEach((neighbor, index) => {
@@ -747,12 +754,12 @@
 
         const gradientTexture = gradientPreparer.getTexture(tile.tileID.key);
         const hasGradient = !!gradientTexture;
-        if (shader.locations.u_usePrecomputedGradient) {
+        if (shader.locations.u_usePrecomputedGradient != null) {
           gl.uniform1i(shader.locations.u_usePrecomputedGradient, hasGradient ? 1 : 0);
         }
         if (hasGradient && gradientTexture) {
           bindTexture(gradientTexture, gradientTextureUnit, 'u_gradient');
-        } else if (shader.locations.u_gradient) {
+        } else if (shader.locations.u_gradient != null) {
           gl.uniform1i(shader.locations.u_gradient, 0);
         }
 
@@ -761,16 +768,24 @@
           applyGlobeMatrix: true
         });
 
-        if (shader.locations.u_projection_tile_mercator_coords) {
+        if (shader.locations.u_projection_tile_mercator_coords != null) {
           gl.uniform4f(
             shader.locations.u_projection_tile_mercator_coords,
             ...projectionData.tileMercatorCoords
           );
         }
-        gl.uniform4f(shader.locations.u_projection_clipping_plane, ...projectionData.clippingPlane);
-        gl.uniform1f(shader.locations.u_projection_transition, projectionData.projectionTransition);
-        gl.uniformMatrix4fv(shader.locations.u_projection_matrix, false, projectionData.mainMatrix);
-        gl.uniformMatrix4fv(shader.locations.u_projection_fallback_matrix, false, projectionData.fallbackMatrix);
+        if (shader.locations.u_projection_clipping_plane != null) {
+          gl.uniform4f(shader.locations.u_projection_clipping_plane, ...projectionData.clippingPlane);
+        }
+        if (shader.locations.u_projection_transition != null) {
+          gl.uniform1f(shader.locations.u_projection_transition, projectionData.projectionTransition);
+        }
+        if (shader.locations.u_projection_matrix != null) {
+          gl.uniformMatrix4fv(shader.locations.u_projection_matrix, false, projectionData.mainMatrix);
+        }
+        if (shader.locations.u_projection_fallback_matrix != null) {
+          gl.uniformMatrix4fv(shader.locations.u_projection_fallback_matrix, false, projectionData.fallbackMatrix);
+        }
         gl.uniform2f(shader.locations.u_dimension, tileSize, tileSize);
         gl.uniform1i(shader.locations.u_original_vertex_count, mesh.originalVertexCount);
         gl.uniform1f(shader.locations.u_terrain_exaggeration, 1.0);
@@ -780,30 +795,38 @@
             b: 1.0 / 256.0,
             base: 32768.0
         };
-        gl.uniform4f(
-            shader.locations.u_terrain_unpack,
-            rgbaFactors.r,
-            rgbaFactors.g,
-            rgbaFactors.b,
-            rgbaFactors.base
-        );
-        gl.uniform2f(shader.locations.u_latrange, 47.0, 45.0);
-        gl.uniform1f(shader.locations.u_zoom, canonical.z);
-        if (shader.locations.u_samplingDistance) {
+        if (shader.locations.u_terrain_unpack != null) {
+          gl.uniform4f(
+              shader.locations.u_terrain_unpack,
+              rgbaFactors.r,
+              rgbaFactors.g,
+              rgbaFactors.b,
+              rgbaFactors.base
+          );
+        }
+        if (shader.locations.u_latrange != null) {
+          gl.uniform2f(shader.locations.u_latrange, 47.0, 45.0);
+        }
+        if (shader.locations.u_zoom != null) {
+          gl.uniform1f(shader.locations.u_zoom, zoomForSampling);
+        }
+        if (shader.locations.u_samplingDistance != null) {
           gl.uniform1f(shader.locations.u_samplingDistance, samplingDistance);
         }
 
-        if (currentMode === "snow" && shader.locations.u_snow_altitude) {
+        if (currentMode === "snow" && shader.locations.u_snow_altitude != null) {
           gl.uniform1f(shader.locations.u_snow_altitude, snowAltitude);
-          gl.uniform1f(shader.locations.u_snow_maxSlope, snowMaxSlope);
+          if (shader.locations.u_snow_maxSlope != null) {
+            gl.uniform1f(shader.locations.u_snow_maxSlope, snowMaxSlope);
+          }
         }
-        if (currentMode === "shadow" && shader.locations.u_sunDirection) {
+        if (currentMode === "shadow" && shader.locations.u_sunDirection != null) {
           if (sunParams) {
             gl.uniform2f(shader.locations.u_sunDirection, sunParams.dirX, sunParams.dirY);
-            if (shader.locations.u_sunAltitude) {
+            if (shader.locations.u_sunAltitude != null) {
               gl.uniform1f(shader.locations.u_sunAltitude, sunParams.altitude);
             }
-            if (shader.locations.u_sunWarmColor && Array.isArray(sunParams.warmColor)) {
+            if (shader.locations.u_sunWarmColor != null && Array.isArray(sunParams.warmColor)) {
               gl.uniform3f(
                 shader.locations.u_sunWarmColor,
                 sunParams.warmColor[0],
@@ -811,29 +834,29 @@
                 sunParams.warmColor[2]
               );
             }
-            if (shader.locations.u_sunWarmIntensity) {
+            if (shader.locations.u_sunWarmIntensity != null) {
               gl.uniform1f(shader.locations.u_sunWarmIntensity, sunParams.warmIntensity);
             }
           }
-          if (shader.locations.u_shadowSampleCount) {
+          if (shader.locations.u_shadowSampleCount != null) {
             gl.uniform1i(shader.locations.u_shadowSampleCount, Math.floor(shadowSampleCount));
           }
-          if (shader.locations.u_shadowBlurRadius) {
+          if (shader.locations.u_shadowBlurRadius != null) {
             gl.uniform1f(shader.locations.u_shadowBlurRadius, shadowBlurRadius);
           }
-          if (shader.locations.u_shadowMaxDistance) {
+          if (shader.locations.u_shadowMaxDistance != null) {
             gl.uniform1f(shader.locations.u_shadowMaxDistance, shadowMaxDistance);
           }
-          if (shader.locations.u_shadowVisibilityThreshold) {
+          if (shader.locations.u_shadowVisibilityThreshold != null) {
             gl.uniform1f(shader.locations.u_shadowVisibilityThreshold, shadowVisibilityThreshold);
           }
-          if (shader.locations.u_shadowEdgeSoftness) {
+          if (shader.locations.u_shadowEdgeSoftness != null) {
             gl.uniform1f(shader.locations.u_shadowEdgeSoftness, shadowEdgeSoftness);
           }
-          if (shader.locations.u_shadowMaxOpacity) {
+          if (shader.locations.u_shadowMaxOpacity != null) {
             gl.uniform1f(shader.locations.u_shadowMaxOpacity, shadowMaxOpacity);
           }
-          if (shader.locations.u_shadowRayStepMultiplier) {
+          if (shader.locations.u_shadowRayStepMultiplier != null) {
             gl.uniform1f(shader.locations.u_shadowRayStepMultiplier, shadowRayStepMultiplier);
           }
         }
@@ -917,7 +940,8 @@
         terrainDataCache,
         textureCache,
         neighborOffsets: NEIGHBOR_OFFSETS,
-        samplingDistance
+        samplingDistance,
+        samplingZoom: Math.max(0, Math.min(this.map.getZoom(), DEM_MAX_ZOOM))
       });
 
       const shader = this.getShader(gl, matrix.shaderData);
@@ -1004,22 +1028,45 @@
   });
 
   const originalSetTerrain = map.setTerrain.bind(map);
+  const originalGetTerrain = typeof map.getTerrain === 'function'
+    ? map.getTerrain.bind(map)
+    : null;
   map.setTerrain = function(specification) {
     if (specification) {
       lastTerrainSpecification = { ...lastTerrainSpecification, ...specification };
+      const nextExaggeration = typeof specification.exaggeration === 'number'
+        ? specification.exaggeration
+        : lastTerrainSpecification.exaggeration;
+      isTerrainFlattened = Number.isFinite(nextExaggeration)
+        ? nextExaggeration <= TERRAIN_FLATTEN_EXAGGERATION
+        : false;
       return originalSetTerrain(specification);
     }
     if (!lastTerrainSpecification || !lastTerrainSpecification.source) {
       lastTerrainSpecification = { source: TERRAIN_SOURCE_ID, exaggeration: 1.0 };
     }
-    const flattenedSpecification = { ...lastTerrainSpecification, exaggeration: 0 };
+    isTerrainFlattened = true;
+    const flattenedSpecification = {
+      ...lastTerrainSpecification,
+      exaggeration: TERRAIN_FLATTEN_EXAGGERATION
+    };
     return originalSetTerrain(flattenedSpecification);
   };
+
+  if (originalGetTerrain) {
+    map.getTerrain = function() {
+      if (isTerrainFlattened) {
+        return null;
+      }
+      return originalGetTerrain();
+    };
+  }
   
   map.on('load', () => {
     console.log("Map loaded");
     map.setTerrain({ source: TERRAIN_SOURCE_ID, exaggeration: 1.0 });
     lastTerrainSpecification = { source: TERRAIN_SOURCE_ID, exaggeration: 1.0 };
+    isTerrainFlattened = false;
     const tileManager = getTerrainTileManager(map);
     if (tileManager && typeof tileManager.deltaZoom === 'number') {
       tileManager.deltaZoom = 0;
@@ -1043,7 +1090,12 @@
   });
 
   map.on('terrain', () => {
+    const previousTerrain = cachedTerrainInterface;
     cachedTerrainInterface = null;
+    const refreshedTerrain = getTerrainInterface(map);
+    if (!refreshedTerrain && previousTerrain && previousTerrain.tileManager && isTerrainFlattened) {
+      cachedTerrainInterface = previousTerrain;
+    }
     gradientPreparer.invalidateAll();
     terrainNormalLayer.shaderMap.clear();
     if (map.getLayer('terrain-normal')) {
