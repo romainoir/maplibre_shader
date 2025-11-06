@@ -699,7 +699,6 @@
 
       const sunParams = currentMode === "shadow" ? computeSunParameters(this.map) : null;
       const gradientTextureUnit = NEIGHBOR_OFFSETS.length + 1;
-      const zoomForSampling = Math.max(0, Math.min(this.map ? this.map.getZoom() : 0, DEM_MAX_ZOOM));
 
       for (const tile of renderableTiles) {
         const sourceTile = tileManager.getSourceTile(tile.tileID, true);
@@ -808,7 +807,7 @@
           gl.uniform2f(shader.locations.u_latrange, 47.0, 45.0);
         }
         if (shader.locations.u_zoom != null) {
-          gl.uniform1f(shader.locations.u_zoom, zoomForSampling);
+          gl.uniform1f(shader.locations.u_zoom, canonical.z);
         }
         if (shader.locations.u_samplingDistance != null) {
           gl.uniform1f(shader.locations.u_samplingDistance, samplingDistance);
@@ -940,8 +939,7 @@
         terrainDataCache,
         textureCache,
         neighborOffsets: NEIGHBOR_OFFSETS,
-        samplingDistance,
-        samplingZoom: Math.max(0, Math.min(this.map.getZoom(), DEM_MAX_ZOOM))
+        samplingDistance
       });
 
       const shader = this.getShader(gl, matrix.shaderData);

@@ -360,8 +360,7 @@ void main() {
         terrainDataCache,
         textureCache,
         neighborOffsets,
-        samplingDistance,
-        samplingZoom
+        samplingDistance
       } = options;
 
       if (!gl || !renderableTiles || renderableTiles.length === 0) return;
@@ -371,8 +370,6 @@ void main() {
 
       const activeKeys = new Set();
       const rgbaFactors = { r: 256.0, g: 1.0, b: 1.0 / 256.0, base: 32768.0 };
-      const zoomForSampling = Number.isFinite(samplingZoom) ? Math.max(samplingZoom, 0) : null;
-
       const prevFramebuffer = gl.getParameter(gl.FRAMEBUFFER_BINDING);
       const prevViewport = gl.getParameter(gl.VIEWPORT);
       const blendEnabled = gl.isEnabled(gl.BLEND);
@@ -404,7 +401,7 @@ void main() {
 
         let state = this.tileStates.get(tileKey);
         if (!state) {
-          state = { texture: null, framebuffer: null, version: -1, samplingDistance: null, samplingZoom: null, demUid: null, size: null };
+          state = { texture: null, framebuffer: null, version: -1, samplingDistance: null, demUid: null, size: null };
           this.tileStates.set(tileKey, state);
         }
 
@@ -412,7 +409,6 @@ void main() {
         let needsUpdate = !state.texture
           || state.size !== tileSize
           || state.samplingDistance !== samplingDistance
-          || state.samplingZoom !== zoomForSampling
           || state.version !== this.invalidateVersion
           || state.demUid !== demUid;
 
@@ -448,15 +444,13 @@ void main() {
 
         gl.uniform4f(this.uniforms.u_terrain_unpack, rgbaFactors.r, rgbaFactors.g, rgbaFactors.b, rgbaFactors.base);
         gl.uniform2f(this.uniforms.u_dimension, tileSize, tileSize);
-        const gradientZoom = zoomForSampling !== null ? zoomForSampling : canonical.z;
-        gl.uniform1f(this.uniforms.u_zoom, gradientZoom);
+        gl.uniform1f(this.uniforms.u_zoom, canonical.z);
         gl.uniform1f(this.uniforms.u_samplingDistance, samplingDistance);
 
         gl.drawElements(gl.TRIANGLES, 6, gl.UNSIGNED_SHORT, 0);
 
         state.version = this.invalidateVersion;
         state.samplingDistance = samplingDistance;
-        state.samplingZoom = zoomForSampling;
         state.demUid = demUid;
         state.size = tileSize;
 
