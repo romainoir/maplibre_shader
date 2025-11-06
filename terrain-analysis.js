@@ -12,12 +12,12 @@
   const meshCache = new Map();
   let snowAltitude = 3000;
   let snowMaxSlope = 55; // in degrees
-  let shadowSampleCount = 5;
-  let shadowBlurRadius = 1.5;
-  let shadowMaxDistance = 800; // meters
+  let shadowSampleCount = 1;
+  let shadowBlurRadius = 1.0;
+  let shadowMaxDistance = 14000; // meters
   let shadowVisibilityThreshold = 0.02;
-  let shadowEdgeSoftness = 0.16;
-  let shadowMaxOpacity = 0.72;
+  let shadowEdgeSoftness = 0.01;
+  let shadowMaxOpacity = 0.6;
   let shadowRayStepMultiplier = 1.0;
   const SHADOW_BUFFER_MINUTES = 30;
   const DEFAULT_DAYLIGHT_BOUNDS = { min: 360, max: 1080 };
@@ -175,16 +175,51 @@
     patchPrototype(window.maplibregl?.Transform?.prototype);
     patchPrototype(window.maplibregl?.MercatorTransform?.prototype);
   })();
-  const NEIGHBOR_OFFSETS = [
-    { uniform: 'u_image_left', dx: -1, dy: 0 },
-    { uniform: 'u_image_right', dx: 1, dy: 0 },
-    { uniform: 'u_image_top', dx: 0, dy: -1 },
-    { uniform: 'u_image_bottom', dx: 0, dy: 1 },
-    { uniform: 'u_image_topLeft', dx: -1, dy: -1 },
-    { uniform: 'u_image_topRight', dx: 1, dy: -1 },
-    { uniform: 'u_image_bottomLeft', dx: -1, dy: 1 },
-    { uniform: 'u_image_bottomRight', dx: 1, dy: 1 }
-  ];
+  const MAX_NEIGHBOR_OFFSET = 2;
+  const NEIGHBOR_NAME_OVERRIDES = {
+    '-1,0': 'u_image_left',
+    '1,0': 'u_image_right',
+    '0,-1': 'u_image_top',
+    '0,1': 'u_image_bottom',
+    '-1,-1': 'u_image_topLeft',
+    '1,-1': 'u_image_topRight',
+    '-1,1': 'u_image_bottomLeft',
+    '1,1': 'u_image_bottomRight'
+  };
+
+  function formatOffsetPart(value) {
+    if (value === 0) {
+      return '0';
+    }
+    const prefix = value < 0 ? 'm' : 'p';
+    return `${prefix}${Math.abs(value)}`;
+  }
+
+  function getUniformNameForOffset(dx, dy) {
+    const key = `${dx},${dy}`;
+    if (NEIGHBOR_NAME_OVERRIDES[key]) {
+      return NEIGHBOR_NAME_OVERRIDES[key];
+    }
+    return `u_image_${formatOffsetPart(dx)}_${formatOffsetPart(dy)}`;
+  }
+
+  function generateNeighborOffsets(maxOffset) {
+    const offsets = [];
+    for (let dy = -maxOffset; dy <= maxOffset; dy++) {
+      for (let dx = -maxOffset; dx <= maxOffset; dx++) {
+        if (dx === 0 && dy === 0) continue;
+        if (Math.abs(dx) + Math.abs(dy) > maxOffset) continue;
+        offsets.push({
+          dx,
+          dy,
+          uniform: getUniformNameForOffset(dx, dy)
+        });
+      }
+    }
+    return offsets;
+  }
+
+  const NEIGHBOR_OFFSETS = generateNeighborOffsets(MAX_NEIGHBOR_OFFSET);
 
   function getTileCacheKey(tileID) {
     if (!tileID || !tileID.canonical) return '';
@@ -584,6 +619,8 @@
         console.error("Program link error:", gl.getProgramInfoLog(program));
         return null;
       }
+      const neighborUniforms = NEIGHBOR_OFFSETS.map(offset => offset.uniform);
+
       const uniforms = [
         'u_matrix',
         'u_projection_matrix',
@@ -592,14 +629,7 @@
         'u_projection_tile_mercator_coords',
         'u_projection_fallback_matrix',
         'u_image',
-        'u_image_left',
-        'u_image_right',
-        'u_image_top',
-        'u_image_bottom',
-        'u_image_topLeft',
-        'u_image_topRight',
-        'u_image_bottomLeft',
-        'u_image_bottomRight',
+        ...neighborUniforms,
         'u_gradient',
         'u_usePrecomputedGradient',
         'u_dimension',
@@ -662,6 +692,7 @@
       };
 
       const sunParams = currentMode === "shadow" ? computeSunParameters(this.map) : null;
+      const gradientTextureUnit = NEIGHBOR_OFFSETS.length + 1;
 
       for (const tile of renderableTiles) {
         const sourceTile = tileManager.getSourceTile(tile.tileID, true);
@@ -719,8 +750,8 @@
         if (shader.locations.u_usePrecomputedGradient) {
           gl.uniform1i(shader.locations.u_usePrecomputedGradient, hasGradient ? 1 : 0);
         }
-        if (hasGradient) {
-          bindTexture(gradientTexture, 9, 'u_gradient');
+        if (hasGradient && gradientTexture) {
+          bindTexture(gradientTexture, gradientTextureUnit, 'u_gradient');
         } else if (shader.locations.u_gradient) {
           gl.uniform1i(shader.locations.u_gradient, 0);
         }

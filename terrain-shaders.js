@@ -1,19 +1,65 @@
 /* terrain-shaders.js */
+const SHADER_MAX_NEIGHBOR_OFFSET = 2;
+const SHADER_NEIGHBOR_NAME_OVERRIDES = {
+  '-1,0': 'u_image_left',
+  '1,0': 'u_image_right',
+  '0,-1': 'u_image_top',
+  '0,1': 'u_image_bottom',
+  '-1,-1': 'u_image_topLeft',
+  '1,-1': 'u_image_topRight',
+  '-1,1': 'u_image_bottomLeft',
+  '1,1': 'u_image_bottomRight'
+};
+
+function shaderFormatOffsetPart(value) {
+  if (value === 0) {
+    return '0';
+  }
+  const prefix = value < 0 ? 'm' : 'p';
+  return `${prefix}${Math.abs(value)}`;
+}
+
+function shaderUniformNameForOffset(dx, dy) {
+  const key = `${dx},${dy}`;
+  if (SHADER_NEIGHBOR_NAME_OVERRIDES[key]) {
+    return SHADER_NEIGHBOR_NAME_OVERRIDES[key];
+  }
+  return `u_image_${shaderFormatOffsetPart(dx)}_${shaderFormatOffsetPart(dy)}`;
+}
+
+function shaderBuildNeighborOffsets(maxOffset) {
+  const offsets = [];
+  for (let dy = -maxOffset; dy <= maxOffset; dy++) {
+    for (let dx = -maxOffset; dx <= maxOffset; dx++) {
+      if (dx === 0 && dy === 0) continue;
+      if (Math.abs(dx) + Math.abs(dy) > maxOffset) continue;
+      offsets.push({ dx, dy, uniform: shaderUniformNameForOffset(dx, dy) });
+    }
+  }
+  return offsets;
+}
+
+const SHADER_NEIGHBOR_OFFSETS = shaderBuildNeighborOffsets(SHADER_MAX_NEIGHBOR_OFFSET);
+const SHADER_NEIGHBOR_UNIFORM_DECLARATIONS = SHADER_NEIGHBOR_OFFSETS
+  .map(({ uniform }) => `    uniform sampler2D ${uniform};`)
+  .join('\n');
+const SHADER_NEIGHBOR_UNIFORM_BLOCK = SHADER_NEIGHBOR_UNIFORM_DECLARATIONS
+  ? `${SHADER_NEIGHBOR_UNIFORM_DECLARATIONS}\n`
+  : '';
+const SHADER_NEIGHBOR_FETCH_CASES = SHADER_NEIGHBOR_OFFSETS
+  .map(({ dx, dy, uniform }) => `      if (offset == ivec2(${dx}, ${dy})) {\n        return getElevationFromTexture(${uniform}, tilePos);\n      }`)
+  .join('\n');
+const SHADER_NEIGHBOR_FETCH_BLOCK = SHADER_NEIGHBOR_FETCH_CASES
+  ? `\n${SHADER_NEIGHBOR_FETCH_CASES}\n`
+  : '';
+
 const TerrainShaders = {
   // Common GLSL functions shared among the fragment shaders.
   commonFunctions: `
     precision highp float;
     precision highp int;
     uniform sampler2D u_image;
-    uniform sampler2D u_image_left;
-    uniform sampler2D u_image_right;
-    uniform sampler2D u_image_top;
-    uniform sampler2D u_image_bottom;
-    uniform sampler2D u_image_topLeft;
-    uniform sampler2D u_image_topRight;
-    uniform sampler2D u_image_bottomLeft;
-    uniform sampler2D u_image_bottomRight;
-    uniform sampler2D u_gradient;
+${SHADER_NEIGHBOR_UNIFORM_BLOCK}    uniform sampler2D u_gradient;
     uniform vec4 u_terrain_unpack;
     uniform vec2 u_dimension;
     uniform float u_zoom;
@@ -34,53 +80,48 @@ const TerrainShaders = {
 
     float getElevationExtended(vec2 pos) {
       vec2 tilePos = pos;
-      vec2 offset = vec2(0.0);
-      for (int i = 0; i < 2; i++) {
-        if (tilePos.x < 0.0 && offset.x > -1.5) {
-          tilePos.x += 1.0;
-          offset.x -= 1.0;
+      ivec2 offset = ivec2(0);
+      const int MAX_OFFSET = ${SHADER_MAX_NEIGHBOR_OFFSET};
+      for (int i = 0; i < ${SHADER_MAX_NEIGHBOR_OFFSET * 4}; ++i) {
+        bool adjusted = false;
+        if (tilePos.x < 0.0) {
+          int nextOffsetX = offset.x - 1;
+          if (nextOffsetX >= -MAX_OFFSET && abs(nextOffsetX) + abs(offset.y) <= MAX_OFFSET) {
+            tilePos.x += 1.0;
+            offset.x = nextOffsetX;
+            adjusted = true;
+          }
+        } else if (tilePos.x > 1.0) {
+          int nextOffsetX = offset.x + 1;
+          if (nextOffsetX <= MAX_OFFSET && abs(nextOffsetX) + abs(offset.y) <= MAX_OFFSET) {
+            tilePos.x -= 1.0;
+            offset.x = nextOffsetX;
+            adjusted = true;
+          }
         }
-        if (tilePos.x > 1.0 && offset.x < 1.5) {
-          tilePos.x -= 1.0;
-          offset.x += 1.0;
+        if (tilePos.y < 0.0) {
+          int nextOffsetY = offset.y - 1;
+          if (nextOffsetY >= -MAX_OFFSET && abs(offset.x) + abs(nextOffsetY) <= MAX_OFFSET) {
+            tilePos.y += 1.0;
+            offset.y = nextOffsetY;
+            adjusted = true;
+          }
+        } else if (tilePos.y > 1.0) {
+          int nextOffsetY = offset.y + 1;
+          if (nextOffsetY <= MAX_OFFSET && abs(offset.x) + abs(nextOffsetY) <= MAX_OFFSET) {
+            tilePos.y -= 1.0;
+            offset.y = nextOffsetY;
+            adjusted = true;
+          }
         }
-        if (tilePos.y < 0.0 && offset.y > -1.5) {
-          tilePos.y += 1.0;
-          offset.y -= 1.0;
-        }
-        if (tilePos.y > 1.0 && offset.y < 1.5) {
-          tilePos.y -= 1.0;
-          offset.y += 1.0;
+        if (!adjusted) {
+          break;
         }
       }
-      offset = clamp(offset, vec2(-1.0), vec2(1.0));
+      offset.x = clamp(offset.x, -MAX_OFFSET, MAX_OFFSET);
+      offset.y = clamp(offset.y, -MAX_OFFSET, MAX_OFFSET);
       tilePos = clampTexCoord(tilePos);
-
-      if (offset.x == -1.0 && offset.y == -1.0) {
-        return getElevationFromTexture(u_image_topLeft, tilePos);
-      }
-      if (offset.x == 1.0 && offset.y == -1.0) {
-        return getElevationFromTexture(u_image_topRight, tilePos);
-      }
-      if (offset.x == -1.0 && offset.y == 1.0) {
-        return getElevationFromTexture(u_image_bottomLeft, tilePos);
-      }
-      if (offset.x == 1.0 && offset.y == 1.0) {
-        return getElevationFromTexture(u_image_bottomRight, tilePos);
-      }
-      if (offset.x == -1.0) {
-        return getElevationFromTexture(u_image_left, tilePos);
-      }
-      if (offset.x == 1.0) {
-        return getElevationFromTexture(u_image_right, tilePos);
-      }
-      if (offset.y == -1.0) {
-        return getElevationFromTexture(u_image_top, tilePos);
-      }
-      if (offset.y == 1.0) {
-        return getElevationFromTexture(u_image_bottom, tilePos);
-      }
-      return getElevationFromTexture(u_image, tilePos);
+${SHADER_NEIGHBOR_FETCH_BLOCK}      return getElevationFromTexture(u_image, tilePos);
     }
 
     vec2 computeSobelGradient(vec2 pos) {
@@ -343,13 +384,15 @@ const TerrainShaders = {
           float stepDistance = metersPerPixel / stepMultiplier;
           float maxSlope = -1e6;
           vec2 samplePos = startPos;
+          float minBound = -${SHADER_MAX_NEIGHBOR_OFFSET}.0;
+          float maxBound = 1.0 + ${SHADER_MAX_NEIGHBOR_OFFSET}.0;
           for (int i = 1; i <= MAX_SHADOW_STEPS; ++i) {
             float horizontalMeters = float(i) * stepDistance;
             if (horizontalMeters > u_shadowMaxDistance) {
               break;
             }
             samplePos += effectiveTexelStep;
-            if (samplePos.x < -1.0 || samplePos.x > 2.0 || samplePos.y < -1.0 || samplePos.y > 2.0) {
+            if (samplePos.x < minBound || samplePos.x > maxBound || samplePos.y < minBound || samplePos.y > maxBound) {
               break;
             }
             if (horizontalMeters <= 0.0) {
