@@ -4,6 +4,8 @@
   const EXTENT = 8192;
   const TILE_SIZE = 512;
   const DEM_MAX_ZOOM = 16; // native DEM max zoom
+  const TERRAIN_SOURCE_ID = 'terrain';
+  let lastTerrainSpecification = { source: TERRAIN_SOURCE_ID, exaggeration: 1.0 };
   
   // Global state variables
   let currentMode = ""; // "normal", "avalanche", "slope", "aspect", "snow", or "shadow"
@@ -490,8 +492,12 @@
           applyGlobeMatrix: true
         });
 
-        gl.uniform4f(shader.locations.u_projection_tile_mercator_coords,
-          ...projectionData.tileMercatorCoords);
+        if (shader.locations.u_projection_tile_mercator_coords) {
+          gl.uniform4f(
+            shader.locations.u_projection_tile_mercator_coords,
+            ...projectionData.tileMercatorCoords
+          );
+        }
         gl.uniform4f(shader.locations.u_projection_clipping_plane, ...projectionData.clippingPlane);
         gl.uniform1f(shader.locations.u_projection_transition, projectionData.projectionTransition);
         gl.uniformMatrix4fv(shader.locations.u_projection_matrix, false, projectionData.mainMatrix);
@@ -589,6 +595,19 @@
         if (DEBUG) console.warn("Tile manager not available; skipping render");
         this.map.triggerRepaint();
         return;
+      }
+
+      const terrainSpec = typeof this.map.getTerrain === 'function'
+        ? this.map.getTerrain()
+        : null;
+      const needsManualTileUpdate = (!terrainSpec || terrainSpec.exaggeration === 0)
+        && typeof tileManager.update === 'function';
+      if (needsManualTileUpdate) {
+        try {
+          tileManager.update(this.map.transform, terrainInterface);
+        } catch (error) {
+          if (DEBUG) console.error('Failed to update terrain tiles while terrain is flattened', error);
+        }
       }
 
       if (tileManager.anyTilesAfterTime(Date.now() - 100)) {
@@ -690,7 +709,7 @@
           attribution: '© Swisstopo',
           maxzoom: 19
         },
-        terrain: {
+        [TERRAIN_SOURCE_ID]: {
           type: 'raster-dem',
           tiles: ['https://tiles.mapterhorn.com/{z}/{x}/{y}.webp'],
           tileSize: 512,
@@ -701,7 +720,7 @@
       layers: [
         { id: 'swisstopo', type: 'raster', source: 'swisstopo', paint: {'raster-opacity': 1.0} }
       ],
-      terrain: { source: 'terrain', exaggeration: 1.0 },
+      terrain: { source: TERRAIN_SOURCE_ID, exaggeration: 1.0 },
       background: { paint: { "background-color": "#ffffff" } }
     },
     zoom: 14,
@@ -713,10 +732,24 @@
     minZoom: 2,
     fadeDuration: 500
   });
+
+  const originalSetTerrain = map.setTerrain.bind(map);
+  map.setTerrain = function(specification) {
+    if (specification) {
+      lastTerrainSpecification = { ...lastTerrainSpecification, ...specification };
+      return originalSetTerrain(specification);
+    }
+    if (!lastTerrainSpecification || !lastTerrainSpecification.source) {
+      lastTerrainSpecification = { source: TERRAIN_SOURCE_ID, exaggeration: 1.0 };
+    }
+    const flattenedSpecification = { ...lastTerrainSpecification, exaggeration: 0 };
+    return originalSetTerrain(flattenedSpecification);
+  };
   
   map.on('load', () => {
     console.log("Map loaded");
-    map.setTerrain({ source: 'terrain', exaggeration: 1.0 });
+    map.setTerrain({ source: TERRAIN_SOURCE_ID, exaggeration: 1.0 });
+    lastTerrainSpecification = { source: TERRAIN_SOURCE_ID, exaggeration: 1.0 };
     const tileManager = getTerrainTileManager(map);
     if (tileManager && typeof tileManager.deltaZoom === 'number') {
       tileManager.deltaZoom = 0;

@@ -124,7 +124,6 @@ const TerrainShaders = {
       uniform int    u_original_vertex_count;
       uniform vec4   u_terrain_unpack;
       uniform float  u_terrain_exaggeration;
-      uniform vec4   u_projection_tile_mercator_coords;
 
       in  highp vec2 a_pos;
       out highp vec2 v_texCoord;
