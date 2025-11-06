@@ -53,6 +53,12 @@ const SHADER_NEIGHBOR_FETCH_CASES = SHADER_NEIGHBOR_OFFSETS
 const SHADER_NEIGHBOR_FETCH_BLOCK = SHADER_NEIGHBOR_FETCH_CASES
   ? `\n${SHADER_NEIGHBOR_FETCH_CASES}\n`
   : '';
+const SHADER_NEIGHBOR_FETCH_CASES_LOD = SHADER_NEIGHBOR_OFFSETS
+  .map(({ dx, dy, uniform }) => `      if (offset == ivec2(${dx}, ${dy})) {\n        return getElevationFromTextureLod(${uniform}, tilePos, lod);\n      }`)
+  .join('\n');
+const SHADER_NEIGHBOR_FETCH_BLOCK_LOD = SHADER_NEIGHBOR_FETCH_CASES_LOD
+  ? `\n${SHADER_NEIGHBOR_FETCH_CASES_LOD}\n`
+  : '';
 
 const TerrainShaders = {
   // Common GLSL functions shared among the fragment shaders.
@@ -72,6 +78,11 @@ ${SHADER_NEIGHBOR_UNIFORM_BLOCK}    uniform sampler2D u_gradient;
     float getElevationFromTexture(sampler2D tex, vec2 pos) {
       vec3 data = texture(tex, pos).rgb * 255.0;
       // Terrarium encoding: elevation = (R * 256 + G + B / 256) - 32768
+      return dot(data, vec3(256.0, 1.0, 1.0 / 256.0)) - 32768.0;
+    }
+
+    float getElevationFromTextureLod(sampler2D tex, vec2 pos, float lod) {
+      vec3 data = textureLod(tex, pos, lod).rgb * 255.0;
       return dot(data, vec3(256.0, 1.0, 1.0 / 256.0)) - 32768.0;
     }
 
@@ -124,6 +135,71 @@ ${SHADER_NEIGHBOR_UNIFORM_BLOCK}    uniform sampler2D u_gradient;
       offset.y = clamp(offset.y, -MAX_OFFSET, MAX_OFFSET);
       tilePos = clampTexCoord(tilePos);
 ${SHADER_NEIGHBOR_FETCH_BLOCK}      return getElevationFromTexture(u_image, tilePos);
+    }
+
+    float getElevationExtendedLod(vec2 pos, float lod) {
+      vec2 tilePos = pos;
+      ivec2 offset = ivec2(0);
+      const int MAX_OFFSET = ${SHADER_MAX_NEIGHBOR_OFFSET};
+      for (int i = 0; i < ${SHADER_MAX_NEIGHBOR_OFFSET * 4}; ++i) {
+        bool adjusted = false;
+        if (tilePos.x < 0.0) {
+          int nextOffsetX = offset.x - 1;
+          if (nextOffsetX >= -MAX_OFFSET && abs(nextOffsetX) + abs(offset.y) <= MAX_OFFSET) {
+            tilePos.x += 1.0;
+            offset.x = nextOffsetX;
+            adjusted = true;
+          }
+        } else if (tilePos.x > 1.0) {
+          int nextOffsetX = offset.x + 1;
+          if (nextOffsetX <= MAX_OFFSET && abs(nextOffsetX) + abs(offset.y) <= MAX_OFFSET) {
+            tilePos.x -= 1.0;
+            offset.x = nextOffsetX;
+            adjusted = true;
+          }
+        }
+        if (tilePos.y < 0.0) {
+          int nextOffsetY = offset.y - 1;
+          if (nextOffsetY >= -MAX_OFFSET && abs(offset.x) + abs(nextOffsetY) <= MAX_OFFSET) {
+            tilePos.y += 1.0;
+            offset.y = nextOffsetY;
+            adjusted = true;
+          }
+        } else if (tilePos.y > 1.0) {
+          int nextOffsetY = offset.y + 1;
+          if (nextOffsetY <= MAX_OFFSET && abs(offset.x) + abs(nextOffsetY) <= MAX_OFFSET) {
+            tilePos.y -= 1.0;
+            offset.y = nextOffsetY;
+            adjusted = true;
+          }
+        }
+        if (!adjusted) {
+          break;
+        }
+      }
+      offset.x = clamp(offset.x, -MAX_OFFSET, MAX_OFFSET);
+      offset.y = clamp(offset.y, -MAX_OFFSET, MAX_OFFSET);
+      tilePos = clampTexCoord(tilePos);
+${SHADER_NEIGHBOR_FETCH_BLOCK_LOD}      return getElevationFromTextureLod(u_image, tilePos, lod);
+    }
+
+    float computeRaySampleLod(float horizontalMeters, float metersPerPixel) {
+      float texelFootprint = horizontalMeters / max(metersPerPixel, 0.0001);
+      float lod = log2(max(texelFootprint, 1.0)) - 2.0;
+      return clamp(lod, 0.0, 8.0);
+    }
+
+    float sampleElevationAdaptive(vec2 pos, float horizontalMeters, float metersPerPixel) {
+      float lod = computeRaySampleLod(horizontalMeters, metersPerPixel);
+      if (lod <= 0.001) {
+        return getElevationExtended(pos);
+      }
+      return getElevationExtendedLod(pos, lod);
+    }
+
+    float computeAdaptiveStepGrowth(float horizontalMeters) {
+      float t = clamp(horizontalMeters / 6000.0, 0.0, 1.0);
+      return mix(1.04, 1.10, t);
     }
 
     vec2 computeSobelGradient(vec2 pos) {
@@ -427,26 +503,29 @@ ${SHADER_NEIGHBOR_FETCH_BLOCK}      return getElevationFromTexture(u_image, tile
           float threshold = max(u_shadowVisibilityThreshold, 0.0);
           float softness = max(u_shadowEdgeSoftness, 0.0);
           float stepMultiplier = max(u_shadowRayStepMultiplier, 0.1);
-          vec2 effectiveTexelStep = texelStep / stepMultiplier;
-          float stepDistance = metersPerPixel / stepMultiplier;
+          vec2 baseTexelStep = texelStep / stepMultiplier;
+          float baseStepDistance = metersPerPixel / stepMultiplier;
           float maxSlope = -1e6;
           vec2 samplePos = startPos;
           float minBound = -${SHADER_MAX_NEIGHBOR_OFFSET}.0;
           float maxBound = 1.0 + ${SHADER_MAX_NEIGHBOR_OFFSET}.0;
-          for (int i = 1; i <= MAX_SHADOW_STEPS; ++i) {
-            float horizontalMeters = float(i) * stepDistance;
-            if (horizontalMeters > u_shadowMaxDistance) {
+          float stepFactor = 1.0;
+          float traveled = 0.0;
+          for (int i = 0; i < MAX_SHADOW_STEPS; ++i) {
+            float nextDistance = traveled + baseStepDistance * stepFactor;
+            if (nextDistance > u_shadowMaxDistance) {
               break;
             }
-            samplePos += effectiveTexelStep;
+            samplePos += baseTexelStep * stepFactor;
             if (samplePos.x < minBound || samplePos.x > maxBound || samplePos.y < minBound || samplePos.y > maxBound) {
               break;
             }
-            if (horizontalMeters <= 0.0) {
+            traveled = nextDistance;
+            if (traveled <= 0.0) {
               continue;
             }
-            float sampleElevation = getElevationExtended(samplePos);
-            float slope = (sampleElevation - currentElevation) / horizontalMeters;
+            float sampleElevation = sampleElevationAdaptive(samplePos, traveled, metersPerPixel);
+            float slope = (sampleElevation - currentElevation) / traveled;
             maxSlope = max(maxSlope, slope);
             if (maxSlope >= sunSlope - threshold) {
               float visibilityNow = sunSlope - maxSlope;
@@ -455,6 +534,8 @@ ${SHADER_NEIGHBOR_FETCH_BLOCK}      return getElevationFromTexture(u_image, tile
               }
               return smoothstep(threshold, threshold + softness, visibilityNow);
             }
+            float growth = computeAdaptiveStepGrowth(traveled);
+            stepFactor = min(stepFactor * growth, 64.0);
           }
           float visibility = sunSlope - maxSlope;
           if (softness <= 0.0001) {
@@ -556,26 +637,29 @@ ${SHADER_NEIGHBOR_FETCH_BLOCK}      return getElevationFromTexture(u_image, tile
           float threshold = max(u_shadowVisibilityThreshold, 0.0);
           float softness = max(u_shadowEdgeSoftness, 0.0);
           float stepMultiplier = max(u_shadowRayStepMultiplier, 0.1);
-          vec2 effectiveTexelStep = texelStep / stepMultiplier;
-          float stepDistance = metersPerPixel / stepMultiplier;
+          vec2 baseTexelStep = texelStep / stepMultiplier;
+          float baseStepDistance = metersPerPixel / stepMultiplier;
           float maxSlope = -1e6;
           vec2 samplePos = startPos;
           float minBound = -${SHADER_MAX_NEIGHBOR_OFFSET}.0;
           float maxBound = 1.0 + ${SHADER_MAX_NEIGHBOR_OFFSET}.0;
-          for (int i = 1; i <= MAX_DAYLIGHT_STEPS; ++i) {
-            float horizontalMeters = float(i) * stepDistance;
-            if (horizontalMeters > u_shadowMaxDistance) {
+          float stepFactor = 1.0;
+          float traveled = 0.0;
+          for (int i = 0; i < MAX_DAYLIGHT_STEPS; ++i) {
+            float nextDistance = traveled + baseStepDistance * stepFactor;
+            if (nextDistance > u_shadowMaxDistance) {
               break;
             }
-            samplePos += effectiveTexelStep;
+            samplePos += baseTexelStep * stepFactor;
             if (samplePos.x < minBound || samplePos.x > maxBound || samplePos.y < minBound || samplePos.y > maxBound) {
               break;
             }
-            if (horizontalMeters <= 0.0) {
+            traveled = nextDistance;
+            if (traveled <= 0.0) {
               continue;
             }
-            float sampleElevation = getElevationExtended(samplePos);
-            float slope = (sampleElevation - currentElevation) / horizontalMeters;
+            float sampleElevation = sampleElevationAdaptive(samplePos, traveled, metersPerPixel);
+            float slope = (sampleElevation - currentElevation) / traveled;
             maxSlope = max(maxSlope, slope);
             if (maxSlope >= sunSlope - threshold) {
               float visibilityNow = sunSlope - maxSlope;
@@ -584,6 +668,8 @@ ${SHADER_NEIGHBOR_FETCH_BLOCK}      return getElevationFromTexture(u_image, tile
               }
               return smoothstep(threshold, threshold + softness, visibilityNow);
             }
+            float growth = computeAdaptiveStepGrowth(traveled);
+            stepFactor = min(stepFactor * growth, 64.0);
           }
           float visibility = sunSlope - maxSlope;
           if (softness <= 0.0001) {
