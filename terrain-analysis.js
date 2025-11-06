@@ -570,7 +570,7 @@
       if (DEBUG && (renderedCount > 0 || skippedCount > 0)) {
         console.log(`Rendered ${renderedCount} tiles, skipped ${skippedCount} tiles`);
       }
-    }
+    },
 
     render(gl, matrix) {
       // Increment frame counter
