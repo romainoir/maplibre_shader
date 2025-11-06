@@ -1,5 +1,6 @@
 /* terrain-shaders.js */
 const SHADER_MAX_NEIGHBOR_OFFSET = 2;
+const DAYLIGHT_SHADER_SAMPLE_CAP = 24;
 const SHADER_NEIGHBOR_NAME_OVERRIDES = {
   '-1,0': 'u_image_left',
   '1,0': 'u_image_right',
@@ -522,6 +523,154 @@ ${SHADER_NEIGHBOR_FETCH_BLOCK}      return getElevationFromTexture(u_image, tile
           vec3 warmTint = mix(vec3(1.0), clamp(u_sunWarmColor, 0.0, 1.0), warmMix);
           vec3 finalColor = baseBrightness * warmTint;
           fragColor = vec4(finalColor, 1.0);
+        }`;
+
+      case "daylight":
+        return `#version 300 es
+        precision highp float;
+        precision highp int;
+        ${this.commonFunctions}
+        uniform int   u_daylightSampleCount;
+        uniform vec2  u_daylightSunDir[${DAYLIGHT_SHADER_SAMPLE_CAP}];
+        uniform float u_daylightSunAltitude[${DAYLIGHT_SHADER_SAMPLE_CAP}];
+        uniform float u_daylightSampleWeight[${DAYLIGHT_SHADER_SAMPLE_CAP}];
+        uniform float u_daylightSampleTime[${DAYLIGHT_SHADER_SAMPLE_CAP}];
+        uniform int   u_shadowSampleCount;
+        uniform float u_shadowBlurRadius;
+        uniform float u_shadowMaxDistance;
+        uniform float u_shadowVisibilityThreshold;
+        uniform float u_shadowEdgeSoftness;
+        uniform float u_shadowRayStepMultiplier;
+        in  highp vec2  v_texCoord;
+        in  highp float v_elevation;
+        out vec4 fragColor;
+
+        const int MAX_DAYLIGHT_STEPS = 512;
+        const int MAX_DAYLIGHT_KERNEL_SAMPLES = 64;
+        const int MAX_DAYLIGHT_SAMPLES = ${DAYLIGHT_SHADER_SAMPLE_CAP};
+
+        float traceDaylightRay(vec2 startPos, float currentElevation, vec2 texelStep, float metersPerPixel, float sunSlope) {
+          if (u_shadowMaxDistance <= 0.0) {
+            return 1.0;
+          }
+          float threshold = max(u_shadowVisibilityThreshold, 0.0);
+          float softness = max(u_shadowEdgeSoftness, 0.0);
+          float stepMultiplier = max(u_shadowRayStepMultiplier, 0.1);
+          vec2 effectiveTexelStep = texelStep / stepMultiplier;
+          float stepDistance = metersPerPixel / stepMultiplier;
+          float maxSlope = -1e6;
+          vec2 samplePos = startPos;
+          float minBound = -${SHADER_MAX_NEIGHBOR_OFFSET}.0;
+          float maxBound = 1.0 + ${SHADER_MAX_NEIGHBOR_OFFSET}.0;
+          for (int i = 1; i <= MAX_DAYLIGHT_STEPS; ++i) {
+            float horizontalMeters = float(i) * stepDistance;
+            if (horizontalMeters > u_shadowMaxDistance) {
+              break;
+            }
+            samplePos += effectiveTexelStep;
+            if (samplePos.x < minBound || samplePos.x > maxBound || samplePos.y < minBound || samplePos.y > maxBound) {
+              break;
+            }
+            if (horizontalMeters <= 0.0) {
+              continue;
+            }
+            float sampleElevation = getElevationExtended(samplePos);
+            float slope = (sampleElevation - currentElevation) / horizontalMeters;
+            maxSlope = max(maxSlope, slope);
+            if (maxSlope >= sunSlope - threshold) {
+              float visibilityNow = sunSlope - maxSlope;
+              if (softness <= 0.0001) {
+                return visibilityNow > threshold ? 1.0 : 0.0;
+              }
+              return smoothstep(threshold, threshold + softness, visibilityNow);
+            }
+          }
+          float visibility = sunSlope - maxSlope;
+          if (softness <= 0.0001) {
+            return visibility > threshold ? 1.0 : 0.0;
+          }
+          return smoothstep(threshold, threshold + softness, visibility);
+        }
+
+        float computeDaylightVisibility(vec2 pos, float currentElevation, vec2 horizontalDir, float sunAltitude) {
+          if (sunAltitude <= 0.0) {
+            return 0.0;
+          }
+
+          vec2 dir = normalize(horizontalDir);
+          if (length(dir) < 1e-5) {
+            return 1.0;
+          }
+
+          float tileResolution = u_dimension.x;
+          vec2 texelStep = dir / tileResolution;
+          float metersPerPixel = max(u_metersPerPixel, 0.0001);
+          float clampedAltitude = clamp(sunAltitude, -1.55334306, 1.55334306);
+          float sunSlope = tan(clampedAltitude);
+
+          vec2 perpendicular = vec2(-dir.y, dir.x);
+          int sampleCount = clamp(u_shadowSampleCount, 1, MAX_DAYLIGHT_KERNEL_SAMPLES);
+          float radius = max(u_shadowBlurRadius, 0.0);
+          if (radius <= 0.0) {
+            sampleCount = 1;
+          }
+          float visibility = 0.0;
+          float weightSum = 0.0;
+          for (int i = 0; i < MAX_DAYLIGHT_KERNEL_SAMPLES; ++i) {
+            if (i >= sampleCount) {
+              break;
+            }
+            float idx = float(i) - 0.5 * float(sampleCount - 1);
+            float normalized = (sampleCount == 1) ? 0.0 : idx / float(sampleCount - 1);
+            float offsetAmount = (sampleCount == 1 || radius <= 0.0) ? 0.0 : normalized * radius;
+            vec2 offsetPos = pos + perpendicular * (offsetAmount / tileResolution);
+            float sigma = max(radius * 0.5, 0.0001);
+            float weight = (radius <= 0.0 || sampleCount == 1) ? 1.0 : exp(-0.5 * pow(offsetAmount / sigma, 2.0));
+            visibility += weight * traceDaylightRay(offsetPos, currentElevation, texelStep, metersPerPixel, sunSlope);
+            weightSum += weight;
+          }
+          if (weightSum > 0.0) {
+            visibility /= weightSum;
+          }
+          return visibility;
+        }
+
+        vec3 getSunExposureColor(float durationRatio, float sunriseRatio) {
+          vec3 cold = vec3(0.1, 0.2, 0.7);
+          vec3 warm = vec3(0.94, 0.35, 0.2);
+          vec3 base = mix(cold, warm, clamp(durationRatio, 0.0, 1.0));
+          float brightness = mix(0.45, 1.0, clamp(1.0 - sunriseRatio, 0.0, 1.0));
+          return clamp(base * brightness, 0.0, 1.0);
+        }
+
+        void main() {
+          float totalWeight = 0.0;
+          float litWeight = 0.0;
+          float firstLitTime = -1.0;
+          for (int i = 0; i < MAX_DAYLIGHT_SAMPLES; ++i) {
+            if (i >= u_daylightSampleCount) {
+              break;
+            }
+            float weight = max(u_daylightSampleWeight[i], 0.0);
+            if (weight <= 0.0) {
+              continue;
+            }
+            float altitude = u_daylightSunAltitude[i];
+            if (altitude <= 0.0) {
+              continue;
+            }
+            vec2 sunDir = u_daylightSunDir[i];
+            float visibility = computeDaylightVisibility(v_texCoord, v_elevation, sunDir, altitude);
+            totalWeight += weight;
+            litWeight += weight * visibility;
+            if (firstLitTime < 0.0 && visibility > 0.5) {
+              firstLitTime = clamp(u_daylightSampleTime[i], 0.0, 1.0);
+            }
+          }
+          float durationRatio = totalWeight > 0.0 ? clamp(litWeight / max(totalWeight, 1e-4), 0.0, 1.0) : 0.0;
+          float sunriseRatio = firstLitTime >= 0.0 ? firstLitTime : 1.0;
+          vec3 color = getSunExposureColor(durationRatio, sunriseRatio);
+          fragColor = vec4(color, 0.85);
         }`;
 
       default:
