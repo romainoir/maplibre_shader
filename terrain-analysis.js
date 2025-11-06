@@ -140,6 +140,36 @@
     { uniform: 'u_image_bottomRight', dx: 1, dy: 1 }
   ];
 
+  function getTileCacheKey(tileID) {
+    if (!tileID || !tileID.canonical) return '';
+    const canonical = tileID.canonical;
+    return `${canonical.z}/${tileID.wrap}/${canonical.x}/${canonical.y}`;
+  }
+
+  function getNeighborCacheKey(tileID, dx, dy) {
+    if (!tileID || !tileID.canonical) return null;
+    const canonical = tileID.canonical;
+    const dim = Math.pow(2, canonical.z);
+
+    let nx = canonical.x + dx;
+    let ny = canonical.y + dy;
+    let wrap = tileID.wrap;
+
+    if (ny < 0 || ny >= dim) {
+      return null;
+    }
+
+    if (nx < 0) {
+      nx += dim;
+      wrap -= 1;
+    } else if (nx >= dim) {
+      nx -= dim;
+      wrap += 1;
+    }
+
+    return `${canonical.z}/${wrap}/${nx}/${ny}`;
+  }
+
   function getShadowDateTime() {
     const now = new Date();
     const dateStr = shadowDateValue || now.toISOString().slice(0, 10);
@@ -506,10 +536,9 @@
       let renderedCount = 0;
       let skippedCount = 0;
 
-      const getNeighborTexture = (z, x, y, dx, dy, fallbackTexture) => {
-        const nx = x + dx;
-        const ny = y + dy;
-        const key = `${z}/${nx}/${ny}`;
+      const getNeighborTexture = (tileID, dx, dy, fallbackTexture) => {
+        const key = getNeighborCacheKey(tileID, dx, dy);
+        if (!key) return fallbackTexture;
         return textureCache.has(key) ? textureCache.get(key) : fallbackTexture;
       };
 
@@ -568,9 +597,7 @@
           if (currentMode === "shadow") {
             NEIGHBOR_OFFSETS.forEach((neighbor, index) => {
               const texture = getNeighborTexture(
-                canonical.z,
-                canonical.x,
-                canonical.y,
+                tile.tileID,
                 neighbor.dx,
                 neighbor.dy,
                 terrainData.texture
@@ -737,8 +764,7 @@
           ? terrainInterface.getTerrainData(tile.tileID)
           : null;
         if (!terrainData || !terrainData.texture || terrainData.fallback) continue;
-        const canonical = tile.tileID.canonical;
-        const cacheKey = `${canonical.z}/${canonical.x}/${canonical.y}`;
+        const cacheKey = getTileCacheKey(tile.tileID);
         terrainDataCache.set(tile.tileID.key, terrainData);
         textureCache.set(cacheKey, terrainData.texture);
       }

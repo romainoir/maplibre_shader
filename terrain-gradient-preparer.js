@@ -266,6 +266,30 @@ const TerrainGradientPreparer = (function() {
       gl.uniform1i(location, unit);
     }
 
+    getNeighborCacheKey(tileID, offset) {
+      if (!tileID || !tileID.canonical) return null;
+      const canonical = tileID.canonical;
+      const dim = Math.pow(2, canonical.z);
+
+      let nx = canonical.x + offset.dx;
+      let ny = canonical.y + offset.dy;
+      let wrap = tileID.wrap;
+
+      if (ny < 0 || ny >= dim) {
+        return null;
+      }
+
+      if (nx < 0) {
+        nx += dim;
+        wrap -= 1;
+      } else if (nx >= dim) {
+        nx -= dim;
+        wrap += 1;
+      }
+
+      return `${canonical.z}/${wrap}/${nx}/${ny}`;
+    }
+
     restoreFramebuffer(gl, prevFramebuffer) {
       if (prevFramebuffer) {
         gl.bindFramebuffer(gl.FRAMEBUFFER, prevFramebuffer);
@@ -329,22 +353,33 @@ const TerrainGradientPreparer = (function() {
           this.tileStates.set(tileKey, state);
         }
 
-        const needsUpdate = !state.texture || state.size !== tileSize || state.samplingDistance !== samplingDistance || state.version !== this.invalidateVersion || state.demUid !== demUid;
+        const hillshadePending = !!(sourceTile && sourceTile.needsHillshadePrepare);
+        let needsUpdate = !state.texture || state.size !== tileSize || state.samplingDistance !== samplingDistance || state.version !== this.invalidateVersion || state.demUid !== demUid;
+
+        if (!needsUpdate && hillshadePending) {
+          needsUpdate = true;
+        }
 
         if (!needsUpdate) continue;
 
         this.ensureTileResources(gl, state, tileSize);
         gl.viewport(0, 0, tileSize, tileSize);
 
-        this.bindInputTexture(gl, 0, terrainData.texture, this.uniforms.u_image);
-
         const canonical = tile.tileID.canonical;
+
         const neighborTextures = neighborOffsets.map(offset => {
-          const nx = canonical.x + offset.dx;
-          const ny = canonical.y + offset.dy;
-          const key = `${canonical.z}/${nx}/${ny}`;
-          return textureCache.get(key) || terrainData.texture;
+          const neighborKey = this.getNeighborCacheKey(tile.tileID, offset);
+          if (!neighborKey) {
+            return terrainData.texture;
+          }
+          const texture = textureCache.get(neighborKey);
+          if (!texture) {
+            return terrainData.texture;
+          }
+          return texture;
         });
+
+        this.bindInputTexture(gl, 0, terrainData.texture, this.uniforms.u_image);
 
         this.bindInputTexture(gl, 1, neighborTextures[0], this.uniforms.u_image_left);
         this.bindInputTexture(gl, 2, neighborTextures[1], this.uniforms.u_image_right);
@@ -366,6 +401,10 @@ const TerrainGradientPreparer = (function() {
         state.samplingDistance = samplingDistance;
         state.demUid = demUid;
         state.size = tileSize;
+
+        if (sourceTile) {
+          sourceTile.needsHillshadePrepare = false;
+        }
       }
 
       gl.disableVertexAttribArray(this.attributes.a_pos);
