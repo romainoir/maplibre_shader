@@ -25,6 +25,110 @@
   let map;
 
   const gradientPreparer = TerrainGradientPreparer.create();
+
+  /**
+   * MapLibre GL JS 5.11.0 ships a Mercator transform helper that throws a
+   * "Not implemented" error when `getRayDirectionFromPixel` is invoked.
+   * Some of the built-in controls (navigation, terrain and globe controls)
+   * rely on this method being available which causes the render loop to crash
+   * as soon as it is accessed. The CDN build we consume does not yet include
+   * the fix, therefore we patch the prototype at runtime with a small helper
+   * that reconstructs the ray direction using the inverse pixel matrix.
+   *
+   * The implementation mirrors the behaviour of the upstream method by
+   * unprojecting the provided pixel against the near and far clip planes and
+   * normalising the resulting vector.
+   */
+  (function patchGetRayDirectionFromPixel() {
+    if (!window.maplibregl) return;
+
+    const multiplyMat4Vec4 = (m, v) => {
+      const [x, y, z, w] = v;
+      return [
+        m[0] * x + m[4] * y + m[8] * z + m[12] * w,
+        m[1] * x + m[5] * y + m[9] * z + m[13] * w,
+        m[2] * x + m[6] * y + m[10] * z + m[14] * w,
+        m[3] * x + m[7] * y + m[11] * z + m[15] * w
+      ];
+    };
+
+    const normalise = (vec) => {
+      const length = Math.hypot(vec[0], vec[1], vec[2]);
+      if (length === 0) return [0, 0, -1];
+      return [vec[0] / length, vec[1] / length, vec[2] / length];
+    };
+
+    const resolvePointLike = (pointLike) => {
+      if (Array.isArray(pointLike)) {
+        return {x: pointLike[0], y: pointLike[1]};
+      }
+      if (pointLike && typeof pointLike === 'object') {
+        if ('x' in pointLike && 'y' in pointLike) {
+          return {x: Number(pointLike.x), y: Number(pointLike.y)};
+        }
+        if ('lng' in pointLike && 'lat' in pointLike) {
+          // MapLibre occasionally passes a Point class instance which exposes
+          // `lng`/`lat`. Treat it as pixel coordinates to avoid throwing.
+          return {x: Number(pointLike.lng), y: Number(pointLike.lat)};
+        }
+      }
+      return {x: 0, y: 0};
+    };
+
+    const patchPrototype = (prototype) => {
+      if (!prototype) return;
+      const original = prototype.getRayDirectionFromPixel;
+      const needsPatch = !original || /Not implemented/.test(String(original));
+      if (!needsPatch) return;
+
+      prototype.getRayDirectionFromPixel = function(pointLike, coordinateOrigin = 'viewport') {
+        const point = resolvePointLike(pointLike);
+        const width = this.width || 0;
+        const height = this.height || 0;
+
+        if (!width || !height) {
+          return new Float32Array([0, 0, -1]);
+        }
+
+        let x = point.x;
+        let y = point.y;
+        if (coordinateOrigin === 'center') {
+          x += width / 2;
+          y += height / 2;
+        }
+
+        if (!this.pixelMatrixInverse) {
+          if (typeof this._calcMatrices === 'function') {
+            this._calcMatrices();
+          }
+          if (!this.pixelMatrixInverse) {
+            return new Float32Array([0, 0, -1]);
+          }
+        }
+
+        const inv = this.pixelMatrixInverse;
+        const near = multiplyMat4Vec4(inv, [x, y, 0, 1]);
+        const far = multiplyMat4Vec4(inv, [x, y, 1, 1]);
+
+        const nearW = near[3] || 1;
+        const farW = far[3] || 1;
+        const nearPoint = [near[0] / nearW, near[1] / nearW, near[2] / nearW];
+        const farPoint = [far[0] / farW, far[1] / farW, far[2] / farW];
+
+        const direction = [
+          farPoint[0] - nearPoint[0],
+          farPoint[1] - nearPoint[1],
+          farPoint[2] - nearPoint[2]
+        ];
+
+        const normalised = normalise(direction);
+        return new Float32Array(normalised);
+      };
+    };
+
+    patchPrototype(window.maplibregl?.Transform?.prototype);
+    patchPrototype(window.maplibregl?.MercatorTransform?.prototype);
+  })();
   const NEIGHBOR_OFFSETS = [
     { uniform: 'u_image_left', dx: -1, dy: 0 },
     { uniform: 'u_image_right', dx: 1, dy: 0 },
