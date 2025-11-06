@@ -24,6 +24,9 @@
     demEvents: [],
     demSnapshots: [],
     drawCalls: [],
+    maps: new Set(),
+    mapOptions: typeof WeakMap !== 'undefined' ? new WeakMap() : new Map(),
+    lastAttachedMap: null,
     options: {
       bufferSampleLimit: DEFAULT_BUFFER_SAMPLE_LIMIT,
       indexSampleLimit: DEFAULT_INDEX_SAMPLE_LIMIT,
@@ -609,6 +612,111 @@
     return results;
   }
 
+  function rememberMap(map, options = {}) {
+    if (!map) {
+      return;
+    }
+    debugState.maps.add(map);
+    debugState.lastAttachedMap = map;
+    const store = debugState.mapOptions;
+    if (store && typeof store.set === 'function') {
+      const existing = (typeof store.get === 'function' ? store.get(map) : null) || {};
+      if (options.layerId) {
+        existing.layerId = options.layerId;
+      }
+      if (options.sourceId) {
+        existing.sourceId = options.sourceId;
+      }
+      store.set(map, existing);
+    }
+  }
+
+  function getStoredMapOptions(map) {
+    if (!map) {
+      return {};
+    }
+    const store = debugState.mapOptions;
+    if (store && typeof store.get === 'function') {
+      return store.get(map) || {};
+    }
+    return {};
+  }
+
+  function resolveMapCandidate(mapCandidate) {
+    if (mapCandidate) {
+      return mapCandidate;
+    }
+    if (debugState.lastAttachedMap) {
+      return debugState.lastAttachedMap;
+    }
+    for (const candidate of debugState.maps) {
+      return candidate;
+    }
+    return null;
+  }
+
+  function getTiles(options = {}) {
+    const resolvedMap = resolveMapCandidate(options.map || options.mapInstance);
+    if (!resolvedMap || !resolvedMap.style) {
+      return [];
+    }
+
+    const storedOptions = getStoredMapOptions(resolvedMap);
+    const resolvedSourceId = options.sourceId || options.source || storedOptions.sourceId || debugState.demSourceId;
+    if (!resolvedSourceId) {
+      return [];
+    }
+
+    const style = resolvedMap.style;
+    let cache = null;
+    try {
+      const sourceCaches = style.sourceCaches || style._sourceCaches || {};
+      cache = sourceCaches[resolvedSourceId] || (typeof style.getSourceCache === 'function' ? style.getSourceCache(resolvedSourceId) : null);
+    } catch (error) {
+      cache = null;
+    }
+
+    if (!cache) {
+      return [];
+    }
+
+    const tiles = cache._tiles || cache.tiles || {};
+    const results = [];
+    const onlyRenderable = Boolean(options.onlyRenderable);
+    const onlyPrepared = Boolean(options.onlyPrepared);
+
+    const pushTile = (tile) => {
+      if (!tile) return;
+      if (onlyRenderable) {
+        let renderable = false;
+        try {
+          renderable = typeof tile.isRenderable === 'function' ? tile.isRenderable(false) : tile.state === 'loaded' || tile.state === 'reloading';
+        } catch (error) {
+          renderable = false;
+        }
+        if (!renderable) {
+          return;
+        }
+      }
+      if (onlyPrepared) {
+        if (!tile.fbo || !tile.fbo.colorAttachment || tile.needsHillshadePrepare) {
+          return;
+        }
+      }
+      results.push(tile);
+    };
+
+    if (Array.isArray(tiles)) {
+      tiles.forEach(tile => pushTile(tile));
+    } else if (tiles && typeof tiles === 'object') {
+      Object.keys(tiles).forEach((key) => {
+        pushTile(tiles[key]);
+      });
+    }
+
+    return results;
+  }
+
   function extractTileDebugInfo(tile) {
     const tileID = tile && tile.tileID;
     const canonical = tileID && tileID.canonical;
@@ -715,6 +823,7 @@
       return;
     }
     debugState.demSourceId = sourceId;
+    rememberMap(map, {sourceId});
     if (map.__hillshadeDemWatcherInstalled) {
       return;
     }
@@ -799,6 +908,7 @@
     if (!map) {
       return;
     }
+    rememberMap(map, {layerId, sourceId});
     if (sourceId) {
       watchTerrainSource(map, sourceId);
     }
@@ -825,6 +935,7 @@
     addLayerTarget,
     removeLayerTarget,
     setLayerTargets,
+    getTiles,
     getDrawCalls,
     getDemEvents,
     getDemSnapshots,
