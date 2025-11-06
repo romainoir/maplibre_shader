@@ -24,7 +24,7 @@ const TerrainShaders = {
     }
 
     vec2 clampTexCoord(vec2 pos) {
-      float border = 1.0 / u_dimension.x;
+      float border = 0.5 / u_dimension.x;
       return clamp(pos, vec2(border), vec2(1.0 - border));
     }
 
@@ -89,7 +89,7 @@ const TerrainShaders = {
     }
 
     vec2 computeSobelGradient(vec2 pos) {
-      vec2 safePos = clampTexCoord(pos);
+      vec2 safePos = pos;
       float metersPerPixel = 1.5 * pow(2.0, 16.0 - u_zoom);
       float metersPerTile  = metersPerPixel * u_dimension.x;
       float sampleDist = max(u_samplingDistance, 0.0001);
@@ -337,6 +337,8 @@ const TerrainShaders = {
           if (u_shadowMaxDistance <= 0.0) {
             return 1.0;
           }
+          float threshold = max(u_shadowVisibilityThreshold, 0.0);
+          float softness = max(u_shadowEdgeSoftness, 0.0);
           float stepMultiplier = max(u_shadowRayStepMultiplier, 0.1);
           vec2 effectiveTexelStep = texelStep / stepMultiplier;
           float stepDistance = metersPerPixel / stepMultiplier;
@@ -357,10 +359,15 @@ const TerrainShaders = {
             float sampleElevation = getElevationExtended(samplePos);
             float slope = (sampleElevation - currentElevation) / horizontalMeters;
             maxSlope = max(maxSlope, slope);
+            if (maxSlope >= sunSlope - threshold) {
+              float visibilityNow = sunSlope - maxSlope;
+              if (softness <= 0.0001) {
+                return visibilityNow > threshold ? 1.0 : 0.0;
+              }
+              return smoothstep(threshold, threshold + softness, visibilityNow);
+            }
           }
           float visibility = sunSlope - maxSlope;
-          float threshold = max(u_shadowVisibilityThreshold, 0.0);
-          float softness = max(u_shadowEdgeSoftness, 0.0);
           if (softness <= 0.0001) {
             return visibility > threshold ? 1.0 : 0.0;
           }
