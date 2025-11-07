@@ -1302,13 +1302,15 @@
         return textureCache.has(key) ? textureCache.get(key) : fallbackTexture;
       };
 
-      const bindTexture = (texture, unit, uniformName) => {
+      const bindTexture = (texture, unit, uniformName, options = {}) => {
         const location = shader.locations[uniformName];
         if (location == null || !texture) return;
         gl.activeTexture(gl.TEXTURE0 + unit);
         gl.bindTexture(gl.TEXTURE_2D, texture);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        const minFilter = options.minFilter || gl.LINEAR;
+        const magFilter = options.magFilter || gl.LINEAR;
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, minFilter);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, magFilter);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
         gl.uniform1i(location, unit);
@@ -1414,7 +1416,7 @@
           gl.uniform1i(shader.locations.u_usePrecomputedGradient, hasGradient ? 1 : 0);
         }
         if (hasGradient && gradientTexture) {
-          bindTexture(gradientTexture, gradientTextureUnit, 'u_gradient');
+          bindTexture(gradientTexture, gradientTextureUnit, 'u_gradient', { minFilter: gl.NEAREST, magFilter: gl.NEAREST });
         } else if (shader.locations.u_gradient != null) {
           gl.activeTexture(gl.TEXTURE0 + gradientTextureUnit);
           gl.bindTexture(gl.TEXTURE_2D, null);

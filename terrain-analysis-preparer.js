@@ -663,12 +663,14 @@ void main() {
       gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, state.texture, 0);
     }
 
-    bindInputTexture(gl, unit, texture, location) {
+    bindInputTexture(gl, unit, texture, location, filter = null) {
       if (!texture || location === null) return;
       gl.activeTexture(gl.TEXTURE0 + unit);
       gl.bindTexture(gl.TEXTURE_2D, texture);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      const minFilter = filter || gl.LINEAR;
+      const magFilter = filter || gl.LINEAR;
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, minFilter);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, magFilter);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
       gl.uniform1i(location, unit);
@@ -850,7 +852,7 @@ void main() {
           : null;
         if (programInfo.uniforms.u_gradient) {
           if (gradientTexture) {
-            this.bindInputTexture(gl, gradientTextureUnit, gradientTexture, programInfo.uniforms.u_gradient);
+            this.bindInputTexture(gl, gradientTextureUnit, gradientTexture, programInfo.uniforms.u_gradient, gl.NEAREST);
             if (programInfo.uniforms.u_usePrecomputedGradient != null) {
               gl.uniform1i(programInfo.uniforms.u_usePrecomputedGradient, 1);
             }
