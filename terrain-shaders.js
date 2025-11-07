@@ -67,6 +67,7 @@ const TerrainShaders = {
     precision highp int;
     uniform sampler2D u_image;
 ${SHADER_NEIGHBOR_UNIFORM_BLOCK}    uniform sampler2D u_gradient;
+    uniform sampler2D u_precomputedAnalysis;
     uniform vec4 u_terrain_unpack;
     uniform vec2 u_dimension;
     uniform float u_zoom;
@@ -74,6 +75,7 @@ ${SHADER_NEIGHBOR_UNIFORM_BLOCK}    uniform sampler2D u_gradient;
     uniform vec2 u_latrange;
     uniform float u_samplingDistance;
     uniform int u_usePrecomputedGradient;
+    uniform int u_usePrecomputedAnalysis;
 
     float getElevationFromTexture(sampler2D tex, vec2 pos) {
       vec3 data = texture(tex, pos).rgb * 255.0;
@@ -588,6 +590,11 @@ ${SHADER_NEIGHBOR_FETCH_BLOCK_LOD}      return getElevationFromTextureLod(u_imag
         }
 
         void main(){
+          if (u_usePrecomputedAnalysis == 1) {
+            vec2 uv = clampTexCoord(v_texCoord);
+            fragColor = texture(u_precomputedAnalysis, uv);
+            return;
+          }
           float visibility = computeSunVisibility(v_texCoord, v_elevation);
           vec2 grad = computeSobelGradient(v_texCoord);
           vec3 normal = normalize(vec3(-grad, 1.0));
@@ -730,6 +737,11 @@ ${SHADER_NEIGHBOR_FETCH_BLOCK_LOD}      return getElevationFromTextureLod(u_imag
         }
 
         void main() {
+          if (u_usePrecomputedAnalysis == 1) {
+            vec2 uv = clampTexCoord(v_texCoord);
+            fragColor = texture(u_precomputedAnalysis, uv);
+            return;
+          }
           float totalWeight = 0.0;
           float litWeight = 0.0;
           float firstLitTime = -1.0;
