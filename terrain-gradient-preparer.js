@@ -306,8 +306,8 @@ float getElevationExtended(vec2 pos) {
 ${GRADIENT_NEIGHBOR_FETCH_BLOCK}  return getElevationFromTexture(u_image, tilePos);
 }
 void main() {
-  float sampleDist = max(u_samplingDistance, 0.0001);
   float metersPerPixel = max(u_metersPerPixel, 0.0001);
+  float sampleDist = max(u_samplingDistance, metersPerPixel);
   float metersPerTile = metersPerPixel * u_dimension.x;
   float delta = sampleDist / metersPerTile;
   float delta2 = delta * 2.0;

@@ -213,7 +213,7 @@ ${SHADER_NEIGHBOR_FETCH_BLOCK_LOD}      return getElevationFromTextureLod(u_imag
       vec2 safePos = pos;
       float metersPerPixel = max(u_metersPerPixel, 0.0001);
       float metersPerTile  = metersPerPixel * u_dimension.x;
-      float sampleDist = max(u_samplingDistance, 0.0001);
+      float sampleDist = max(u_samplingDistance, metersPerPixel);
       float delta = sampleDist / metersPerTile;
       float delta2 = delta * 2.0;
       float denom = 12.0 * sampleDist;
