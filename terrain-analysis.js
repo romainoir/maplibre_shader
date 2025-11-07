@@ -142,6 +142,7 @@
   let map;
 
   const gradientPreparer = TerrainGradientPreparer.create();
+  const analysisPreparer = TerrainAnalysisPreparer.create();
   const EARTH_CIRCUMFERENCE_METERS = 40075016.68557849;
   const MIN_METERS_PER_PIXEL = 1e-6;
 
@@ -368,6 +369,7 @@
     if (Math.abs(newDistance - samplingDistance) > 0.01) {
       samplingDistance = newDistance;
       gradientPreparer.invalidateAll();
+      analysisPreparer.invalidateAll();
     }
   }
 
@@ -591,7 +593,7 @@
         timeSlider.value = minutes;
       }
       if (timeValue) timeValue.textContent = isoTime;
-      if (map && (currentMode === "shadow" || currentMode === "daylight")) map.triggerRepaint();
+      triggerShadowRepaint();
     };
 
     const updateShadowTimeBounds = (preferredMinutes = null) => {
@@ -648,7 +650,7 @@
       shadowDateValue = isoDate;
       if (dateValue) dateValue.textContent = isoDate;
       updateShadowTimeBounds();
-      if (map && (currentMode === "shadow" || currentMode === "daylight")) map.triggerRepaint();
+      triggerShadowRepaint();
     };
 
     if (dateSlider) {
@@ -968,6 +970,9 @@
   });
 
   const triggerShadowRepaint = () => {
+    if (currentMode === "shadow" || currentMode === "daylight") {
+      analysisPreparer.invalidateAll();
+    }
     if (map && (currentMode === "shadow" || currentMode === "daylight")) {
       map.triggerRepaint();
     }
@@ -1032,6 +1037,7 @@
       ensureCustomTerrainLayer();
     }
     terrainNormalLayer.shaderMap.clear();
+    analysisPreparer.invalidateAll();
     updateButtons();
     if (styleReady && map) {
       map.triggerRepaint();
@@ -1048,6 +1054,7 @@
     }
     currentMode = '';
     terrainNormalLayer.shaderMap.clear();
+    analysisPreparer.invalidateAll();
     updateButtons();
     if (styleReady && map) {
       map.triggerRepaint();
@@ -1176,6 +1183,7 @@
       this.gl = gl;
       this.frameCount = 0;
       gradientPreparer.initialize(gl);
+      analysisPreparer.initialize(gl);
     },
   
     getShader(gl, shaderDescription) {
@@ -1221,6 +1229,8 @@
         ...neighborUniforms,
         'u_gradient',
         'u_usePrecomputedGradient',
+        'u_precomputedAnalysis',
+        'u_usePrecomputedAnalysis',
         'u_dimension',
         'u_original_vertex_count',
         'u_terrain_unpack',
@@ -1281,7 +1291,7 @@
       return result;
     },
   
-    renderTiles(gl, shader, renderableTiles, terrainInterface, tileManager, terrainDataCache, textureCache, nativeGradientCache = null) {
+    renderTiles(gl, shader, renderableTiles, terrainInterface, tileManager, terrainDataCache, textureCache, nativeGradientCache = null, sunParamsOverride = null, daylightParamsOverride = null) {
       if (!terrainInterface || !tileManager) return;
       let renderedCount = 0;
       let skippedCount = 0;
@@ -1322,9 +1332,10 @@
         gl.uniform1f(location, value);
       };
 
-      const sunParams = currentMode === "shadow" ? computeSunParameters(this.map) : null;
-      const daylightParams = currentMode === "daylight" ? computeDaylightParameters(this.map) : null;
+      const sunParams = sunParamsOverride || (currentMode === "shadow" ? computeSunParameters(this.map) : null);
+      const daylightParams = daylightParamsOverride || (currentMode === "daylight" ? computeDaylightParameters(this.map) : null);
       const gradientTextureUnit = NEIGHBOR_OFFSETS.length + 1;
+      const analysisTextureUnit = gradientTextureUnit + 1;
       const hillshadeUniforms = currentMode === "hillshade"
         ? getHillshadeUniformsForCustomLayer(this.map)
         : null;
@@ -1406,6 +1417,20 @@
           bindTexture(gradientTexture, gradientTextureUnit, 'u_gradient');
         } else if (shader.locations.u_gradient != null) {
           gl.activeTexture(gl.TEXTURE0 + gradientTextureUnit);
+          gl.bindTexture(gl.TEXTURE_2D, null);
+        }
+
+        let analysisTexture = null;
+        if (tileKey && (currentMode === "shadow" || currentMode === "daylight")) {
+          analysisTexture = analysisPreparer.getTexture(tileKey);
+        }
+        if (shader.locations.u_usePrecomputedAnalysis != null) {
+          gl.uniform1i(shader.locations.u_usePrecomputedAnalysis, analysisTexture ? 1 : 0);
+        }
+        if (analysisTexture && shader.locations.u_precomputedAnalysis != null) {
+          bindTexture(analysisTexture, analysisTextureUnit, 'u_precomputedAnalysis');
+        } else if (shader.locations.u_precomputedAnalysis != null) {
+          gl.activeTexture(gl.TEXTURE0 + analysisTextureUnit);
           gl.bindTexture(gl.TEXTURE_2D, null);
         }
 
@@ -1612,6 +1637,36 @@
         samplingDistance
       });
 
+      const sunParams = currentMode === "shadow" ? computeSunParameters(this.map) : null;
+      const daylightParams = currentMode === "daylight" ? computeDaylightParameters(this.map) : null;
+
+      if (currentMode === "shadow" || currentMode === "daylight") {
+        const shadowSettings = {
+          sampleCount: shadowSampleCount,
+          blurRadius: shadowBlurRadius,
+          maxDistance: shadowMaxDistance,
+          visibilityThreshold: shadowVisibilityThreshold,
+          edgeSoftness: shadowEdgeSoftness,
+          maxOpacity: shadowMaxOpacity,
+          rayStepMultiplier: shadowRayStepMultiplier
+        };
+        analysisPreparer.prepare({
+          gl,
+          mode: currentMode,
+          renderableTiles,
+          tileManager,
+          terrainInterface,
+          terrainDataCache,
+          textureCache,
+          neighborOffsets: NEIGHBOR_OFFSETS,
+          samplingDistance,
+          getGradientTexture: (tileKey) => gradientPreparer.getTexture(tileKey),
+          shadowSettings,
+          sunParams,
+          daylightParams
+        });
+      }
+
       const shader = this.getShader(gl, matrix.shaderData);
       if (!shader) return;
       gl.useProgram(shader.program);
@@ -1624,7 +1679,7 @@
         gl.depthFunc(gl.LESS);
         gl.colorMask(false, false, false, false);
         gl.clear(gl.DEPTH_BUFFER_BIT);
-        this.renderTiles(gl, shader, renderableTiles, terrainInterface, tileManager, terrainDataCache, textureCache, nativeGradientCache);
+        this.renderTiles(gl, shader, renderableTiles, terrainInterface, tileManager, terrainDataCache, textureCache, nativeGradientCache, sunParams, daylightParams);
 
         gl.colorMask(true, true, true, true);
         gl.depthFunc(gl.LEQUAL);
@@ -1635,7 +1690,7 @@
           gl.ONE,
           gl.ONE_MINUS_SRC_ALPHA
         );
-        this.renderTiles(gl, shader, renderableTiles, terrainInterface, tileManager, terrainDataCache, textureCache, nativeGradientCache);
+        this.renderTiles(gl, shader, renderableTiles, terrainInterface, tileManager, terrainDataCache, textureCache, nativeGradientCache, sunParams, daylightParams);
       } else {
         gl.depthFunc(gl.LEQUAL);
         gl.clear(gl.DEPTH_BUFFER_BIT);
@@ -1650,7 +1705,7 @@
         } else {
           gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
         }
-        this.renderTiles(gl, shader, renderableTiles, terrainInterface, tileManager, terrainDataCache, textureCache, nativeGradientCache);
+        this.renderTiles(gl, shader, renderableTiles, terrainInterface, tileManager, terrainDataCache, textureCache, nativeGradientCache, sunParams, daylightParams);
       }
 
       gl.disable(gl.BLEND);
@@ -1781,6 +1836,7 @@
       cachedTerrainInterface = previousTerrain;
     }
     gradientPreparer.invalidateAll();
+    analysisPreparer.invalidateAll();
     terrainNormalLayer.shaderMap.clear();
     if (map.getLayer('terrain-normal')) {
       terrainNormalLayer.frameCount = 0;
