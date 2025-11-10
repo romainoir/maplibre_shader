@@ -19,6 +19,20 @@ export type DEMEncoding = 'mapbox' | 'terrarium' | 'custom';
  * surrounding pixel values to compute the slope at that pixel, and we cannot accurately calculate the slope at pixels on a
  * tile's edge without backfilling from neighboring tiles.
  */
+type BorderKey = 'left' | 'right' | 'top' | 'bottom' | 'topLeft' | 'topRight' | 'bottomLeft' | 'bottomRight';
+type BorderOrigin = 'reflected' | 'neighbor';
+
+const BORDER_DIRECTIONS: Array<{dx: number; dy: number; key: BorderKey}> = [
+    {dx: -1, dy: 0, key: 'left'},
+    {dx: 1, dy: 0, key: 'right'},
+    {dx: 0, dy: -1, key: 'top'},
+    {dx: 0, dy: 1, key: 'bottom'},
+    {dx: -1, dy: -1, key: 'topLeft'},
+    {dx: 1, dy: -1, key: 'topRight'},
+    {dx: -1, dy: 1, key: 'bottomLeft'},
+    {dx: 1, dy: 1, key: 'bottomRight'}
+];
+
 export class DEMData {
     uid: string | number;
     data: Uint32Array;
@@ -30,6 +44,7 @@ export class DEMData {
     greenFactor: number;
     blueFactor: number;
     baseShift: number;
+    borderStatus: Record<BorderKey, BorderOrigin>;
 
     /**
      * Constructs a `DEMData` object
@@ -42,6 +57,7 @@ export class DEMData {
      * @param blueFactor - the blue channel factor used to unpack the data, used for `custom` encoding only
      * @param baseShift - the base shift used to unpack the data, used for `custom` encoding only
      */
+
     constructor(uid: string | number, data: RGBAImage | ImageData, encoding: DEMEncoding, redFactor = 1.0, greenFactor = 1.0, blueFactor = 1.0, baseShift = 0.0) {
         this.uid = uid;
         if (data.height !== data.width) throw new RangeError('DEM tiles must be square');
@@ -52,6 +68,10 @@ export class DEMData {
         this.stride = data.height;
         const dim = this.dim = data.height - 2;
         this.data = new Uint32Array(data.data.buffer);
+        this.borderStatus = BORDER_DIRECTIONS.reduce((acc, {key}) => {
+            acc[key] = 'reflected';
+            return acc;
+        }, {} as Record<BorderKey, BorderOrigin>);
         switch (encoding) {
             case 'terrarium':
                 // unpacking formula for mapzen terrarium:
@@ -169,6 +189,27 @@ export class DEMData {
                 this.data[this._idx(x, y)] = borderTile.data[this._idx(x + ox, y + oy)];
             }
         }
+
+        this._setBorderStatus(dx, dy, 'neighbor');
+    }
+
+    getBorderStatus(): Record<BorderKey, BorderOrigin> {
+        return {...this.borderStatus};
+    }
+
+    _setBorderStatus(dx: number, dy: number, status: BorderOrigin) {
+        const key = this._directionKey(dx, dy);
+        if (!key) return;
+        this.borderStatus[key] = status;
+    }
+
+    _directionKey(dx: number, dy: number): BorderKey | null {
+        for (const direction of BORDER_DIRECTIONS) {
+            if (direction.dx === dx && direction.dy === dy) {
+                return direction.key;
+            }
+        }
+        return null;
     }
 }
 

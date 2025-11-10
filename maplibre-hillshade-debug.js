@@ -757,6 +757,18 @@
       const array = dem.data;
       info.dataSample = captureTypedArraySample(array, debugState.options.indexSampleLimit);
     }
+    if (dem && typeof dem.getBorderStatus === 'function') {
+      const status = dem.getBorderStatus();
+      info.borderStatus = status;
+      const neighborKeys = [];
+      for (const key in status) {
+        if (Object.prototype.hasOwnProperty.call(status, key) && status[key] === 'neighbor') {
+          neighborKeys.push(key);
+        }
+      }
+      info.backfilledNeighbors = neighborKeys;
+      info.hasNeighborBackfill = neighborKeys.length > 0;
+    }
     return info;
   }
 
