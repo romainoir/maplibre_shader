@@ -469,13 +469,19 @@ ${SHADER_NEIGHBOR_FETCH_BLOCK_LOD}      return getElevationFromTextureLod(u_imag
             float lambert = clamp(0.5 + 0.5 * diffuse, 0.0, 1.0);
             float contrast = pow(lambert, 0.75);
             float shadowBoost = pow(1.0 - lambert, 2.0);
-            vec3 shadowColor = vec3(0.68, 0.73, 0.82);
+            vec3 shadowColor = vec3(0.66, 0.72, 0.83);
             vec3 highlightColor = vec3(1.0);
             vec3 color = mix(shadowColor, highlightColor, contrast);
-            color *= (1.0 - 0.25 * shadowBoost);
+            color *= (1.0 - 0.22 * shadowBoost);
             float specular = pow(max(diffuse, 0.0), 8.0) * 0.1;
-            color = min(color + specular, vec3(1.0));
-            return color;
+            vec3 ambient = vec3(0.92, 0.95, 1.0);
+            color = mix(ambient, color + specular, 0.75);
+            float fresnel = pow(1.0 - clamp(dot(normal, lightDir), 0.0, 1.0), 3.0);
+            vec3 skyTint = vec3(0.78, 0.86, 0.98);
+            color = mix(color, skyTint, fresnel * 0.35);
+            float ambientOcclusion = smoothstep(0.0, 0.6, lambert);
+            color *= mix(0.85, 1.0, ambientOcclusion);
+            return clamp(color, 0.0, 1.0);
         }
         float computeSnowMask(vec2 pos) {
             float slopeSoftness = 1.5;
@@ -514,8 +520,15 @@ ${SHADER_NEIGHBOR_FETCH_BLOCK_LOD}      return getElevationFromTextureLod(u_imag
             float snowCoverage = getSnowCoverageForElevation(v_elevation, aspect);
             float baseMask = clamp(altitudeMask * slopeMask * snowCoverage, 0.0, 1.0);
             vec2 texel = 1.0 / u_dimension;
-            float accum = baseMask * 4.0;
-            float weight = 4.0;
+            const float maskSigma = 0.35;
+            const float slopeSigma = 10.0;
+            const float altitudeSigma = 120.0;
+            const float invTwoMaskSigmaSq = 1.0 / (2.0 * maskSigma * maskSigma);
+            const float invTwoSlopeSigmaSq = 1.0 / (2.0 * slopeSigma * slopeSigma);
+            const float invTwoAltitudeSigmaSq = 1.0 / (2.0 * altitudeSigma * altitudeSigma);
+            float baseWeight = 4.0;
+            float accum = baseMask * baseWeight;
+            float weight = baseWeight;
             const vec2 kernelOffsets[8] = vec2[](
                 vec2(1.0, 0.0), vec2(-1.0, 0.0),
                 vec2(0.0, 1.0), vec2(0.0, -1.0),
@@ -526,8 +539,17 @@ ${SHADER_NEIGHBOR_FETCH_BLOCK_LOD}      return getElevationFromTextureLod(u_imag
             for (int i = 0; i < 8; i++) {
                 vec2 offset = kernelOffsets[i] * texel;
                 float neighborMask = computeSnowMask(v_texCoord + offset);
-                accum += neighborMask * kernelWeights[i];
-                weight += kernelWeights[i];
+                float neighborSlope = computeSlopeDegrees(v_texCoord + offset);
+                float neighborElevation = getElevationExtended(v_texCoord + offset);
+                float maskDelta = neighborMask - baseMask;
+                float slopeDelta = neighborSlope - slope;
+                float altitudeDelta = neighborElevation - v_elevation;
+                float bilateral = exp(-maskDelta * maskDelta * invTwoMaskSigmaSq
+                                      - slopeDelta * slopeDelta * invTwoSlopeSigmaSq
+                                      - altitudeDelta * altitudeDelta * invTwoAltitudeSigmaSq);
+                float sampleWeight = kernelWeights[i] * bilateral;
+                accum += neighborMask * sampleWeight;
+                weight += sampleWeight;
             }
             float blurredMask = clamp(accum / weight, 0.0, 1.0);
             float finalMask = mix(baseMask, blurredMask, clamp(u_snow_blur, 0.0, 1.0));

@@ -140,7 +140,7 @@
   const GRADIENT_ZOOM_PIVOT = 14;
   const gradientParameters = {
     baseDistance: 0.35,
-    minDistance: 0.2,
+    minDistance: 0.05,
     maxDistance: 3.0
   };
   let samplingDistance = gradientParameters.baseDistance;
