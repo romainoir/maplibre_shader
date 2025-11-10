@@ -484,7 +484,7 @@ ${SHADER_NEIGHBOR_FETCH_BLOCK_LOD}      return getElevationFromTextureLod(u_imag
             return clamp(color, 0.0, 1.0);
         }
         float computeSlopeAspectBias(float aspect) {
-            float northness = cos(radians(aspect));
+            float northness = cos(radians(aspect + 180.0));
             return northness * 3.0;
         }
         float computeSnowMask(vec2 pos) {
@@ -527,6 +527,8 @@ ${SHADER_NEIGHBOR_FETCH_BLOCK_LOD}      return getElevationFromTextureLod(u_imag
             );
             float snowCoverage = getSnowCoverageForElevation(v_elevation, aspect);
             float baseMask = clamp(altitudeMask * slopeMask * snowCoverage, 0.0, 1.0);
+            float blurAmount = max(u_snow_blur, 0.0);
+            float blurMix = clamp(blurAmount, 0.0, 1.0);
             vec2 texel = 1.0 / u_dimension;
             const float maskSigma = 0.35;
             const float slopeSigma = 10.0;
@@ -537,6 +539,8 @@ ${SHADER_NEIGHBOR_FETCH_BLOCK_LOD}      return getElevationFromTextureLod(u_imag
             float baseWeight = 4.0;
             float accum = baseMask * baseWeight;
             float weight = baseWeight;
+            float uniformAccum = baseMask;
+            float uniformWeight = 1.0;
             const vec2 kernelOffsets[8] = vec2[](
                 vec2(1.0, 0.0), vec2(-1.0, 0.0),
                 vec2(0.0, 1.0), vec2(0.0, -1.0),
@@ -558,9 +562,15 @@ ${SHADER_NEIGHBOR_FETCH_BLOCK_LOD}      return getElevationFromTextureLod(u_imag
                 float sampleWeight = kernelWeights[i] * bilateral;
                 accum += neighborMask * sampleWeight;
                 weight += sampleWeight;
+                uniformAccum += neighborMask;
+                uniformWeight += 1.0;
             }
             float blurredMask = clamp(accum / weight, 0.0, 1.0);
-            float finalMask = mix(baseMask, blurredMask, clamp(u_snow_blur, 0.0, 1.0));
+            float uniformBlur = clamp(uniformAccum / uniformWeight, 0.0, 1.0);
+            float extraBlur = clamp(blurAmount - 1.0, 0.0, 1.0);
+            float finalMask = mix(baseMask, blurredMask, blurMix);
+            float strongerMask = mix(blurredMask, uniformBlur, extraBlur);
+            finalMask = mix(finalMask, strongerMask, extraBlur);
             vec3 snowColor = evaluateSnowHillshade(grad);
             fragColor = vec4(snowColor, finalMask * 0.95);
         }`;
