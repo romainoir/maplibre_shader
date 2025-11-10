@@ -112,8 +112,94 @@
     opacity: DEFAULT_HILLSHADE_SETTINGS.opacity
   };
   let storedNativeHillshadeVisibility = 'visible';
+  let storedNativeHillshadeOpacity = DEFAULT_HILLSHADE_SETTINGS.opacity;
   let lastTerrainSpecification = { source: TERRAIN_SOURCE_ID, exaggeration: 1.0 };
   let isTerrainFlattened = false;
+
+  const gradientDebugState = {
+    element: null,
+    frameIndex: 0,
+    totalPrecomputed: 0,
+    totalFallback: 0
+  };
+
+  function getGradientDebugElement() {
+    if (gradientDebugState.element) {
+      const element = gradientDebugState.element;
+      if (typeof document === 'undefined' || !document.body || document.body.contains(element)) {
+        return element;
+      }
+    }
+    if (typeof document === 'undefined') {
+      return null;
+    }
+    const element = document.getElementById('gradientDebugPanel');
+    if (element) {
+      gradientDebugState.element = element;
+    }
+    return gradientDebugState.element;
+  }
+
+  function resetGradientDebugStats(options = {}) {
+    gradientDebugState.frameIndex = 0;
+    gradientDebugState.totalPrecomputed = 0;
+    gradientDebugState.totalFallback = 0;
+    const element = getGradientDebugElement();
+    if (!element) {
+      return;
+    }
+    element.classList.remove('debug-warning');
+    if (options.hide) {
+      element.style.display = 'none';
+      element.innerHTML = '';
+      return;
+    }
+    element.style.display = 'block';
+    element.innerHTML = '<strong>Gradient usage</strong><div>Waiting for terrain tiles…</div>';
+  }
+
+  function updateGradientDebugPanel(stats) {
+    const element = getGradientDebugElement();
+    if (!element) {
+      return;
+    }
+    if (!stats || stats.renderedCount <= 0) {
+      element.innerHTML = '<strong>Gradient usage</strong><div>No terrain tiles rendered.</div>';
+      element.classList.remove('debug-warning');
+      element.style.display = 'block';
+      return;
+    }
+
+    gradientDebugState.frameIndex += 1;
+    gradientDebugState.totalPrecomputed += stats.framePrecomputed;
+    gradientDebugState.totalFallback += stats.frameFallback;
+
+    const frameTotal = stats.framePrecomputed + stats.frameFallback;
+    const framePrecomputedPct = frameTotal > 0
+      ? Math.round((stats.framePrecomputed / frameTotal) * 100)
+      : 0;
+    const totalTiles = gradientDebugState.totalPrecomputed + gradientDebugState.totalFallback;
+    const totalPrecomputedPct = totalTiles > 0
+      ? Math.round((gradientDebugState.totalPrecomputed / totalTiles) * 100)
+      : 0;
+
+    const frameSummary = frameTotal > 0
+      ? `${stats.framePrecomputed}/${frameTotal} precomputed (${framePrecomputedPct}%)`
+      : 'No gradients this frame';
+    const cumulativeSummary = totalTiles > 0
+      ? `${gradientDebugState.totalPrecomputed}/${totalTiles} precomputed (${totalPrecomputedPct}%)`
+      : 'No gradients sampled yet';
+
+    element.innerHTML = `
+      <strong>Gradient usage</strong>
+      <div>Frame ${gradientDebugState.frameIndex}: ${frameSummary}</div>
+      <div>Fallback tiles this frame: ${stats.frameFallback}</div>
+      <div>Cumulative: ${cumulativeSummary}</div>
+      <div>Cumulative fallback: ${gradientDebugState.totalFallback}</div>
+    `;
+    element.classList.toggle('debug-warning', stats.frameFallback > 0);
+    element.style.display = 'block';
+  }
 
   function getHillshadeDebugTiles(mapInstance, options = {}) {
     const debugApi = window.mapLibreHillshadeDebug;
@@ -402,6 +488,7 @@
     const exaggeration = map.getPaintProperty(HILLSHADE_NATIVE_LAYER_ID, 'hillshade-exaggeration');
     const direction = map.getPaintProperty(HILLSHADE_NATIVE_LAYER_ID, 'hillshade-illumination-direction');
     const anchor = map.getPaintProperty(HILLSHADE_NATIVE_LAYER_ID, 'hillshade-illumination-anchor');
+    const opacity = map.getPaintProperty(HILLSHADE_NATIVE_LAYER_ID, 'hillshade-opacity');
     hillshadePaintSettings.highlightColor = toColorArray(highlight, DEFAULT_HILLSHADE_SETTINGS.highlightColor);
     hillshadePaintSettings.shadowColor = toColorArray(shadow, DEFAULT_HILLSHADE_SETTINGS.shadowColor);
     hillshadePaintSettings.accentColor = toColorArray(accent, DEFAULT_HILLSHADE_SETTINGS.accentColor);
@@ -414,6 +501,9 @@
     }
     if (typeof anchor === 'string') {
       hillshadePaintSettings.illuminationAnchor = anchor;
+    }
+    if (Number.isFinite(opacity)) {
+      hillshadePaintSettings.opacity = clamp01(opacity);
     }
   }
 
@@ -1141,7 +1231,10 @@
           : DEFAULT_HILLSHADE_SETTINGS.illuminationDirection,
         'hillshade-illumination-anchor': typeof hillshadePaintSettings.illuminationAnchor === 'string'
           ? hillshadePaintSettings.illuminationAnchor
-          : DEFAULT_HILLSHADE_SETTINGS.illuminationAnchor
+          : DEFAULT_HILLSHADE_SETTINGS.illuminationAnchor,
+        'hillshade-opacity': Number.isFinite(hillshadePaintSettings.opacity)
+          ? clamp01(hillshadePaintSettings.opacity)
+          : DEFAULT_HILLSHADE_SETTINGS.opacity
       }
     };
     map.addLayer(layerDefinition);
@@ -1201,6 +1294,7 @@
     analysisPreparer.invalidateAll();
     updateButtons();
     attachHillshadeDebugToMap();
+    resetGradientDebugStats({ hide: false });
     invokeWhenStyleReady(() => {
       ensureNativeHillshadeLayer({ force: true });
       if (map.getLayer(HILLSHADE_NATIVE_LAYER_ID)) {
@@ -1208,7 +1302,14 @@
         storedNativeHillshadeVisibility = typeof currentVisibility === 'string'
           ? currentVisibility
           : 'visible';
-        map.setLayoutProperty(HILLSHADE_NATIVE_LAYER_ID, 'visibility', 'none');
+        const currentOpacity = map.getPaintProperty(HILLSHADE_NATIVE_LAYER_ID, 'hillshade-opacity');
+        const normalizedOpacity = Number.isFinite(currentOpacity)
+          ? clamp01(currentOpacity)
+          : DEFAULT_HILLSHADE_SETTINGS.opacity;
+        storedNativeHillshadeOpacity = normalizedOpacity;
+        hillshadePaintSettings.opacity = normalizedOpacity;
+        map.setLayoutProperty(HILLSHADE_NATIVE_LAYER_ID, 'visibility', 'visible');
+        map.setPaintProperty(HILLSHADE_NATIVE_LAYER_ID, 'hillshade-opacity', 0);
       }
       ensureCustomTerrainLayer({ force: true });
       map.triggerRepaint();
@@ -1224,6 +1325,7 @@
     analysisPreparer.invalidateAll();
     updateButtons();
     attachHillshadeDebugToMap();
+    resetGradientDebugStats({ hide: true });
     invokeWhenStyleReady(() => {
       removeCustomTerrainLayer({ force: true });
       if (map.getLayer(HILLSHADE_NATIVE_LAYER_ID)) {
@@ -1232,6 +1334,11 @@
           'visibility',
           typeof storedNativeHillshadeVisibility === 'string' ? storedNativeHillshadeVisibility : 'visible'
         );
+        const restoreOpacity = Number.isFinite(storedNativeHillshadeOpacity)
+          ? storedNativeHillshadeOpacity
+          : DEFAULT_HILLSHADE_SETTINGS.opacity;
+        map.setPaintProperty(HILLSHADE_NATIVE_LAYER_ID, 'hillshade-opacity', restoreOpacity);
+        hillshadePaintSettings.opacity = clamp01(restoreOpacity);
         removeNativeHillshadeLayer({ force: true });
       }
       map.triggerRepaint();
@@ -1239,6 +1346,7 @@
   }
 
   function setNativeHillshadeEnabled(enabled) {
+    resetGradientDebugStats({ hide: true });
     if (enabled) {
       hillshadeMode = 'native';
       currentMode = '';
@@ -1251,6 +1359,11 @@
             'visibility',
             typeof storedNativeHillshadeVisibility === 'string' ? storedNativeHillshadeVisibility : 'visible'
           );
+          const restoreOpacity = Number.isFinite(storedNativeHillshadeOpacity)
+            ? storedNativeHillshadeOpacity
+            : DEFAULT_HILLSHADE_SETTINGS.opacity;
+          map.setPaintProperty(HILLSHADE_NATIVE_LAYER_ID, 'hillshade-opacity', restoreOpacity);
+          hillshadePaintSettings.opacity = clamp01(restoreOpacity);
           updateHillshadePaintSettingsFromMap();
         }
         map.triggerRepaint();
@@ -1265,6 +1378,12 @@
           storedNativeHillshadeVisibility = typeof currentVisibility === 'string'
             ? currentVisibility
             : 'visible';
+          const currentOpacity = map.getPaintProperty(HILLSHADE_NATIVE_LAYER_ID, 'hillshade-opacity');
+          if (Number.isFinite(currentOpacity)) {
+            const normalized = clamp01(currentOpacity);
+            storedNativeHillshadeOpacity = normalized;
+            hillshadePaintSettings.opacity = normalized;
+          }
         }
         removeNativeHillshadeLayer({ force: true });
         map.triggerRepaint();
@@ -1530,6 +1649,9 @@
         ? getHillshadeUniformsForCustomLayer(this.map)
         : null;
 
+      let framePrecomputedCount = 0;
+      let frameFallbackCount = 0;
+
       if (hillshadeUniforms) {
         setVec3Uniform('u_hillshade_highlight_color', hillshadeUniforms.highlightColor);
         setVec3Uniform('u_hillshade_shadow_color', hillshadeUniforms.shadowColor);
@@ -1601,6 +1723,11 @@
         const hasGradient = !!gradientTexture;
         if (shader.locations.u_usePrecomputedGradient != null) {
           gl.uniform1i(shader.locations.u_usePrecomputedGradient, hasGradient ? 1 : 0);
+        }
+        if (hasGradient) {
+          framePrecomputedCount++;
+        } else {
+          frameFallbackCount++;
         }
         if (hasGradient && gradientTexture) {
           bindTexture(gradientTexture, gradientTextureUnit, 'u_gradient', { minFilter: gl.NEAREST, magFilter: gl.NEAREST });
@@ -1746,6 +1873,12 @@
         renderedCount++;
       }
 
+      updateGradientDebugPanel({
+        framePrecomputed: framePrecomputedCount,
+        frameFallback: frameFallbackCount,
+        renderedCount
+      });
+
       if (DEBUG && (renderedCount > 0 || skippedCount > 0)) {
         console.log(`Rendered ${renderedCount} tiles, skipped ${skippedCount} tiles`);
       }
@@ -1793,6 +1926,9 @@
       // Don't render if we have no tiles
       if (renderableTiles.length === 0) {
         if (DEBUG) console.log("No renderable tiles available");
+        if (hillshadeMode === 'custom' && currentMode) {
+          updateGradientDebugPanel({ framePrecomputed: 0, frameFallback: 0, renderedCount: 0 });
+        }
         this.map.triggerRepaint();
         return;
       }
@@ -1924,6 +2060,8 @@
     minZoom: 2,
     fadeDuration: 500
   });
+
+  resetGradientDebugStats({ hide: true });
 
   if (HillshadeDebug && typeof HillshadeDebug.attachToMap === 'function') {
     HillshadeDebug.attachToMap(map, { sourceId: TERRAIN_SOURCE_ID, autoHookLayer: false });
