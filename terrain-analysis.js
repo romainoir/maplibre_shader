@@ -39,8 +39,8 @@
   }
   const EXTENT = 8192;
   const TILE_SIZE = 512;
-  const DEM_MAX_ZOOM = 16; // native DEM max zoom
-  const TERRAIN_FLATTEN_EXAGGERATION = 1e-5;
+  const DEM_MAX_ZOOM = 18; // native DEM max zoom
+  const TERRAIN_FLATTEN_EXAGGERATION = 1e-6;
   const TERRAIN_SOURCE_ID = 'terrain';
   const HILLSHADE_NATIVE_LAYER_ID = 'terrain-hillshade-native';
   const DEFAULT_HILLSHADE_SETTINGS = {
