@@ -532,29 +532,78 @@
 
   let NEIGHBOR_OFFSETS = generateNeighborOffsets(maxNeighborOffset);
 
-  function applyNeighborOffsetConfiguration(offset) {
-    maxNeighborOffset = offset;
-    NEIGHBOR_OFFSETS = generateNeighborOffsets(maxNeighborOffset);
-    if (TerrainShaders && typeof TerrainShaders.configure === 'function') {
-      TerrainShaders.configure({ maxNeighborOffset });
+  function getSupportedNeighborOffsetLimit() {
+    const limits = [];
+    if (TerrainShaders && typeof TerrainShaders.getNeighborOffsetLimit === 'function') {
+      const shaderLimit = TerrainShaders.getNeighborOffsetLimit();
+      if (Number.isFinite(shaderLimit)) {
+        limits.push(shaderLimit);
+      }
     }
-    if (TerrainGradientPreparer && typeof TerrainGradientPreparer.configure === 'function') {
-      TerrainGradientPreparer.configure({ maxNeighborOffset });
+    if (TerrainGradientPreparer && typeof TerrainGradientPreparer.getNeighborOffsetLimit === 'function') {
+      const gradientLimit = TerrainGradientPreparer.getNeighborOffsetLimit();
+      if (Number.isFinite(gradientLimit)) {
+        limits.push(gradientLimit);
+      }
+    }
+    if (limits.length === 0) {
+      return 0;
+    }
+    return Math.max(0, Math.min(...limits));
+  }
+
+  function updateNeighborOffsetDisplay() {
+    if (neighborOffsetSliderElement) {
+      neighborOffsetSliderElement.value = String(maxNeighborOffset);
+    }
+    if (neighborOffsetValueElement) {
+      neighborOffsetValueElement.textContent = String(maxNeighborOffset);
     }
   }
 
+  function applyNeighborOffsetConfiguration(offset) {
+    const limit = getSupportedNeighborOffsetLimit();
+    const requested = Math.max(0, Math.round(Number(offset) || 0));
+    let target = Math.max(0, Math.min(limit, requested));
+
+    let shaderOffset = target;
+    if (TerrainShaders && typeof TerrainShaders.configure === 'function') {
+      TerrainShaders.configure({ maxNeighborOffset: target });
+      if (typeof TerrainShaders.getMaxNeighborOffset === 'function') {
+        shaderOffset = TerrainShaders.getMaxNeighborOffset();
+      }
+    }
+
+    let gradientOffset = target;
+    if (TerrainGradientPreparer && typeof TerrainGradientPreparer.configure === 'function') {
+      TerrainGradientPreparer.configure({ maxNeighborOffset: target });
+      if (typeof TerrainGradientPreparer.getMaxNeighborOffset === 'function') {
+        gradientOffset = TerrainGradientPreparer.getMaxNeighborOffset();
+      }
+    }
+
+    const finalOffset = Math.max(0, Math.min(target, shaderOffset, gradientOffset));
+
+    if (TerrainShaders && typeof TerrainShaders.configure === 'function' && shaderOffset !== finalOffset) {
+      TerrainShaders.configure({ maxNeighborOffset: finalOffset });
+    }
+    if (TerrainGradientPreparer && typeof TerrainGradientPreparer.configure === 'function' && gradientOffset !== finalOffset) {
+      TerrainGradientPreparer.configure({ maxNeighborOffset: finalOffset });
+    }
+
+    maxNeighborOffset = finalOffset;
+    NEIGHBOR_OFFSETS = generateNeighborOffsets(maxNeighborOffset);
+  }
+
   function setNeighborSamplingRadius(offset) {
-    const target = Math.max(0, Math.min(3, Math.round(Number(offset) || 0)));
+    const limit = getSupportedNeighborOffsetLimit();
+    const target = Math.max(0, Math.min(limit, Math.round(Number(offset) || 0)));
     if (target === maxNeighborOffset) {
+      updateNeighborOffsetDisplay();
       return false;
     }
     applyNeighborOffsetConfiguration(target);
-    if (neighborOffsetSliderElement) {
-      neighborOffsetSliderElement.value = String(target);
-    }
-    if (neighborOffsetValueElement) {
-      neighborOffsetValueElement.textContent = String(target);
-    }
+    updateNeighborOffsetDisplay();
     if (terrainNormalLayer && terrainNormalLayer.shaderMap) {
       terrainNormalLayer.shaderMap.clear();
     }
@@ -562,7 +611,20 @@
     return true;
   }
 
+  function refreshNeighborSliderLimit() {
+    const limit = getSupportedNeighborOffsetLimit();
+    if (neighborOffsetSliderElement) {
+      neighborOffsetSliderElement.max = String(limit);
+    }
+    if (maxNeighborOffset > limit) {
+      setNeighborSamplingRadius(limit);
+    } else {
+      updateNeighborOffsetDisplay();
+    }
+  }
+
   applyNeighborOffsetConfiguration(maxNeighborOffset);
+  updateNeighborOffsetDisplay();
 
   function getTileCacheKey(tileID) {
     if (!tileID || !tileID.canonical) return '';
@@ -1023,17 +1085,17 @@
 
   neighborOffsetSliderElement = document.getElementById('neighborOffsetSlider');
   neighborOffsetValueElement = document.getElementById('neighborOffsetValue');
-  if (neighborOffsetSliderElement && neighborOffsetValueElement) {
-    neighborOffsetSliderElement.value = String(maxNeighborOffset);
-    neighborOffsetValueElement.textContent = String(maxNeighborOffset);
+  if (neighborOffsetSliderElement) {
+    refreshNeighborSliderLimit();
     neighborOffsetSliderElement.addEventListener('input', (e) => {
-      const value = Math.max(0, Math.round(Number(e.target.value) || 0));
-      neighborOffsetValueElement.textContent = String(value);
-      const changed = setNeighborSamplingRadius(value);
+      const changed = setNeighborSamplingRadius(Number(e.target.value));
       if (changed && map) {
         map.triggerRepaint();
       }
     });
+  }
+  if (!neighborOffsetSliderElement || !neighborOffsetValueElement) {
+    updateNeighborOffsetDisplay();
   }
 
   samplingDistanceSliderElement = document.getElementById('samplingDistanceSlider');
@@ -1286,6 +1348,16 @@
       this.gl = gl;
       this.frameCount = 0;
       gradientPreparer.initialize(gl);
+      if (gl && typeof gl.getParameter === 'function') {
+        const maxTextureUnits = gl.getParameter(gl.MAX_TEXTURE_IMAGE_UNITS);
+        if (TerrainShaders && typeof TerrainShaders.setTextureUnitLimit === 'function') {
+          TerrainShaders.setTextureUnitLimit(maxTextureUnits);
+        }
+        if (TerrainGradientPreparer && typeof TerrainGradientPreparer.setTextureUnitLimit === 'function') {
+          TerrainGradientPreparer.setTextureUnitLimit(maxTextureUnits);
+        }
+        refreshNeighborSliderLimit();
+      }
     },
   
     getShader(gl, shaderDescription) {
@@ -1402,13 +1474,13 @@
         return textureCache.has(key) ? textureCache.get(key) : fallbackTexture;
       };
 
-      const bindTexture = (texture, unit, uniformName) => {
+      const bindTexture = (texture, unit, uniformName, filter = gl.LINEAR) => {
         const location = shader.locations[uniformName];
         if (location == null || !texture) return;
         gl.activeTexture(gl.TEXTURE0 + unit);
         gl.bindTexture(gl.TEXTURE_2D, texture);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
         gl.uniform1i(location, unit);
@@ -1513,7 +1585,7 @@
           gl.uniform1i(shader.locations.u_usePrecomputedGradient, gradientEnabled ? 1 : 0);
         }
         if (gradientEnabled && gradientTexture) {
-          bindTexture(gradientTexture, gradientTextureUnit, 'u_gradient');
+          bindTexture(gradientTexture, gradientTextureUnit, 'u_gradient', gl.NEAREST);
         } else if (shader.locations.u_gradient != null) {
           gl.activeTexture(gl.TEXTURE0 + gradientTextureUnit);
           gl.bindTexture(gl.TEXTURE_2D, null);

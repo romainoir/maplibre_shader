@@ -1,5 +1,6 @@
 /* terrain-shaders.js */
 // Use only the current tile data by default and allow runtime configuration.
+const MAX_CONFIGURABLE_NEIGHBOR_OFFSET = 4;
 let SHADER_MAX_NEIGHBOR_OFFSET = 0;
 const DAYLIGHT_SHADER_SAMPLE_CAP = 16;
 const SHADER_NEIGHBOR_NAME_OVERRIDES = {
@@ -19,6 +20,30 @@ function shaderFormatOffsetPart(value) {
   }
   const prefix = value < 0 ? 'm' : 'p';
   return `${prefix}${Math.abs(value)}`;
+}
+
+function shaderNeighborCountForOffset(offset) {
+  if (!Number.isFinite(offset) || offset <= 0) {
+    return 0;
+  }
+  const clamped = Math.floor(Math.max(0, offset));
+  return 2 * clamped * (clamped + 1);
+}
+
+function shaderMaxOffsetForUnits(unitCount) {
+  if (!Number.isFinite(unitCount) || unitCount < 2) {
+    return 0;
+  }
+  const availableNeighborSamplers = Math.max(0, Math.floor(unitCount) - 1);
+  let offset = 0;
+  while (offset < MAX_CONFIGURABLE_NEIGHBOR_OFFSET) {
+    const next = offset + 1;
+    if (shaderNeighborCountForOffset(next) > availableNeighborSamplers) {
+      break;
+    }
+    offset = next;
+  }
+  return offset;
 }
 
 function shaderUniformNameForOffset(dx, dy) {
@@ -41,6 +66,8 @@ function shaderBuildNeighborOffsets(maxOffset) {
   return offsets;
 }
 
+let SHADER_TEXTURE_UNIT_LIMIT = 16;
+let SHADER_SUPPORTED_NEIGHBOR_OFFSET = shaderMaxOffsetForUnits(SHADER_TEXTURE_UNIT_LIMIT);
 let SHADER_NEIGHBOR_OFFSETS = shaderBuildNeighborOffsets(SHADER_MAX_NEIGHBOR_OFFSET);
 let SHADER_NEIGHBOR_UNIFORM_DECLARATIONS = SHADER_NEIGHBOR_OFFSETS
   .map(({ uniform }) => `    uniform sampler2D ${uniform};`)
@@ -233,6 +260,31 @@ ${SHADER_NEIGHBOR_FETCH_BLOCK_LOD}      return getElevationFromTextureLod(u_imag
 
 let shaderCommonFunctionsCache = null;
 
+function getShaderNeighborOffsetLimit() {
+  return Math.min(MAX_CONFIGURABLE_NEIGHBOR_OFFSET, SHADER_SUPPORTED_NEIGHBOR_OFFSET);
+}
+
+function updateShaderTextureUnitLimit(limit) {
+  if (!Number.isFinite(limit)) {
+    return { limitChanged: false, needsRebuild: false };
+  }
+  const nextLimit = Math.max(0, Math.floor(limit));
+  if (nextLimit === SHADER_TEXTURE_UNIT_LIMIT) {
+    return { limitChanged: false, needsRebuild: false };
+  }
+  SHADER_TEXTURE_UNIT_LIMIT = nextLimit;
+  const previousCap = getShaderNeighborOffsetLimit();
+  SHADER_SUPPORTED_NEIGHBOR_OFFSET = shaderMaxOffsetForUnits(SHADER_TEXTURE_UNIT_LIMIT);
+  const nextCap = getShaderNeighborOffsetLimit();
+  let needsRebuild = false;
+  if (SHADER_MAX_NEIGHBOR_OFFSET > nextCap) {
+    SHADER_MAX_NEIGHBOR_OFFSET = nextCap;
+    needsRebuild = true;
+  }
+  const limitChanged = previousCap !== nextCap || needsRebuild;
+  return { limitChanged, needsRebuild };
+}
+
 function rebuildShaderNeighborConfiguration() {
   SHADER_NEIGHBOR_OFFSETS = shaderBuildNeighborOffsets(SHADER_MAX_NEIGHBOR_OFFSET);
   SHADER_NEIGHBOR_UNIFORM_DECLARATIONS = SHADER_NEIGHBOR_OFFSETS
@@ -261,7 +313,9 @@ const TerrainShaders = {
   configure(options = {}) {
     let changed = false;
     if (options && typeof options.maxNeighborOffset === 'number') {
-      const next = Math.max(0, Math.min(4, Math.round(options.maxNeighborOffset)));
+      const cap = getShaderNeighborOffsetLimit();
+      const requested = Math.max(0, Math.round(options.maxNeighborOffset));
+      const next = Math.max(0, Math.min(cap, requested));
       if (next !== SHADER_MAX_NEIGHBOR_OFFSET) {
         SHADER_MAX_NEIGHBOR_OFFSET = next;
         changed = true;
@@ -277,6 +331,15 @@ const TerrainShaders = {
   },
   getMaxNeighborOffset() {
     return SHADER_MAX_NEIGHBOR_OFFSET;
+  },
+  getNeighborOffsetLimit() {
+    return getShaderNeighborOffsetLimit();
+  },
+  setTextureUnitLimit(limit) {
+    const result = updateShaderTextureUnitLimit(limit);
+    if (result && result.needsRebuild) {
+      rebuildShaderNeighborConfiguration();
+    }
   },
   get commonFunctions() {
     if (shaderCommonFunctionsCache === null) {
