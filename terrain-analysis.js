@@ -122,6 +122,7 @@
   const meshCache = new Map();
   let snowAltitude = 3000;
   let snowMaxSlope = 55; // in degrees
+  let snowBlurAmount = 1.0;
   let shadowSampleCount = 1;
   let shadowBlurRadius = 1.0;
   let shadowMaxDistance = 14000; // meters
@@ -966,6 +967,21 @@
     document.getElementById('snowSlopeValue').textContent = e.target.value;
     if (map && currentMode === "snow") map.triggerRepaint();
   });
+  const snowBlurSlider = document.getElementById('snowBlurSlider');
+  const snowBlurValueEl = document.getElementById('snowBlurValue');
+  if (snowBlurValueEl) {
+    snowBlurValueEl.textContent = snowBlurAmount.toFixed(2);
+  }
+  if (snowBlurSlider) {
+    snowBlurSlider.value = snowBlurAmount.toString();
+    snowBlurSlider.addEventListener('input', (e) => {
+      snowBlurAmount = parseFloat(e.target.value);
+      if (snowBlurValueEl) {
+        snowBlurValueEl.textContent = snowBlurAmount.toFixed(2);
+      }
+      if (map && currentMode === "snow") map.triggerRepaint();
+    });
+  }
 
   const triggerShadowRepaint = () => {
     if (map && (currentMode === "shadow" || currentMode === "daylight")) {
@@ -1244,7 +1260,7 @@
         );
       }
       if (currentMode === "snow") {
-        uniforms.push('u_snow_altitude', 'u_snow_maxSlope');
+        uniforms.push('u_snow_altitude', 'u_snow_maxSlope', 'u_snow_blur');
       }
       if (currentMode === "shadow" || currentMode === "daylight") {
         uniforms.push(
@@ -1468,6 +1484,9 @@
           gl.uniform1f(shader.locations.u_snow_altitude, snowAltitude);
           if (shader.locations.u_snow_maxSlope != null) {
             gl.uniform1f(shader.locations.u_snow_maxSlope, snowMaxSlope);
+          }
+          if (shader.locations.u_snow_blur != null) {
+            gl.uniform1f(shader.locations.u_snow_blur, snowBlurAmount);
           }
         }
         if (currentMode === "shadow" && shader.locations.u_sunDirection != null) {
