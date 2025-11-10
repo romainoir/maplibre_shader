@@ -129,6 +129,264 @@
     return cache.size > 0 ? cache : null;
   }
 
+  function initNativeTexturePreview() {
+    if (texturePreviewInitialized) {
+      return;
+    }
+    texturePreviewInitialized = true;
+    texturePreviewContainer = document.getElementById('maplibreTexturePreview');
+    texturePreviewCanvas = document.getElementById('maplibreTexturePreviewCanvas');
+    texturePreviewInfoElement = document.getElementById('maplibreTexturePreviewInfo');
+    if (texturePreviewCanvas) {
+      try {
+        texturePreviewContext = texturePreviewCanvas.getContext('2d');
+      } catch (error) {
+        texturePreviewContext = null;
+      }
+    }
+    const toggle = document.getElementById('showRgTextureToggle');
+    if (toggle) {
+      showNativeRgTexturePreview = toggle.checked;
+      toggle.addEventListener('change', (event) => {
+        showNativeRgTexturePreview = !!event.target.checked;
+        updateNativeTexturePreviewVisibility();
+        texturePreviewLastTileKey = null;
+        if (showNativeRgTexturePreview) {
+          if (debugControlsVisible) {
+            scheduleNativeTexturePreviewUpdate(true);
+          }
+        } else {
+          clearNativeTexturePreview('Aucune texture disponible');
+        }
+      });
+    } else {
+      showNativeRgTexturePreview = false;
+    }
+    updateNativeTexturePreviewVisibility();
+  }
+
+  function updateNativeTexturePreviewVisibility() {
+    if (!texturePreviewContainer) {
+      return;
+    }
+    const shouldShow = showNativeRgTexturePreview && debugControlsVisible;
+    texturePreviewContainer.classList.toggle('active', shouldShow);
+    if (!shouldShow) {
+      return;
+    }
+    if (texturePreviewInfoElement && !texturePreviewInfoElement.textContent) {
+      texturePreviewInfoElement.textContent = 'Lecture de la texture…';
+    }
+  }
+
+  function clearNativeTexturePreview(message) {
+    if (texturePreviewContext && texturePreviewCanvas) {
+      texturePreviewContext.clearRect(0, 0, texturePreviewCanvas.width, texturePreviewCanvas.height);
+    }
+    if (texturePreviewInfoElement) {
+      texturePreviewInfoElement.textContent = message || 'Aucune texture disponible';
+    }
+  }
+
+  function flipImageDataY(data, width, height) {
+    if (!data || width <= 0 || height <= 0) {
+      return;
+    }
+    const rowSize = width * 4;
+    const temp = new Uint8ClampedArray(rowSize);
+    for (let y = 0; y < Math.floor(height / 2); y++) {
+      const topOffset = y * rowSize;
+      const bottomOffset = (height - 1 - y) * rowSize;
+      temp.set(data.subarray(topOffset, topOffset + rowSize));
+      data.copyWithin(topOffset, bottomOffset, bottomOffset + rowSize);
+      data.set(temp, bottomOffset);
+    }
+  }
+
+  function selectNativeGradientTile(mapInstance, gradientCache) {
+    if (!gradientCache || gradientCache.size === 0) {
+      return null;
+    }
+    const tileManager = getTerrainTileManager(mapInstance);
+    if (tileManager && typeof tileManager.getRenderableTiles === 'function') {
+      try {
+        const renderableTiles = tileManager.getRenderableTiles();
+        for (const tile of renderableTiles) {
+          const key = tile && tile.tileID ? tile.tileID.key : null;
+          if (key && gradientCache.has(key)) {
+            return { tile, texture: gradientCache.get(key), tileKey: key };
+          }
+        }
+      } catch (error) {
+        // ignore selection errors
+      }
+    }
+    for (const [tileKey, texture] of gradientCache.entries()) {
+      return { texture, tileKey };
+    }
+    return null;
+  }
+
+  function scheduleNativeTexturePreviewUpdate(force = false) {
+    if (!showNativeRgTexturePreview || !debugControlsVisible) {
+      return;
+    }
+    if (force) {
+      texturePreviewLastUpdateTime = 0;
+    }
+    if (typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(() => updateNativeTexturePreview(force));
+    } else {
+      updateNativeTexturePreview(force);
+    }
+  }
+
+  function updateNativeTexturePreview(force = false) {
+    if (!showNativeRgTexturePreview || !debugControlsVisible || !map) {
+      return;
+    }
+    if (!texturePreviewInitialized) {
+      initNativeTexturePreview();
+    }
+    if (!texturePreviewCanvas || !texturePreviewInfoElement) {
+      return;
+    }
+
+    const gl = map && map.painter && map.painter.context ? map.painter.context.gl : null;
+    if (!gl) {
+      clearNativeTexturePreview('Contexte WebGL indisponible');
+      return;
+    }
+
+    const gradientCache = collectNativeHillshadeTextures(map);
+    if (!gradientCache || gradientCache.size === 0) {
+      clearNativeTexturePreview('Aucune texture disponible');
+      texturePreviewLastTileKey = null;
+      return;
+    }
+
+    const selection = selectNativeGradientTile(map, gradientCache);
+    if (!selection || !selection.texture) {
+      clearNativeTexturePreview('Aucune texture disponible');
+      texturePreviewLastTileKey = null;
+      return;
+    }
+
+    const tileManager = getTerrainTileManager(map);
+    let tile = selection.tile || null;
+    if (!tile && selection.tileKey && tileManager && typeof tileManager.getTileByID === 'function') {
+      try {
+        tile = tileManager.getTileByID(selection.tileKey) || null;
+      } catch (error) {
+        tile = null;
+      }
+    }
+
+    const tileKey = selection.tileKey || (tile && tile.tileID ? tile.tileID.key : null);
+    const now = (typeof performance !== 'undefined' && performance && performance.now) ? performance.now() : Date.now();
+    if (!force && tileKey && tileKey === texturePreviewLastTileKey && now - texturePreviewLastUpdateTime < 250) {
+      return;
+    }
+
+    let width = TILE_SIZE;
+    let height = TILE_SIZE;
+    let canonical = null;
+    if (tile && tileManager && typeof tileManager.getSourceTile === 'function') {
+      canonical = tile.tileID && tile.tileID.canonical ? tile.tileID.canonical : null;
+      try {
+        const sourceTile = tileManager.getSourceTile(tile.tileID, true);
+        if (sourceTile && sourceTile.dem && Number.isFinite(sourceTile.dem.dim)) {
+          width = sourceTile.dem.dim;
+          height = sourceTile.dem.dim;
+        } else if (sourceTile && Number.isFinite(sourceTile.tileSize)) {
+          width = sourceTile.tileSize;
+          height = sourceTile.tileSize;
+        }
+      } catch (error) {
+        // ignore source tile lookup errors
+      }
+    }
+
+    const texture = selection.texture;
+    const previousTexture = gl.getParameter(gl.TEXTURE_BINDING_2D);
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    if (typeof gl.getTexLevelParameter === 'function') {
+      try {
+        const texWidth = gl.getTexLevelParameter(gl.TEXTURE_2D, 0, gl.TEXTURE_WIDTH);
+        const texHeight = gl.getTexLevelParameter(gl.TEXTURE_2D, 0, gl.TEXTURE_HEIGHT);
+        if (Number.isFinite(texWidth) && texWidth > 0) {
+          width = texWidth;
+        }
+        if (Number.isFinite(texHeight) && texHeight > 0) {
+          height = texHeight;
+        }
+      } catch (error) {
+        // WebGL1 contexts do not expose getTexLevelParameter
+      }
+    }
+    gl.bindTexture(gl.TEXTURE_2D, previousTexture);
+
+    if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+      clearNativeTexturePreview('Dimensions de texture invalides');
+      return;
+    }
+
+    const previousFramebuffer = gl.getParameter(gl.FRAMEBUFFER_BINDING);
+    const framebuffer = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
+    const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+    if (status !== gl.FRAMEBUFFER_COMPLETE) {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, previousFramebuffer);
+      gl.deleteFramebuffer(framebuffer);
+      clearNativeTexturePreview('Impossible de lire la texture');
+      return;
+    }
+
+    const pixelCount = width * height * 4;
+    const pixels = new Uint8Array(pixelCount);
+    gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, previousFramebuffer);
+    gl.deleteFramebuffer(framebuffer);
+
+    const clamped = new Uint8ClampedArray(pixels.buffer);
+    flipImageDataY(clamped, width, height);
+
+    if (texturePreviewCanvas.width !== width || texturePreviewCanvas.height !== height) {
+      texturePreviewCanvas.width = width;
+      texturePreviewCanvas.height = height;
+    }
+    if (texturePreviewContext) {
+      const imageData = new ImageData(clamped, width, height);
+      texturePreviewContext.putImageData(imageData, 0, 0);
+    }
+
+    const infoParts = [];
+    if (canonical) {
+      infoParts.push(`z${canonical.z}`);
+      infoParts.push(`x${canonical.x}`);
+      infoParts.push(`y${canonical.y}`);
+    } else if (tileKey) {
+      infoParts.push(tileKey.toString());
+    }
+    infoParts.push(`${width}×${height}`);
+    texturePreviewInfoElement.textContent = infoParts.join(' • ');
+
+    texturePreviewLastTileKey = tileKey || null;
+    texturePreviewLastUpdateTime = now;
+  }
+
+  function handleMapRenderForTexturePreview() {
+    if (!showNativeRgTexturePreview || !debugControlsVisible) {
+      return;
+    }
+    const now = (typeof performance !== 'undefined' && performance && performance.now) ? performance.now() : Date.now();
+    if (now - texturePreviewLastUpdateTime < 250) {
+      return;
+    }
+    updateNativeTexturePreview();
+  }
+
   // Global state variables
   let currentMode = ""; // "hillshade", "normal", "avalanche", "slope", "aspect", "snow", "shadow", or "daylight"
   let hillshadeMode = 'none'; // "none", "native", or "custom"
@@ -165,6 +423,14 @@
   let neighborOffsetValueElement = null;
   let samplingDistanceSliderElement = null;
   let samplingDistanceValueElement = null;
+  let showNativeRgTexturePreview = true;
+  let texturePreviewContainer = null;
+  let texturePreviewCanvas = null;
+  let texturePreviewContext = null;
+  let texturePreviewInfoElement = null;
+  let texturePreviewLastTileKey = null;
+  let texturePreviewLastUpdateTime = 0;
+  let texturePreviewInitialized = false;
 
   const gradientPreparer = TerrainGradientPreparer.create();
   const EARTH_CIRCUMFERENCE_METERS = 40075016.68557849;
@@ -1098,18 +1364,23 @@
     if (debugControlsElement) {
       debugControlsElement.style.display = debugControlsVisible ? 'flex' : 'none';
     }
+    updateNativeTexturePreviewVisibility();
   }
 
   function setDebugControlsVisible(visible) {
     debugControlsVisible = !!visible;
     updateButtons();
+    if (debugControlsVisible && showNativeRgTexturePreview) {
+      scheduleNativeTexturePreviewUpdate(true);
+    }
   }
-  
+
   debugButtonElement = document.getElementById('debugBtn');
   debugControlsElement = document.getElementById('debugControls');
   if (debugControlsElement) {
     debugControlsElement.style.display = 'none';
   }
+  initNativeTexturePreview();
   if (debugButtonElement) {
     debugButtonElement.addEventListener('click', () => {
       setDebugControlsVisible(!debugControlsVisible);
@@ -2045,6 +2316,8 @@
     minZoom: 2,
     fadeDuration: 500
   });
+
+  map.on('render', handleMapRenderForTexturePreview);
 
   if (HillshadeDebug && typeof HillshadeDebug.attachToMap === 'function') {
     HillshadeDebug.attachToMap(map, { sourceId: TERRAIN_SOURCE_ID, autoHookLayer: false });
