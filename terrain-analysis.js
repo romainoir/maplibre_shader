@@ -1148,7 +1148,7 @@
   function getTileMesh(gl, tile) {
     const key = `mesh_${tile.tileID.key}`;
     if (meshCache.has(key)) return meshCache.get(key);
-    const meshBuffers = maplibregl.createTileMesh({ granularity: 128, generateBorders: false, extent: EXTENT }, '16bit');
+    const meshBuffers = maplibregl.createTileMesh({ granularity: 512, generateBorders: false, extent: EXTENT }, '16bit');
     const vertices = new Int16Array(meshBuffers.vertices);
     const indices = new Int16Array(meshBuffers.indices);
     const vertexCount = vertices.length / 2;
