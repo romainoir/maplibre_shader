@@ -581,17 +581,33 @@
     return fallback.slice();
   }
 
+  function getHillshadePaintProperty(propertyName, fallback) {
+    if (!map || typeof map.getPaintProperty !== 'function') {
+      return fallback;
+    }
+    try {
+      const value = map.getPaintProperty(HILLSHADE_NATIVE_LAYER_ID, propertyName);
+      return value === undefined || value === null ? fallback : value;
+    } catch (error) {
+      if (DEBUG) {
+        console.warn(`Failed to read hillshade paint property "${propertyName}"`, error);
+      }
+      return fallback;
+    }
+  }
+
   function updateHillshadePaintSettingsFromMap() {
     if (!map || typeof map.getLayer !== 'function' || !map.getLayer(HILLSHADE_NATIVE_LAYER_ID)) {
       return;
     }
-    const highlight = map.getPaintProperty(HILLSHADE_NATIVE_LAYER_ID, 'hillshade-highlight-color');
-    const shadow = map.getPaintProperty(HILLSHADE_NATIVE_LAYER_ID, 'hillshade-shadow-color');
-    const accent = map.getPaintProperty(HILLSHADE_NATIVE_LAYER_ID, 'hillshade-accent-color');
-    const exaggeration = map.getPaintProperty(HILLSHADE_NATIVE_LAYER_ID, 'hillshade-exaggeration');
-    const direction = map.getPaintProperty(HILLSHADE_NATIVE_LAYER_ID, 'hillshade-illumination-direction');
-    const anchor = map.getPaintProperty(HILLSHADE_NATIVE_LAYER_ID, 'hillshade-illumination-anchor');
-    const opacity = map.getPaintProperty(HILLSHADE_NATIVE_LAYER_ID, 'hillshade-opacity');
+
+    const highlight = getHillshadePaintProperty('hillshade-highlight-color', DEFAULT_HILLSHADE_SETTINGS.highlightColor);
+    const shadow = getHillshadePaintProperty('hillshade-shadow-color', DEFAULT_HILLSHADE_SETTINGS.shadowColor);
+    const accent = getHillshadePaintProperty('hillshade-accent-color', DEFAULT_HILLSHADE_SETTINGS.accentColor);
+    const exaggeration = getHillshadePaintProperty('hillshade-exaggeration', DEFAULT_HILLSHADE_SETTINGS.exaggeration);
+    const direction = getHillshadePaintProperty('hillshade-illumination-direction', DEFAULT_HILLSHADE_SETTINGS.illuminationDirection);
+    const anchor = getHillshadePaintProperty('hillshade-illumination-anchor', DEFAULT_HILLSHADE_SETTINGS.illuminationAnchor);
+    const opacity = getHillshadePaintProperty('hillshade-opacity', DEFAULT_HILLSHADE_SETTINGS.opacity);
 
     hillshadePaintSettings.highlightColor = toColorArray(highlight, DEFAULT_HILLSHADE_SETTINGS.highlightColor);
     hillshadePaintSettings.shadowColor = toColorArray(shadow, DEFAULT_HILLSHADE_SETTINGS.shadowColor);
