@@ -151,7 +151,7 @@
 
   const gradientParameters = {
     baseDistance: 0.35,
-    minDistance: 0.05,
+    minDistance: MIN_GRADIENT_DISTANCE,
     maxDistance: 3.0
   };
   let samplingDistance = gradientParameters.baseDistance;
