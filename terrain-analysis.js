@@ -2,7 +2,7 @@
 (function() {
   const DEBUG = false;
   const HillshadeDebug = window.__MapLibreHillshadeDebug || null;
-  const hillshadeDebugEnabled = (() => {
+  const hillshadeDebugFlagEnabled = (() => {
     try {
       const searchParams = new URLSearchParams(window.location.search || '');
       if (searchParams.has('hillshadeDebug')) {
@@ -15,21 +15,69 @@
     }
   })();
 
+  let isHillshadeDebugEnabled = false;
+  let map;
+  let hillshadeMode = 'none'; // "none", "native", or "custom"
+
+  function attachHillshadeDebugToMap() {
+    if (!isHillshadeDebugEnabled || !map || !HillshadeDebug || typeof HillshadeDebug.attachToMap !== 'function') {
+      return;
+    }
+    try {
+      HillshadeDebug.attachToMap(map, {
+        layerId: hillshadeMode === 'native' ? HILLSHADE_NATIVE_LAYER_ID : null,
+        sourceId: TERRAIN_SOURCE_ID
+      });
+    } catch (error) {
+      if (DEBUG) console.warn('Failed to attach hillshade debug instrumentation', error);
+    }
+  }
+
+  function setHillshadeDebugEnabled(enabled, options) {
+    if (!HillshadeDebug || typeof HillshadeDebug.enable !== 'function' || typeof HillshadeDebug.disable !== 'function') {
+      if (isHillshadeDebugEnabled) {
+        isHillshadeDebugEnabled = false;
+        updateButtons();
+      }
+      return false;
+    }
+    const shouldEnable = Boolean(enabled);
+    if (shouldEnable === isHillshadeDebugEnabled) {
+      if (shouldEnable && options) {
+        HillshadeDebug.enable(options);
+        attachHillshadeDebugToMap();
+      }
+      return isHillshadeDebugEnabled;
+    }
+    if (shouldEnable) {
+      HillshadeDebug.enable(options);
+      isHillshadeDebugEnabled = true;
+      attachHillshadeDebugToMap();
+      if (!options || options.silent !== true) {
+        console.info('Hillshade debug instrumentation enabled.');
+      }
+    } else {
+      HillshadeDebug.disable();
+      isHillshadeDebugEnabled = false;
+      if (!options || options.silent !== true) {
+        console.info('Hillshade debug instrumentation disabled.');
+      }
+    }
+    updateButtons();
+    return isHillshadeDebugEnabled;
+  }
+
   if (HillshadeDebug && typeof HillshadeDebug.install === 'function') {
     HillshadeDebug.install();
-    if (hillshadeDebugEnabled) {
-      HillshadeDebug.enable();
-      console.info('Hillshade debug instrumentation enabled.');
+    if (hillshadeDebugFlagEnabled) {
+      setHillshadeDebugEnabled(true, { silent: true });
     }
     window.mapLibreHillshadeDebug = Object.freeze({
       enable(options) {
-        HillshadeDebug.enable(options);
-        if (map) {
-          HillshadeDebug.attachToMap(map, { layerId: HILLSHADE_NATIVE_LAYER_ID, sourceId: TERRAIN_SOURCE_ID });
-        }
+        return setHillshadeDebugEnabled(true, options);
       },
       disable() {
-        HillshadeDebug.disable();
+        return setHillshadeDebugEnabled(false);
       },
       getDrawCalls: () => HillshadeDebug.getDrawCalls(),
       getDemEvents: () => HillshadeDebug.getDemEvents(),
@@ -117,7 +165,6 @@
 
   // Global state variables
   let currentMode = ""; // "hillshade", "normal", "avalanche", "slope", "aspect", "snow", "shadow", or "daylight"
-  let hillshadeMode = 'none'; // "none", "native", or "custom"
   let lastCustomMode = 'hillshade';
   const meshCache = new Map();
   let snowAltitude = 3000;
@@ -139,7 +186,6 @@
   let samplingDistance = 0.35;
   let shadowDateValue = null;
   let shadowTimeValue = null;
-  let map;
 
   const gradientPreparer = TerrainGradientPreparer.create();
   const analysisPreparer = TerrainAnalysisPreparer.create();
@@ -911,6 +957,12 @@
   // Update UI button states and slider visibility based on current mode
   function updateButtons() {
     const isCustomActive = hillshadeMode === 'custom';
+    const hillshadeDebugBtn = document.getElementById('hillshadeDebugBtn');
+    if (hillshadeDebugBtn) {
+      const debugAvailable = Boolean(HillshadeDebug && typeof HillshadeDebug.enable === 'function' && typeof HillshadeDebug.disable === 'function');
+      hillshadeDebugBtn.disabled = !debugAvailable;
+      hillshadeDebugBtn.classList.toggle('active', debugAvailable && isHillshadeDebugEnabled);
+    }
     const hillShadeNativeBtn = document.getElementById('hillShadeNativeBtn');
     if (hillShadeNativeBtn) {
       hillShadeNativeBtn.classList.toggle('active', hillshadeMode === 'native');
@@ -1065,6 +1117,7 @@
     terrainNormalLayer.shaderMap.clear();
     analysisPreparer.invalidateAll();
     updateButtons();
+    attachHillshadeDebugToMap();
     invokeWhenStyleReady(() => {
       removeNativeHillshadeLayer({ force: true });
       ensureCustomTerrainLayer({ force: true });
@@ -1080,6 +1133,7 @@
     terrainNormalLayer.shaderMap.clear();
     analysisPreparer.invalidateAll();
     updateButtons();
+    attachHillshadeDebugToMap();
     invokeWhenStyleReady(() => {
       removeCustomTerrainLayer({ force: true });
       map.triggerRepaint();
@@ -1106,6 +1160,7 @@
       });
     }
     updateButtons();
+    attachHillshadeDebugToMap();
   }
 
   const shadowSampleCountSlider = document.getElementById('shadowSampleCountSlider');
@@ -1818,12 +1873,7 @@
     console.log("Terrain layer initialized");
     recomputeShadowTimeBounds();
     updateSamplingDistanceForZoom();
-    if (HillshadeDebug && typeof HillshadeDebug.attachToMap === 'function') {
-      HillshadeDebug.attachToMap(map, {
-        layerId: hillshadeMode === 'native' ? HILLSHADE_NATIVE_LAYER_ID : null,
-        sourceId: TERRAIN_SOURCE_ID
-      });
-    }
+    attachHillshadeDebugToMap();
     if (hillshadeMode === 'native') {
       ensureNativeHillshadeLayer();
     } else if (hillshadeMode === 'custom' && currentMode) {
@@ -1866,6 +1916,16 @@
   map.addControl(new maplibregl.TerrainControl());
   
   // Button click event listeners to toggle rendering modes.
+  const hillshadeDebugBtn = document.getElementById('hillshadeDebugBtn');
+  if (hillshadeDebugBtn) {
+    hillshadeDebugBtn.addEventListener('click', () => {
+      if (!HillshadeDebug) {
+        return;
+      }
+      setHillshadeDebugEnabled(!isHillshadeDebugEnabled);
+    });
+  }
+
   const hillShadeNativeBtn = document.getElementById('hillShadeNativeBtn');
   if (hillShadeNativeBtn) {
     hillShadeNativeBtn.addEventListener('click', () => {
