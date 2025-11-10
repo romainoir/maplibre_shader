@@ -219,20 +219,34 @@
 
   function collectNativeHillshadeTextures(mapInstance) {
     const cache = new Map();
+    let pendingPreparation = false;
 
     if (mapInstance && mapInstance.style) {
       const sourceCache = getSourceCacheFromStyle(mapInstance.style, TERRAIN_SOURCE_ID);
       const tiles = getTilesFromSourceCache(sourceCache);
       for (const tile of tiles) {
         const key = tile && tile.tileID ? tile.tileID.key : null;
-        if (!key || tile.needsHillshadePrepare) {
+        if (!key) {
           continue;
         }
         const texture = extractHillshadeColorAttachment(tile);
-        if (texture) {
-          cache.set(key, texture);
+        if (!texture) {
+          if (tile && tile.needsHillshadePrepare) {
+            pendingPreparation = true;
+          }
+          continue;
         }
+
+        if (tile && tile.needsHillshadePrepare) {
+          tile.needsHillshadePrepare = false;
+        }
+
+        cache.set(key, texture);
       }
+    }
+
+    if (pendingPreparation && mapInstance && typeof mapInstance.triggerRepaint === 'function') {
+      mapInstance.triggerRepaint();
     }
 
     return cache.size > 0 ? cache : null;
