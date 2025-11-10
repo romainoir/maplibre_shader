@@ -362,6 +362,16 @@
     return copyColorArray(components, fallback);
   }
 
+  function colorArrayToCss(color, fallback = DEFAULT_HILLSHADE_SETTINGS.highlightColor) {
+    const source = Array.isArray(color) ? color : fallback;
+    const components = source.slice(0, 3).map(component => {
+      const numeric = Number(component);
+      return clamp01(Number.isFinite(numeric) ? numeric : 0);
+    });
+    const [r, g, b] = components.map(component => Math.round(component * 255));
+    return `rgb(${r}, ${g}, ${b})`;
+  }
+
   function toColorArray(value, fallback) {
     if (Array.isArray(value)) {
       const normalized = value.map(component => {
@@ -1126,7 +1136,24 @@
     const layerDefinition = {
       id: HILLSHADE_NATIVE_LAYER_ID,
       type: 'hillshade',
-      source: TERRAIN_SOURCE_ID
+      source: TERRAIN_SOURCE_ID,
+      paint: {
+        'hillshade-highlight-color': colorArrayToCss(hillshadePaintSettings.highlightColor, DEFAULT_HILLSHADE_SETTINGS.highlightColor),
+        'hillshade-shadow-color': colorArrayToCss(hillshadePaintSettings.shadowColor, DEFAULT_HILLSHADE_SETTINGS.shadowColor),
+        'hillshade-accent-color': colorArrayToCss(hillshadePaintSettings.accentColor, DEFAULT_HILLSHADE_SETTINGS.accentColor),
+        'hillshade-exaggeration': Number.isFinite(hillshadePaintSettings.exaggeration)
+          ? hillshadePaintSettings.exaggeration
+          : DEFAULT_HILLSHADE_SETTINGS.exaggeration,
+        'hillshade-illumination-direction': Number.isFinite(hillshadePaintSettings.illuminationDirection)
+          ? hillshadePaintSettings.illuminationDirection
+          : DEFAULT_HILLSHADE_SETTINGS.illuminationDirection,
+        'hillshade-illumination-anchor': typeof hillshadePaintSettings.illuminationAnchor === 'string'
+          ? hillshadePaintSettings.illuminationAnchor
+          : DEFAULT_HILLSHADE_SETTINGS.illuminationAnchor,
+        'hillshade-opacity': Number.isFinite(hillshadePaintSettings.opacity)
+          ? clamp01(hillshadePaintSettings.opacity)
+          : DEFAULT_HILLSHADE_SETTINGS.opacity
+      }
     };
     map.addLayer(layerDefinition);
     updateHillshadePaintSettingsFromMap();
