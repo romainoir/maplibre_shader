@@ -463,25 +463,29 @@ ${SHADER_NEIGHBOR_FETCH_BLOCK_LOD}      return getElevationFromTextureLod(u_imag
             return coverage;
         }
         vec3 evaluateSnowHillshade(vec2 grad) {
-            vec3 normal = normalize(vec3(-grad * 1.5, 1.0));
+            vec3 normal = normalize(vec3(-grad * 2.0, 1.0));
             vec3 lightDir = normalize(vec3(0.45, 0.35, 0.82));
             float diffuse = clamp(dot(normal, lightDir), -1.0, 1.0);
             float lambert = clamp(0.5 + 0.5 * diffuse, 0.0, 1.0);
-            float contrast = pow(lambert, 0.75);
+            float contrast = pow(lambert, 0.7);
             float shadowBoost = pow(1.0 - lambert, 2.0);
-            vec3 shadowColor = vec3(0.66, 0.72, 0.83);
-            vec3 highlightColor = vec3(1.0);
+            vec3 shadowColor = vec3(0.6, 0.67, 0.78);
+            vec3 highlightColor = vec3(0.94);
             vec3 color = mix(shadowColor, highlightColor, contrast);
-            color *= (1.0 - 0.22 * shadowBoost);
-            float specular = pow(max(diffuse, 0.0), 8.0) * 0.1;
-            vec3 ambient = vec3(0.92, 0.95, 1.0);
-            color = mix(ambient, color + specular, 0.75);
+            color *= (1.0 - 0.18 * shadowBoost);
+            float specular = pow(max(diffuse, 0.0), 8.0) * 0.06;
+            vec3 ambient = vec3(0.88, 0.92, 0.97);
+            color = mix(ambient, color + specular, 0.7);
             float fresnel = pow(1.0 - clamp(dot(normal, lightDir), 0.0, 1.0), 3.0);
-            vec3 skyTint = vec3(0.78, 0.86, 0.98);
-            color = mix(color, skyTint, fresnel * 0.35);
+            vec3 skyTint = vec3(0.76, 0.84, 0.96);
+            color = mix(color, skyTint, fresnel * 0.3);
             float ambientOcclusion = smoothstep(0.0, 0.6, lambert);
-            color *= mix(0.85, 1.0, ambientOcclusion);
+            color *= mix(0.82, 1.0, ambientOcclusion);
             return clamp(color, 0.0, 1.0);
+        }
+        float computeSlopeAspectBias(float aspect) {
+            float northness = cos(radians(aspect));
+            return northness * 3.0;
         }
         float computeSnowMask(vec2 pos) {
             float slopeSoftness = 1.5;
@@ -489,14 +493,16 @@ ${SHADER_NEIGHBOR_FETCH_BLOCK_LOD}      return getElevationFromTextureLod(u_imag
             vec2 grad = computeSobelGradient(pos);
             float slope = degrees(atan(length(grad)));
             float aspect = getAspect(grad);
+            float slopeBias = computeSlopeAspectBias(aspect);
+            float slopeThreshold = clamp(u_snow_maxSlope + slopeBias, 0.0, 90.0);
             float altitudeMask = smoothstep(
                 u_snow_altitude + 100.0,
                 u_snow_altitude + 200.0,
                 elevation
             );
             float slopeMask = 1.0 - smoothstep(
-                u_snow_maxSlope - slopeSoftness,
-                u_snow_maxSlope + slopeSoftness,
+                slopeThreshold - slopeSoftness,
+                slopeThreshold + slopeSoftness,
                 slope
             );
             float snowCoverage = getSnowCoverageForElevation(elevation, aspect);
@@ -506,6 +512,8 @@ ${SHADER_NEIGHBOR_FETCH_BLOCK_LOD}      return getElevationFromTextureLod(u_imag
             vec2 grad = computeSobelGradient(v_texCoord);
             float aspect = getAspect(grad);
             float slope  = computeSlopeDegrees(v_texCoord);
+            float slopeBias = computeSlopeAspectBias(aspect);
+            float slopeThreshold = clamp(u_snow_maxSlope + slopeBias, 0.0, 90.0);
             float altitudeMask = smoothstep(
                 u_snow_altitude + 100.0,
                 u_snow_altitude + 200.0,
@@ -513,8 +521,8 @@ ${SHADER_NEIGHBOR_FETCH_BLOCK_LOD}      return getElevationFromTextureLod(u_imag
             );
             float slopeSoftness = 1.5;
             float slopeMask = 1.0 - smoothstep(
-                u_snow_maxSlope - slopeSoftness,
-                u_snow_maxSlope + slopeSoftness,
+                slopeThreshold - slopeSoftness,
+                slopeThreshold + slopeSoftness,
                 slope
             );
             float snowCoverage = getSnowCoverageForElevation(v_elevation, aspect);
