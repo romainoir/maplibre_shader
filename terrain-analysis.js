@@ -39,6 +39,30 @@
     totalFallback: 0
   };
 
+  let webgl2Unsupported = typeof WebGL2RenderingContext === 'undefined';
+  let webgl2WarningDisplayed = false;
+
+  (function preferWebGL2Context() {
+    if (typeof window === 'undefined' || typeof HTMLCanvasElement === 'undefined') {
+      return;
+    }
+    const originalGetContext = HTMLCanvasElement.prototype.getContext;
+    if (typeof originalGetContext !== 'function') {
+      return;
+    }
+    HTMLCanvasElement.prototype.getContext = function(type, attributes) {
+      if ((type === 'webgl' || type === 'experimental-webgl') && typeof WebGL2RenderingContext !== 'undefined') {
+        const webgl2 = originalGetContext.call(this, 'webgl2', attributes);
+        if (webgl2) {
+          webgl2Unsupported = false;
+          return webgl2;
+        }
+        webgl2Unsupported = true;
+      }
+      return originalGetContext.call(this, type, attributes);
+    };
+  })();
+
   function getGradientDebugElement() {
     if (gradientDebugState.element) {
       const element = gradientDebugState.element;
@@ -54,6 +78,22 @@
       gradientDebugState.element = element;
     }
     return gradientDebugState.element;
+  }
+
+  function notifyWebGL2Unsupported() {
+    if (webgl2WarningDisplayed) {
+      return;
+    }
+    webgl2WarningDisplayed = true;
+    if (typeof console !== 'undefined' && console.error) {
+      console.error('Terrain analysis custom shaders require a WebGL 2.0 context, but only WebGL 1.0 is available.');
+    }
+    const element = getGradientDebugElement();
+    if (element) {
+      element.style.display = 'block';
+      element.classList.add('debug-warning');
+      element.innerHTML = '<strong>Terrain analysis unavailable</strong><div>This demo requires WebGL 2.0 for custom terrain effects. Your browser only exposed a WebGL 1.0 context, so the custom renderer was disabled.</div>';
+    }
   }
 
   function resetGradientDebugStats(options = {}) {
@@ -1155,6 +1195,10 @@
   }
 
   function enableCustomHillshade(mode) {
+    if (webgl2Unsupported) {
+      notifyWebGL2Unsupported();
+      return;
+    }
     const nextMode = mode || lastCustomMode || 'hillshade';
     lastCustomMode = nextMode;
     currentMode = nextMode;
@@ -1278,11 +1322,19 @@
     renderingMode: '3d',
     shaderMap: new Map(),
     frameCount: 0,
-    
+    webglUnsupported: false,
+
     onAdd(mapInstance, gl) {
       this.map = mapInstance;
       this.gl = gl;
       this.frameCount = 0;
+      this.webglUnsupported = !(gl instanceof WebGL2RenderingContext);
+      if (this.webglUnsupported) {
+        webgl2Unsupported = true;
+        notifyWebGL2Unsupported();
+        return;
+      }
+      webgl2Unsupported = false;
       analysisPreparer.initialize(gl);
     },
   
@@ -1700,6 +1752,10 @@
     },
 
     render(gl, matrix) {
+      if (this.webglUnsupported) {
+        notifyWebGL2Unsupported();
+        return;
+      }
       // Increment frame counter
       this.frameCount++;
       
