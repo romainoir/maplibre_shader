@@ -1873,22 +1873,25 @@
         return;
       }
 
-      const terrainSpec = typeof this.map.getTerrain === 'function'
-        ? this.map.getTerrain()
-        : null;
-      const needsManualTileUpdate = (!terrainSpec || terrainSpec.exaggeration === 0)
-        && typeof tileManager.update === 'function';
-      if (needsManualTileUpdate) {
+      if (typeof tileManager.update === 'function') {
         try {
           tileManager.update(this.map.transform, terrainInterface);
         } catch (error) {
-          if (DEBUG) console.error('Failed to update terrain tiles while terrain is flattened', error);
+          if (DEBUG) {
+            const context = isTerrainFlattened ? ' while terrain is flattened' : '';
+            console.error(`Failed to update terrain tiles${context}`, error);
+          }
         }
       }
 
-      if (tileManager.anyTilesAfterTime(Date.now() - 100)) {
-        this.map.triggerRepaint();
-        return;
+      if (typeof tileManager.anyTilesAfterTime === 'function') {
+        const timestamp = (typeof performance !== 'undefined' && performance && typeof performance.now === 'function')
+          ? performance.now()
+          : Date.now();
+        if (tileManager.anyTilesAfterTime(timestamp - 100)) {
+          this.map.triggerRepaint();
+          return;
+        }
       }
 
       const renderableTiles = tileManager.getRenderableTiles();
