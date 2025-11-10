@@ -1,7 +1,5 @@
 /* terrain-shaders.js */
-// Use only the current tile data by default and allow runtime configuration.
-const MAX_CONFIGURABLE_NEIGHBOR_OFFSET = 4;
-let SHADER_MAX_NEIGHBOR_OFFSET = 0;
+const SHADER_MAX_NEIGHBOR_OFFSET = 2;
 const DAYLIGHT_SHADER_SAMPLE_CAP = 16;
 const SHADER_NEIGHBOR_NAME_OVERRIDES = {
   '-1,0': 'u_image_left',
@@ -20,30 +18,6 @@ function shaderFormatOffsetPart(value) {
   }
   const prefix = value < 0 ? 'm' : 'p';
   return `${prefix}${Math.abs(value)}`;
-}
-
-function shaderNeighborCountForOffset(offset) {
-  if (!Number.isFinite(offset) || offset <= 0) {
-    return 0;
-  }
-  const clamped = Math.floor(Math.max(0, offset));
-  return 2 * clamped * (clamped + 1);
-}
-
-function shaderMaxOffsetForUnits(unitCount) {
-  if (!Number.isFinite(unitCount) || unitCount < 2) {
-    return 0;
-  }
-  const availableNeighborSamplers = Math.max(0, Math.floor(unitCount) - 1);
-  let offset = 0;
-  while (offset < MAX_CONFIGURABLE_NEIGHBOR_OFFSET) {
-    const next = offset + 1;
-    if (shaderNeighborCountForOffset(next) > availableNeighborSamplers) {
-      break;
-    }
-    offset = next;
-  }
-  return offset;
 }
 
 function shaderUniformNameForOffset(dx, dy) {
@@ -66,30 +40,29 @@ function shaderBuildNeighborOffsets(maxOffset) {
   return offsets;
 }
 
-let SHADER_TEXTURE_UNIT_LIMIT = 16;
-let SHADER_SUPPORTED_NEIGHBOR_OFFSET = shaderMaxOffsetForUnits(SHADER_TEXTURE_UNIT_LIMIT);
-let SHADER_NEIGHBOR_OFFSETS = shaderBuildNeighborOffsets(SHADER_MAX_NEIGHBOR_OFFSET);
-let SHADER_NEIGHBOR_UNIFORM_DECLARATIONS = SHADER_NEIGHBOR_OFFSETS
+const SHADER_NEIGHBOR_OFFSETS = shaderBuildNeighborOffsets(SHADER_MAX_NEIGHBOR_OFFSET);
+const SHADER_NEIGHBOR_UNIFORM_DECLARATIONS = SHADER_NEIGHBOR_OFFSETS
   .map(({ uniform }) => `    uniform sampler2D ${uniform};`)
   .join('\n');
-let SHADER_NEIGHBOR_UNIFORM_BLOCK = SHADER_NEIGHBOR_UNIFORM_DECLARATIONS
+const SHADER_NEIGHBOR_UNIFORM_BLOCK = SHADER_NEIGHBOR_UNIFORM_DECLARATIONS
   ? `${SHADER_NEIGHBOR_UNIFORM_DECLARATIONS}\n`
   : '';
-let SHADER_NEIGHBOR_FETCH_CASES = SHADER_NEIGHBOR_OFFSETS
+const SHADER_NEIGHBOR_FETCH_CASES = SHADER_NEIGHBOR_OFFSETS
   .map(({ dx, dy, uniform }) => `      if (offset == ivec2(${dx}, ${dy})) {\n        return getElevationFromTexture(${uniform}, tilePos);\n      }`)
   .join('\n');
-let SHADER_NEIGHBOR_FETCH_BLOCK = SHADER_NEIGHBOR_FETCH_CASES
+const SHADER_NEIGHBOR_FETCH_BLOCK = SHADER_NEIGHBOR_FETCH_CASES
   ? `\n${SHADER_NEIGHBOR_FETCH_CASES}\n`
   : '';
-let SHADER_NEIGHBOR_FETCH_CASES_LOD = SHADER_NEIGHBOR_OFFSETS
+const SHADER_NEIGHBOR_FETCH_CASES_LOD = SHADER_NEIGHBOR_OFFSETS
   .map(({ dx, dy, uniform }) => `      if (offset == ivec2(${dx}, ${dy})) {\n        return getElevationFromTextureLod(${uniform}, tilePos, lod);\n      }`)
   .join('\n');
-let SHADER_NEIGHBOR_FETCH_BLOCK_LOD = SHADER_NEIGHBOR_FETCH_CASES_LOD
+const SHADER_NEIGHBOR_FETCH_BLOCK_LOD = SHADER_NEIGHBOR_FETCH_CASES_LOD
   ? `\n${SHADER_NEIGHBOR_FETCH_CASES_LOD}\n`
   : '';
 
-function buildCommonFunctions() {
-  return `
+const TerrainShaders = {
+  // Common GLSL functions shared among the fragment shaders.
+  commonFunctions: `
     precision highp float;
     precision highp int;
     uniform sampler2D u_image;
@@ -235,134 +208,27 @@ ${SHADER_NEIGHBOR_FETCH_BLOCK_LOD}      return getElevationFromTextureLod(u_imag
         vec2 precomputed = texture(u_gradient, safePos).rg;
         return precomputed;
       }
+      vec2 safePos = pos;
+      float metersPerPixel = max(u_metersPerPixel, 0.0001);
+      float metersPerTile  = metersPerPixel * u_dimension.x;
+      float sampleDist = max(u_samplingDistance, 0.0001);
+      float delta = sampleDist / metersPerTile;
+      float denom = 2.0 * sampleDist;
 
-      float dimX = max(u_dimension.x, 1.0);
-      float dimY = max(u_dimension.y, 1.0);
-      vec2 texel = vec2(1.0 / dimX, 1.0 / dimY);
-      vec2 dx = vec2(texel.x, 0.0);
-      vec2 dy = vec2(0.0, texel.y);
+      vec2 dx = vec2(delta, 0.0);
+      vec2 dy = vec2(0.0, delta);
 
-      float a = getElevationExtended(pos - dx - dy);
-      float b = getElevationExtended(pos - dy);
-      float c = getElevationExtended(pos + dx - dy);
-      float d = getElevationExtended(pos - dx);
-      float f = getElevationExtended(pos + dx);
-      float g = getElevationExtended(pos - dx + dy);
-      float h = getElevationExtended(pos + dy);
-      float i = getElevationExtended(pos + dx + dy);
+      float left = getElevationExtended(safePos - dx);
+      float right = getElevationExtended(safePos + dx);
+      float top = getElevationExtended(safePos - dy);
+      float bottom = getElevationExtended(safePos + dy);
 
-      vec2 deriv = vec2(
-        (c + f + f + i) - (a + d + d + g),
-        (g + h + h + i) - (a + b + b + c)
-      );
+      float gx = (right - left) / denom;
+      float gy = (bottom - top) / denom;
 
-      float tileSize = max(u_dimension.x - 2.0, 1.0);
-      float exaggerationFactor = u_zoom < 2.0 ? 0.4 : (u_zoom < 4.5 ? 0.35 : 0.3);
-      float exaggeration = u_zoom < 15.0 ? (u_zoom - 15.0) * exaggerationFactor : 0.0;
-      float zoomScale = pow(2.0, (28.25619978527 - u_zoom) + exaggeration);
-      deriv *= tileSize / zoomScale;
-
-      float lat = (u_latrange.x - u_latrange.y) * (1.0 - pos.y) + u_latrange.y;
-      float scaleFactor = max(cos(radians(lat)), 0.000001);
-      deriv /= scaleFactor;
-
-      float samplingScale = 0.35 / max(u_samplingDistance, 0.0001);
-      deriv *= samplingScale;
-
-      return deriv;
+      return vec2(gx, gy);
     }
-  `;
-}
-
-let shaderCommonFunctionsCache = null;
-
-function getShaderNeighborOffsetLimit() {
-  return Math.min(MAX_CONFIGURABLE_NEIGHBOR_OFFSET, SHADER_SUPPORTED_NEIGHBOR_OFFSET);
-}
-
-function updateShaderTextureUnitLimit(limit) {
-  if (!Number.isFinite(limit)) {
-    return { limitChanged: false, needsRebuild: false };
-  }
-  const nextLimit = Math.max(0, Math.floor(limit));
-  if (nextLimit === SHADER_TEXTURE_UNIT_LIMIT) {
-    return { limitChanged: false, needsRebuild: false };
-  }
-  SHADER_TEXTURE_UNIT_LIMIT = nextLimit;
-  const previousCap = getShaderNeighborOffsetLimit();
-  SHADER_SUPPORTED_NEIGHBOR_OFFSET = shaderMaxOffsetForUnits(SHADER_TEXTURE_UNIT_LIMIT);
-  const nextCap = getShaderNeighborOffsetLimit();
-  let needsRebuild = false;
-  if (SHADER_MAX_NEIGHBOR_OFFSET > nextCap) {
-    SHADER_MAX_NEIGHBOR_OFFSET = nextCap;
-    needsRebuild = true;
-  }
-  const limitChanged = previousCap !== nextCap || needsRebuild;
-  return { limitChanged, needsRebuild };
-}
-
-function rebuildShaderNeighborConfiguration() {
-  SHADER_NEIGHBOR_OFFSETS = shaderBuildNeighborOffsets(SHADER_MAX_NEIGHBOR_OFFSET);
-  SHADER_NEIGHBOR_UNIFORM_DECLARATIONS = SHADER_NEIGHBOR_OFFSETS
-    .map(({ uniform }) => `    uniform sampler2D ${uniform};`)
-    .join('\n');
-  SHADER_NEIGHBOR_UNIFORM_BLOCK = SHADER_NEIGHBOR_UNIFORM_DECLARATIONS
-    ? `${SHADER_NEIGHBOR_UNIFORM_DECLARATIONS}\n`
-    : '';
-  SHADER_NEIGHBOR_FETCH_CASES = SHADER_NEIGHBOR_OFFSETS
-    .map(({ dx, dy, uniform }) => `      if (offset == ivec2(${dx}, ${dy})) {\n        return getElevationFromTexture(${uniform}, tilePos);\n      }`)
-    .join('\n');
-  SHADER_NEIGHBOR_FETCH_BLOCK = SHADER_NEIGHBOR_FETCH_CASES
-    ? `\n${SHADER_NEIGHBOR_FETCH_CASES}\n`
-    : '';
-  SHADER_NEIGHBOR_FETCH_CASES_LOD = SHADER_NEIGHBOR_OFFSETS
-    .map(({ dx, dy, uniform }) => `      if (offset == ivec2(${dx}, ${dy})) {\n        return getElevationFromTextureLod(${uniform}, tilePos, lod);\n      }`)
-    .join('\n');
-  SHADER_NEIGHBOR_FETCH_BLOCK_LOD = SHADER_NEIGHBOR_FETCH_CASES_LOD
-    ? `\n${SHADER_NEIGHBOR_FETCH_CASES_LOD}\n`
-    : '';
-  shaderCommonFunctionsCache = null;
-}
-
-const TerrainShaders = {
-  // Allow tests and debug tools to adjust the shader configuration at runtime.
-  configure(options = {}) {
-    let changed = false;
-    if (options && typeof options.maxNeighborOffset === 'number') {
-      const cap = getShaderNeighborOffsetLimit();
-      const requested = Math.max(0, Math.round(options.maxNeighborOffset));
-      const next = Math.max(0, Math.min(cap, requested));
-      if (next !== SHADER_MAX_NEIGHBOR_OFFSET) {
-        SHADER_MAX_NEIGHBOR_OFFSET = next;
-        changed = true;
-      }
-    }
-    if (changed) {
-      rebuildShaderNeighborConfiguration();
-    }
-    return changed;
-  },
-  getNeighborOffsets() {
-    return SHADER_NEIGHBOR_OFFSETS.slice();
-  },
-  getMaxNeighborOffset() {
-    return SHADER_MAX_NEIGHBOR_OFFSET;
-  },
-  getNeighborOffsetLimit() {
-    return getShaderNeighborOffsetLimit();
-  },
-  setTextureUnitLimit(limit) {
-    const result = updateShaderTextureUnitLimit(limit);
-    if (result && result.needsRebuild) {
-      rebuildShaderNeighborConfiguration();
-    }
-  },
-  get commonFunctions() {
-    if (shaderCommonFunctionsCache === null) {
-      shaderCommonFunctionsCache = buildCommonFunctions();
-    }
-    return shaderCommonFunctionsCache;
-  },
+  `,
 
   // Vertex shader
   getVertexShader: function(shaderDescription, extent) {
