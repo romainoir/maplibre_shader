@@ -432,6 +432,7 @@ ${SHADER_NEIGHBOR_FETCH_BLOCK_LOD}      return getElevationFromTextureLod(u_imag
         ${this.commonFunctions}
         uniform float u_snow_altitude;
         uniform float u_snow_maxSlope;
+        uniform float u_snow_blur;
         in vec2 v_texCoord;
         in float v_elevation;
         out vec4 fragColor;
@@ -528,7 +529,8 @@ ${SHADER_NEIGHBOR_FETCH_BLOCK_LOD}      return getElevationFromTextureLod(u_imag
                 accum += neighborMask * kernelWeights[i];
                 weight += kernelWeights[i];
             }
-            float finalMask = clamp(accum / weight, 0.0, 1.0);
+            float blurredMask = clamp(accum / weight, 0.0, 1.0);
+            float finalMask = mix(baseMask, blurredMask, clamp(u_snow_blur, 0.0, 1.0));
             vec3 snowColor = evaluateSnowHillshade(grad);
             fragColor = vec4(snowColor, finalMask * 0.95);
         }`;
