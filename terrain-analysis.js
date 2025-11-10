@@ -1795,7 +1795,13 @@
           if (shader.locations.u_zoom != null) {
             gl.uniform1f(shader.locations.u_zoom, zoom);
           }
-          const metersPerPixel = Math.max(this.map.transform.pixelsToMeters(1, canonical.y), MIN_METERS_PER_PIXEL);
+          let metersPerPixel = computeMetersPerPixelForTile(canonical, tileSize);
+          if (this.map && this.map.transform && typeof this.map.transform.pixelsToMeters === 'function') {
+            const pixelsToMeters = this.map.transform.pixelsToMeters(1, canonical ? canonical.y : undefined);
+            if (Number.isFinite(pixelsToMeters)) {
+              metersPerPixel = Math.max(pixelsToMeters, MIN_METERS_PER_PIXEL);
+            }
+          }
           if (shader.locations.u_metersPerPixel != null) {
             gl.uniform1f(shader.locations.u_metersPerPixel, metersPerPixel);
           }
