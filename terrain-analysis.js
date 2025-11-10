@@ -986,23 +986,29 @@
     return true;
   }
 
-  function ensureCustomTerrainLayer() {
-    if (!canModifyStyle()) return;
-    if (map.getLayer('terrain-normal')) return;
+  function ensureCustomTerrainLayer(options = {}) {
+    const { force = false } = options;
+    if (!force && !canModifyStyle()) return false;
+    if (map.getLayer('terrain-normal')) return true;
     terrainNormalLayer.frameCount = 0;
     map.addLayer(terrainNormalLayer);
+    return true;
   }
 
-  function removeCustomTerrainLayer() {
-    if (!canModifyStyle()) return;
+  function removeCustomTerrainLayer(options = {}) {
+    const { force = false } = options;
+    if (!force && !canModifyStyle()) return false;
     if (map.getLayer('terrain-normal')) {
       map.removeLayer('terrain-normal');
+      return true;
     }
+    return false;
   }
 
-  function ensureNativeHillshadeLayer() {
-    if (!canModifyStyle()) return;
-    if (map.getLayer(HILLSHADE_NATIVE_LAYER_ID)) return;
+  function ensureNativeHillshadeLayer(options = {}) {
+    const { force = false } = options;
+    if (!force && !canModifyStyle()) return false;
+    if (map.getLayer(HILLSHADE_NATIVE_LAYER_ID)) return true;
     const layerDefinition = {
       id: HILLSHADE_NATIVE_LAYER_ID,
       type: 'hillshade',
@@ -1016,39 +1022,57 @@
         sourceId: TERRAIN_SOURCE_ID
       });
     }
+    return true;
   }
 
-  function removeNativeHillshadeLayer() {
-    if (!canModifyStyle()) return;
+  function removeNativeHillshadeLayer(options = {}) {
+    const { force = false } = options;
+    if (!force && !canModifyStyle()) return false;
     if (map.getLayer(HILLSHADE_NATIVE_LAYER_ID)) {
       updateHillshadePaintSettingsFromMap();
       map.removeLayer(HILLSHADE_NATIVE_LAYER_ID);
+      return true;
     }
+    return false;
+  }
+
+  function invokeWhenStyleReady(callback) {
+    if (!map || typeof callback !== 'function') return;
+    if (canModifyStyle()) {
+      callback();
+      return;
+    }
+    let executed = false;
+    const runWhenReady = () => {
+      if (executed || !map) return;
+      if (!canModifyStyle()) {
+        map.once('styledata', runWhenReady);
+        map.once('idle', runWhenReady);
+        return;
+      }
+      executed = true;
+      callback();
+    };
+    map.once('styledata', runWhenReady);
+    map.once('idle', runWhenReady);
   }
 
   function enableCustomHillshade(mode) {
-    const styleReady = canModifyStyle();
     const nextMode = mode || lastCustomMode || 'hillshade';
     lastCustomMode = nextMode;
     currentMode = nextMode;
     hillshadeMode = 'custom';
-    if (styleReady) {
-      removeNativeHillshadeLayer();
-      ensureCustomTerrainLayer();
-    }
     terrainNormalLayer.shaderMap.clear();
     analysisPreparer.invalidateAll();
     updateButtons();
-    if (styleReady && map) {
+    invokeWhenStyleReady(() => {
+      removeNativeHillshadeLayer({ force: true });
+      ensureCustomTerrainLayer({ force: true });
       map.triggerRepaint();
-    }
+    });
   }
 
   function disableCustomHillshade() {
-    const styleReady = canModifyStyle();
-    if (styleReady) {
-      removeCustomTerrainLayer();
-    }
     if (hillshadeMode === 'custom') {
       hillshadeMode = 'none';
     }
@@ -1056,33 +1080,32 @@
     terrainNormalLayer.shaderMap.clear();
     analysisPreparer.invalidateAll();
     updateButtons();
-    if (styleReady && map) {
+    invokeWhenStyleReady(() => {
+      removeCustomTerrainLayer({ force: true });
       map.triggerRepaint();
-    }
+    });
   }
 
   function setNativeHillshadeEnabled(enabled) {
-    const styleReady = canModifyStyle();
     if (enabled) {
-      if (styleReady) {
-        removeCustomTerrainLayer();
-        removeNativeHillshadeLayer();
-        ensureNativeHillshadeLayer();
-      }
       hillshadeMode = 'native';
       currentMode = '';
+      invokeWhenStyleReady(() => {
+        removeCustomTerrainLayer({ force: true });
+        removeNativeHillshadeLayer({ force: true });
+        ensureNativeHillshadeLayer({ force: true });
+        map.triggerRepaint();
+      });
     } else {
-      if (styleReady) {
-        removeNativeHillshadeLayer();
-      }
       if (hillshadeMode === 'native') {
         hillshadeMode = 'none';
       }
+      invokeWhenStyleReady(() => {
+        removeNativeHillshadeLayer({ force: true });
+        map.triggerRepaint();
+      });
     }
     updateButtons();
-    if (styleReady && map) {
-      map.triggerRepaint();
-    }
   }
 
   const shadowSampleCountSlider = document.getElementById('shadowSampleCountSlider');
@@ -1721,13 +1744,6 @@
       version: 8,
       glyphs: "https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf",
       sources: {
-        swisstopo: {
-          type: 'raster',
-          tileSize: 256,
-          tiles: ['https://wmts.geo.admin.ch/1.0.0/ch.swisstopo.swissimage/default/current/3857/{z}/{x}/{y}.jpeg'],
-          attribution: '© Swisstopo',
-          maxzoom: 19
-        },
         [TERRAIN_SOURCE_ID]: {
           type: 'raster-dem',
           tiles: ['https://tiles.mapterhorn.com/{z}/{x}/{y}.webp'],
@@ -1737,10 +1753,9 @@
         }
       },
       layers: [
-        { id: 'swisstopo', type: 'raster', source: 'swisstopo', paint: {'raster-opacity': 1.0} }
+        { id: 'background', type: 'background', paint: { 'background-color': '#ffffff' } }
       ],
-      terrain: { source: TERRAIN_SOURCE_ID, exaggeration: 1.0 },
-      background: { paint: { "background-color": "#ffffff" } }
+      terrain: { source: TERRAIN_SOURCE_ID, exaggeration: 1.0 }
     },
     zoom: 14,
     center: [7.73044, 46.09915],
