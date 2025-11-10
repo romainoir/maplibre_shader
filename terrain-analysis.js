@@ -1630,8 +1630,8 @@
 
       for (const tile of renderableTiles) {
         const sourceTile = tileManager.getSourceTile(tile.tileID, true);
-        if (!sourceTile || sourceTile.tileID.key !== tile.tileID.key) {
-          if (DEBUG) console.log(`Skipping tile ${tile.tileID.key}: source tile mismatch or overscaled`);
+        if (!sourceTile) {
+          if (DEBUG) console.log(`Skipping tile ${tile.tileID.key}: missing source tile`);
           skippedCount++;
           continue;
         }
@@ -1643,12 +1643,6 @@
 
         if (!terrainData || !terrainData.texture) {
           if (DEBUG) console.log(`Skipping tile ${tile.tileID.key}: no terrain data or texture`);
-          skippedCount++;
-          continue;
-        }
-
-        if (terrainData.fallback) {
-          if (DEBUG) console.log(`Skipping tile ${tile.tileID.key}: fallback tile`);
           skippedCount++;
           continue;
         }
@@ -1910,11 +1904,11 @@
       const textureCache = new Map();
       for (const tile of renderableTiles) {
         const sourceTile = tileManager.getSourceTile(tile.tileID, true);
-        if (!sourceTile || sourceTile.tileID.key !== tile.tileID.key) continue;
+        if (!sourceTile) continue;
         const terrainData = terrainInterface && terrainInterface.getTerrainData
           ? terrainInterface.getTerrainData(tile.tileID)
           : null;
-        if (!terrainData || !terrainData.texture || terrainData.fallback) continue;
+        if (!terrainData || !terrainData.texture) continue;
         const cacheKey = getTileCacheKey(tile.tileID);
         terrainDataCache.set(tile.tileID.key, terrainData);
         textureCache.set(cacheKey, terrainData.texture);
