@@ -1009,18 +1009,35 @@
     if (mapInstance._painter && mapInstance._painter !== mapInstance.painter) {
       candidatePainters.push(mapInstance._painter);
     }
+
+    const candidateTerrains = [];
     for (const painter of candidatePainters) {
-      const painterTerrain = painter && painter.terrain;
-      if (painterTerrain && painterTerrain.tileManager) {
-        cachedTerrainInterface = painterTerrain;
-        return painterTerrain;
+      if (painter && painter.terrain) {
+        candidateTerrains.push(painter.terrain);
+      }
+      const styleMapTerrain = painter && painter.style && painter.style.map && painter.style.map.terrain;
+      if (styleMapTerrain) {
+        candidateTerrains.push(styleMapTerrain);
+      }
+    }
+
+    const style = mapInstance.style;
+    if (style && style.map && style.map.terrain) {
+      candidateTerrains.push(style.map.terrain);
+    }
+
+    for (const terrain of candidateTerrains) {
+      if (terrain && terrain.tileManager) {
+        cachedTerrainInterface = terrain;
+        return terrain;
       }
     }
 
     const hasTerrain = Boolean(
       mapInstance.terrain
-      || (mapInstance.painter && mapInstance.painter.terrain)
-      || (mapInstance._painter && mapInstance._painter.terrain)
+      || (mapInstance.painter && (mapInstance.painter.terrain || (mapInstance.painter.style && mapInstance.painter.style.map && mapInstance.painter.style.map.terrain)))
+      || (mapInstance._painter && (mapInstance._painter.terrain || (mapInstance._painter.style && mapInstance._painter.style.map && mapInstance._painter.style.map.terrain)))
+      || (mapInstance.style && mapInstance.style.map && mapInstance.style.map.terrain)
     );
     if (!hasTerrain) {
       if (isTerrainFlattened && cachedTerrainInterface && cachedTerrainInterface.tileManager) {
