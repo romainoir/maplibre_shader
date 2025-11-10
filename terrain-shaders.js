@@ -86,9 +86,32 @@ ${SHADER_NEIGHBOR_UNIFORM_BLOCK}    uniform sampler2D u_gradient;
       return dot(data, vec3(256.0, 1.0, 1.0 / 256.0)) - 32768.0;
     }
 
+    float reflectCoord(float coord, float minBound, float maxBound) {
+      float span = max(maxBound - minBound, 0.0);
+      if (span <= 0.0) {
+        return minBound;
+      }
+      float twoSpan = span * 2.0;
+      float offset = coord - minBound;
+      float wrapped = mod(offset, twoSpan);
+      if (wrapped < 0.0) {
+        wrapped += twoSpan;
+      }
+      float reflected = wrapped <= span ? wrapped : (twoSpan - wrapped);
+      return minBound + reflected;
+    }
+
     vec2 clampTexCoord(vec2 pos) {
-      float border = 0.5 / u_dimension.x;
-      return clamp(pos, vec2(border), vec2(1.0 - border));
+      float borderX = 0.5 / u_dimension.x;
+      float borderY = 0.5 / u_dimension.y;
+      float minX = borderX;
+      float maxX = 1.0 - borderX;
+      float minY = borderY;
+      float maxY = 1.0 - borderY;
+      return vec2(
+        reflectCoord(pos.x, minX, maxX),
+        reflectCoord(pos.y, minY, maxY)
+      );
     }
 
     float getElevationExtended(vec2 pos) {
@@ -404,7 +427,6 @@ ${SHADER_NEIGHBOR_FETCH_BLOCK_LOD}      return getElevationFromTextureLod(u_imag
         }`;
 
       case "snow":
-        // ←←← UNCHANGED ←←←
         return `#version 300 es
         precision highp float;
         ${this.commonFunctions}
@@ -420,49 +442,47 @@ ${SHADER_NEIGHBOR_FETCH_BLOCK_LOD}      return getElevationFromTextureLod(u_imag
             float aspect = degrees(atan(grad.x, grad.y));
             return mod(aspect + 180.0, 360.0);
         }
-        vec4 getSnowColorForElevation(float elevation, float aspect) {
-            const vec3 lowSnowColor = vec3(0.5, 0.8, 0.8);
-            const vec3 midSnowColor = vec3(0.2, 0.2, 0.8);
-            const vec3 highSnowColor = vec3(0.4, 0.0, 0.8);
+        float getSnowCoverageForElevation(float elevation, float aspect) {
             float aspectFactor = smoothstep(180.0, 0.0, aspect) * 0.5 + 0.5;
-            float snowDepthAdjustment = mix(250.0, 300.0, aspectFactor);
-            float lowBand = 2000.0, midBand = 3400.0, highBand = 4100.0;
-            vec3 color;
-            float snowDepth;
+            float lowBand = 2000.0;
+            float midBand = 3400.0;
+            float highBand = 4100.0;
+            float coverage;
             if (elevation < lowBand) {
-                color = lowSnowColor;
-                snowDepth = 1.0 * aspectFactor;
+                coverage = 1.0 * aspectFactor;
             } else if (elevation < midBand) {
                 float t = (elevation - lowBand) / (midBand - lowBand);
-                color = mix(lowSnowColor, midSnowColor, smoothstep(0.0,1.0,t));
-                snowDepth = mix(1.0,2.5,t) * aspectFactor;
+                coverage = mix(1.0, 2.5, t) * aspectFactor;
             } else if (elevation < highBand) {
                 float t = (elevation - midBand) / (highBand - midBand);
-                color = mix(midSnowColor, highSnowColor, smoothstep(0.0,1.0,t));
-                snowDepth = mix(2.5,3.0,t) * aspectFactor;
+                coverage = mix(2.5, 3.0, t) * aspectFactor;
             } else {
-                color = highSnowColor;
-                snowDepth = 3.0 * aspectFactor;
+                coverage = 3.0 * aspectFactor;
             }
-            return vec4(color, snowDepth);
+            return coverage;
+        }
+        vec3 evaluateSnowHillshade(vec2 grad) {
+            vec3 normal = normalize(vec3(-grad, 1.0));
+            vec3 lightDir = normalize(vec3(0.45, 0.35, 0.82));
+            float diffuse = clamp(dot(normal, lightDir), -1.0, 1.0);
+            float shade = clamp(0.55 + 0.45 * diffuse, 0.0, 1.0);
+            vec3 shadowColor = vec3(0.78, 0.82, 0.86);
+            vec3 highlightColor = vec3(1.0);
+            return mix(shadowColor, highlightColor, shade);
         }
         void main() {
             vec2 grad = computeSobelGradient(v_texCoord);
             float aspect = getAspect(grad);
-            float slope  = computeSlopeDegrees(clampTexCoord(v_texCoord));
+            float slope  = computeSlopeDegrees(v_texCoord);
             float altitudeMask = smoothstep(
                 u_snow_altitude + 100.0,
                 u_snow_altitude + 200.0,
                 v_elevation
             );
             float slopeMask = step(slope, u_snow_maxSlope);
-            vec4 snowInfo = getSnowColorForElevation(v_elevation, aspect);
-            vec3 snowColor = snowInfo.rgb;
-            float snowDepth = snowInfo.a;
-            vec3 normal = normalize(vec3(-grad,1.0));
-            float diffuse = pow(max(dot(normal,vec3(0,0,0.7)),0.0), 0.5);
-            snowColor = mix(snowColor * 0.5, snowColor, diffuse);
-            float finalMask = altitudeMask * slopeMask * snowDepth;
+            float snowCoverage = getSnowCoverageForElevation(v_elevation, aspect);
+            vec3 snowColor = evaluateSnowHillshade(grad);
+            float finalMask = clamp(altitudeMask * slopeMask * snowCoverage, 0.0, 1.0);
             fragColor = vec4(snowColor, finalMask * 0.95);
         }`;
 
