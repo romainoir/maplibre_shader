@@ -43,7 +43,7 @@
       font-family: sans-serif;
       font-size: 13px;
     }
-    #snowSliderContainer, #shadowControls { display: none; }
+    #snowSliderContainer, #shadowControls, #debugControls { display: none; }
     #shadowControls {
       flex-direction: column;
       gap: 6px;
@@ -54,6 +54,31 @@
       gap: 6px;
     }
     input[type="range"] { vertical-align: middle; }
+    #debugControls {
+      display: none;
+      flex-direction: column;
+      gap: 6px;
+      background: rgba(0, 0, 0, 0.65);
+      padding: 8px 12px;
+      border-radius: 6px;
+      color: #fff;
+      font-family: sans-serif;
+      font-size: 13px;
+      max-width: 280px;
+    }
+    #debugControls .debug-group {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    #debugControls label {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    #debugControls input[type="range"] {
+      flex: 1;
+    }
   </style>
 </head>
 <body>
@@ -67,6 +92,7 @@
     <button id="snowBtn" class="control-button">Snow</button>
     <button id="shadowBtn" class="control-button">Shadow</button>
     <button id="daylightBtn" class="control-button">Sunlight</button>
+    <button id="debugBtn" class="control-button">Debug</button>
     <!-- Snow sliders -->
     <div id="snowSliderContainer">
       <label for="snowAltitudeSlider">Snow Altitude:</label>
@@ -118,6 +144,22 @@
         <input type="range" id="shadowRayStepMultiplierSlider" min="0.25" max="4" step="0.05" value="1">
         <span id="shadowRayStepMultiplierValue">1.00</span>
       </div>
+    </div>
+    <div id="debugControls">
+      <div class="debug-group">
+        <label for="neighborOffsetSlider">Neighbor radius:</label>
+        <input type="range" id="neighborOffsetSlider" min="0" max="3" step="1" value="0">
+        <span id="neighborOffsetValue">0</span>
+      </div>
+      <div class="debug-group">
+        <label for="samplingDistanceSlider">Sampling base (m):</label>
+        <input type="range" id="samplingDistanceSlider" min="0.1" max="1.5" step="0.05" value="0.35">
+        <span id="samplingDistanceValue">0.35</span>
+      </div>
+      <label>
+        <input type="checkbox" id="precomputedGradientToggle" checked>
+        Use precomputed gradients
+      </label>
     </div>
   </div>
   <div id="map"></div>

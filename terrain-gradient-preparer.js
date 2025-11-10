@@ -1,7 +1,7 @@
 /* terrain-gradient-preparer.js */
 const TerrainGradientPreparer = (function() {
-  // Only sample within the tile itself by disabling neighbor offsets.
-  const GRADIENT_MAX_NEIGHBOR_OFFSET = 0;
+  // Only sample within the tile itself by default and allow runtime updates.
+  let GRADIENT_MAX_NEIGHBOR_OFFSET = 0;
   const EARTH_CIRCUMFERENCE_METERS = 40075016.68557849;
   const MIN_METERS_PER_PIXEL = 1e-6;
   const GRADIENT_NEIGHBOR_NAME_OVERRIDES = {
@@ -43,14 +43,14 @@ const TerrainGradientPreparer = (function() {
     return offsets;
   }
 
-  const GRADIENT_NEIGHBOR_OFFSETS = gradientBuildNeighborOffsets(GRADIENT_MAX_NEIGHBOR_OFFSET);
-  const GRADIENT_NEIGHBOR_UNIFORM_DECLARATIONS = GRADIENT_NEIGHBOR_OFFSETS
+  let GRADIENT_NEIGHBOR_OFFSETS = gradientBuildNeighborOffsets(GRADIENT_MAX_NEIGHBOR_OFFSET);
+  let GRADIENT_NEIGHBOR_UNIFORM_DECLARATIONS = GRADIENT_NEIGHBOR_OFFSETS
     .map(({ uniform }) => `uniform sampler2D ${uniform};`)
     .join('\n');
-  const GRADIENT_NEIGHBOR_UNIFORM_BLOCK = GRADIENT_NEIGHBOR_UNIFORM_DECLARATIONS
+  let GRADIENT_NEIGHBOR_UNIFORM_BLOCK = GRADIENT_NEIGHBOR_UNIFORM_DECLARATIONS
     ? `${GRADIENT_NEIGHBOR_UNIFORM_DECLARATIONS}\n`
     : '';
-  const GRADIENT_NEIGHBOR_FETCH_CASES = GRADIENT_NEIGHBOR_OFFSETS
+  let GRADIENT_NEIGHBOR_FETCH_BLOCK = GRADIENT_NEIGHBOR_OFFSETS
     .map(({ dx, dy, uniform }, index) => {
       const maskBit = `uint(1) << uint(${index})`;
       return `  if (offset == ivec2(${dx}, ${dy})) {\n`
@@ -63,121 +63,45 @@ const TerrainGradientPreparer = (function() {
         + `  }`;
     })
     .join('\n');
-  const GRADIENT_NEIGHBOR_FETCH_BLOCK = GRADIENT_NEIGHBOR_FETCH_CASES
-    ? `\n${GRADIENT_NEIGHBOR_FETCH_CASES}\n`
+  GRADIENT_NEIGHBOR_FETCH_BLOCK = GRADIENT_NEIGHBOR_FETCH_BLOCK
+    ? `\n${GRADIENT_NEIGHBOR_FETCH_BLOCK}\n`
     : '';
 
-  function computeTileCenterLatitude(canonical) {
-    if (!canonical) {
-      return 0;
+  const gradientPreparerInstances = new Set();
+  let gradientFragmentSourceCache = null;
+
+  function rebuildGradientConfiguration() {
+    GRADIENT_NEIGHBOR_OFFSETS = gradientBuildNeighborOffsets(GRADIENT_MAX_NEIGHBOR_OFFSET);
+    GRADIENT_NEIGHBOR_UNIFORM_DECLARATIONS = GRADIENT_NEIGHBOR_OFFSETS
+      .map(({ uniform }) => `uniform sampler2D ${uniform};`)
+      .join('\n');
+    GRADIENT_NEIGHBOR_UNIFORM_BLOCK = GRADIENT_NEIGHBOR_UNIFORM_DECLARATIONS
+      ? `${GRADIENT_NEIGHBOR_UNIFORM_DECLARATIONS}\n`
+      : '';
+    let fetchBlock = GRADIENT_NEIGHBOR_OFFSETS
+      .map(({ dx, dy, uniform }, index) => {
+        const maskBit = `uint(1) << uint(${index})`;
+        return `  if (offset == ivec2(${dx}, ${dy})) {\n`
+          + `    vec2 neighborPos = tilePos;\n`
+          + `    if (isNeighborFallback(${maskBit})) {\n`
+          + `      neighborPos = reflectTilePos(neighborPos, ivec2(${dx}, ${dy}));\n`
+          + `    }\n`
+          + `    neighborPos = clampTexCoord(neighborPos);\n`
+          + `    return getElevationFromTexture(${uniform}, neighborPos);\n`
+          + `  }`;
+      })
+      .join('\n');
+    GRADIENT_NEIGHBOR_FETCH_BLOCK = fetchBlock ? `\n${fetchBlock}\n` : '';
+    gradientFragmentSourceCache = null;
+    for (const instance of gradientPreparerInstances) {
+      if (instance && typeof instance.onConfigurationChanged === 'function') {
+        instance.onConfigurationChanged();
+      }
     }
-    const z = Math.max(0, canonical.z || 0);
-    const scale = Math.pow(2, z);
-    if (!Number.isFinite(scale) || scale <= 0) {
-      return 0;
-    }
-    const mercatorY = canonical.y + 0.5;
-    const n = Math.PI - (2 * Math.PI * mercatorY) / scale;
-    return (180 / Math.PI) * Math.atan(Math.sinh(n));
   }
 
-  function computeMetersPerPixelForTile(canonical, tileSize) {
-    if (!canonical || !Number.isFinite(tileSize) || tileSize <= 0) {
-      return MIN_METERS_PER_PIXEL;
-    }
-    const lat = computeTileCenterLatitude(canonical);
-    const latRad = lat * Math.PI / 180;
-    const cosLat = Math.cos(latRad);
-    const scale = Math.pow(2, Math.max(0, canonical.z || 0)) * tileSize;
-    if (!Number.isFinite(scale) || scale <= 0) {
-      return MIN_METERS_PER_PIXEL;
-    }
-    const metersPerPixel = (EARTH_CIRCUMFERENCE_METERS * Math.abs(cosLat)) / scale;
-    return Math.max(metersPerPixel, MIN_METERS_PER_PIXEL);
-  }
-
-  class GradientPreparer {
-    constructor() {
-      this.gl = null;
-      this.program = null;
-      this.uniforms = null;
-      this.attributes = null;
-      this.quadVbo = null;
-      this.quadIbo = null;
-      this.supported = true;
-      this.tileStates = new Map();
-      this.invalidateVersion = 0;
-      this.previousFramebuffer = null;
-      this.previousViewport = null;
-    }
-
-    createShader(gl, type, source) {
-      const shader = gl.createShader(type);
-      gl.shaderSource(shader, source);
-      gl.compileShader(shader);
-      if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-        console.error('Gradient shader compile error:', gl.getShaderInfoLog(shader));
-        gl.deleteShader(shader);
-        return null;
-      }
-      return shader;
-    }
-
-    createProgram(gl, vertexSource, fragmentSource) {
-      const vertexShader = this.createShader(gl, gl.VERTEX_SHADER, vertexSource);
-      if (!vertexShader) return null;
-      const fragmentShader = this.createShader(gl, gl.FRAGMENT_SHADER, fragmentSource);
-      if (!fragmentShader) {
-        gl.deleteShader(vertexShader);
-        return null;
-      }
-      const program = gl.createProgram();
-      gl.attachShader(program, vertexShader);
-      gl.attachShader(program, fragmentShader);
-      gl.linkProgram(program);
-      if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-        console.error('Gradient program link error:', gl.getProgramInfoLog(program));
-        gl.deleteProgram(program);
-        gl.deleteShader(vertexShader);
-        gl.deleteShader(fragmentShader);
-        return null;
-      }
-      gl.deleteShader(vertexShader);
-      gl.deleteShader(fragmentShader);
-      return program;
-    }
-
-    initialize(gl) {
-      if (this.gl === gl && this.program) {
-        return;
-      }
-      this.dispose(gl);
-      this.gl = gl;
-
-      const isWebGL2 = typeof WebGL2RenderingContext !== 'undefined' && gl instanceof WebGL2RenderingContext;
-      if (!isWebGL2) {
-        console.warn('TerrainGradientPreparer requires WebGL2 for float framebuffers. Falling back to runtime gradients.');
-        this.supported = false;
-        return;
-      }
-      const ext = gl.getExtension('EXT_color_buffer_float');
-      if (!ext) {
-        console.warn('TerrainGradientPreparer missing EXT_color_buffer_float; precomputed gradients disabled.');
-        this.supported = false;
-        return;
-      }
-      this.supported = true;
-
-      const vertexSource = `#version 300 es\n`
-        + `precision highp float;\n`
-        + `in vec2 a_pos;\n`
-        + `out vec2 v_texCoord;\n`
-        + `void main() {\n`
-        + `  v_texCoord = 0.5 * (a_pos + 1.0);\n`
-        + `  gl_Position = vec4(a_pos, 0.0, 1.0);\n`
-        + `}`;
-
-      const fragmentSource = `#version 300 es
+  function buildGradientFragmentSource() {
+    return `#version 300 es
 precision highp float;
 precision highp int;
 in vec2 v_texCoord;
@@ -281,6 +205,137 @@ void main() {
   float gy = (topFar - 8.0 * topNear + 8.0 * bottomNear - bottomFar) / denom;
   fragColor = vec4(gx, gy, 0.0, 1.0);
 }`;
+  }
+
+  function getGradientFragmentSource() {
+    if (!gradientFragmentSourceCache) {
+      gradientFragmentSourceCache = buildGradientFragmentSource();
+    }
+    return gradientFragmentSourceCache;
+  }
+
+  function computeTileCenterLatitude(canonical) {
+    if (!canonical) {
+      return 0;
+    }
+    const z = Math.max(0, canonical.z || 0);
+    const scale = Math.pow(2, z);
+    if (!Number.isFinite(scale) || scale <= 0) {
+      return 0;
+    }
+    const mercatorY = canonical.y + 0.5;
+    const n = Math.PI - (2 * Math.PI * mercatorY) / scale;
+    return (180 / Math.PI) * Math.atan(Math.sinh(n));
+  }
+
+  function computeMetersPerPixelForTile(canonical, tileSize) {
+    if (!canonical || !Number.isFinite(tileSize) || tileSize <= 0) {
+      return MIN_METERS_PER_PIXEL;
+    }
+    const lat = computeTileCenterLatitude(canonical);
+    const latRad = lat * Math.PI / 180;
+    const cosLat = Math.cos(latRad);
+    const scale = Math.pow(2, Math.max(0, canonical.z || 0)) * tileSize;
+    if (!Number.isFinite(scale) || scale <= 0) {
+      return MIN_METERS_PER_PIXEL;
+    }
+    const metersPerPixel = (EARTH_CIRCUMFERENCE_METERS * Math.abs(cosLat)) / scale;
+    return Math.max(metersPerPixel, MIN_METERS_PER_PIXEL);
+  }
+
+  class GradientPreparer {
+    constructor() {
+      this.gl = null;
+      this.program = null;
+      this.uniforms = null;
+      this.attributes = null;
+      this.quadVbo = null;
+      this.quadIbo = null;
+      this.supported = true;
+      this.tileStates = new Map();
+      this.invalidateVersion = 0;
+      this.previousFramebuffer = null;
+      this.previousViewport = null;
+    }
+
+    onConfigurationChanged() {
+      if (this.gl) {
+        this.dispose(this.gl);
+      }
+      this.gl = null;
+      this.uniforms = null;
+      this.attributes = null;
+      this.supported = true;
+      this.invalidateAll();
+    }
+
+    createShader(gl, type, source) {
+      const shader = gl.createShader(type);
+      gl.shaderSource(shader, source);
+      gl.compileShader(shader);
+      if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+        console.error('Gradient shader compile error:', gl.getShaderInfoLog(shader));
+        gl.deleteShader(shader);
+        return null;
+      }
+      return shader;
+    }
+
+    createProgram(gl, vertexSource, fragmentSource) {
+      const vertexShader = this.createShader(gl, gl.VERTEX_SHADER, vertexSource);
+      if (!vertexShader) return null;
+      const fragmentShader = this.createShader(gl, gl.FRAGMENT_SHADER, fragmentSource);
+      if (!fragmentShader) {
+        gl.deleteShader(vertexShader);
+        return null;
+      }
+      const program = gl.createProgram();
+      gl.attachShader(program, vertexShader);
+      gl.attachShader(program, fragmentShader);
+      gl.linkProgram(program);
+      if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+        console.error('Gradient program link error:', gl.getProgramInfoLog(program));
+        gl.deleteProgram(program);
+        gl.deleteShader(vertexShader);
+        gl.deleteShader(fragmentShader);
+        return null;
+      }
+      gl.deleteShader(vertexShader);
+      gl.deleteShader(fragmentShader);
+      return program;
+    }
+
+    initialize(gl) {
+      if (this.gl === gl && this.program) {
+        return;
+      }
+      this.dispose(gl);
+      this.gl = gl;
+
+      const isWebGL2 = typeof WebGL2RenderingContext !== 'undefined' && gl instanceof WebGL2RenderingContext;
+      if (!isWebGL2) {
+        console.warn('TerrainGradientPreparer requires WebGL2 for float framebuffers. Falling back to runtime gradients.');
+        this.supported = false;
+        return;
+      }
+      const ext = gl.getExtension('EXT_color_buffer_float');
+      if (!ext) {
+        console.warn('TerrainGradientPreparer missing EXT_color_buffer_float; precomputed gradients disabled.');
+        this.supported = false;
+        return;
+      }
+      this.supported = true;
+
+      const vertexSource = `#version 300 es\n`
+        + `precision highp float;\n`
+        + `in vec2 a_pos;\n`
+        + `out vec2 v_texCoord;\n`
+        + `void main() {\n`
+        + `  v_texCoord = 0.5 * (a_pos + 1.0);\n`
+        + `  gl_Position = vec4(a_pos, 0.0, 1.0);\n`
+        + `}`;
+
+      const fragmentSource = getGradientFragmentSource();
 
       this.program = this.createProgram(gl, vertexSource, fragmentSource);
       if (!this.program) {
@@ -560,8 +615,27 @@ void main() {
   }
 
   return {
+    configure(options = {}) {
+      let changed = false;
+      if (options && typeof options.maxNeighborOffset === 'number') {
+        const next = Math.max(0, Math.min(4, Math.round(options.maxNeighborOffset)));
+        if (next !== GRADIENT_MAX_NEIGHBOR_OFFSET) {
+          GRADIENT_MAX_NEIGHBOR_OFFSET = next;
+          changed = true;
+        }
+      }
+      if (changed) {
+        rebuildGradientConfiguration();
+      }
+      return changed;
+    },
+    getMaxNeighborOffset() {
+      return GRADIENT_MAX_NEIGHBOR_OFFSET;
+    },
     create() {
-      return new GradientPreparer();
+      const instance = new GradientPreparer();
+      gradientPreparerInstances.add(instance);
+      return instance;
     }
   };
 })();
