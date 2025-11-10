@@ -1,8 +1,42 @@
 /* terrain-analysis.js */
 (function() {
   const DEBUG = false;
-  let map;
-  let hillshadeMode = 'native'; // "native" or "custom"
+  const HillshadeDebug = window.__MapLibreHillshadeDebug || null;
+  const hillshadeDebugEnabled = (() => {
+    try {
+      const searchParams = new URLSearchParams(window.location.search || '');
+      if (searchParams.has('hillshadeDebug')) {
+        return true;
+      }
+      return typeof window.location.hash === 'string' && window.location.hash.includes('hillshadeDebug');
+    } catch (error) {
+      if (DEBUG) console.warn('Failed to evaluate hillshade debug flag', error);
+      return false;
+    }
+  })();
+
+  if (HillshadeDebug && typeof HillshadeDebug.install === 'function') {
+    HillshadeDebug.install();
+    if (hillshadeDebugEnabled) {
+      HillshadeDebug.enable();
+      console.info('Hillshade debug instrumentation enabled.');
+    }
+    window.mapLibreHillshadeDebug = Object.freeze({
+      enable(options) {
+        HillshadeDebug.enable(options);
+        if (map) {
+          HillshadeDebug.attachToMap(map, { layerId: HILLSHADE_NATIVE_LAYER_ID, sourceId: TERRAIN_SOURCE_ID });
+        }
+      },
+      disable() {
+        HillshadeDebug.disable();
+      },
+      getDrawCalls: () => HillshadeDebug.getDrawCalls(),
+      getDemEvents: () => HillshadeDebug.getDemEvents(),
+      getDemSnapshots: () => HillshadeDebug.getDemSnapshots(),
+      getTiles: (options) => HillshadeDebug.getTiles(options)
+    });
+  }
   const EXTENT = 8192;
   const TILE_SIZE = 512;
   const DEM_MAX_ZOOM = 16; // native DEM max zoom
@@ -32,129 +66,18 @@
   let lastTerrainSpecification = { source: TERRAIN_SOURCE_ID, exaggeration: 1.0 };
   let isTerrainFlattened = false;
 
-  const gradientDebugState = {
-    element: null,
-    frameIndex: 0,
-    totalPrecomputed: 0,
-    totalFallback: 0
-  };
-
-  let webgl2Unsupported = typeof WebGL2RenderingContext === 'undefined';
-  let webgl2WarningDisplayed = false;
-
-  (function preferWebGL2Context() {
-    if (typeof window === 'undefined' || typeof HTMLCanvasElement === 'undefined') {
-      return;
+  function getHillshadeDebugTiles(mapInstance, options = {}) {
+    const debugApi = window.mapLibreHillshadeDebug;
+    if (!mapInstance || !debugApi || typeof debugApi.getTiles !== 'function') {
+      return [];
     }
-    const originalGetContext = HTMLCanvasElement.prototype.getContext;
-    if (typeof originalGetContext !== 'function') {
-      return;
+    try {
+      const tiles = debugApi.getTiles({ map: mapInstance, sourceId: TERRAIN_SOURCE_ID, ...options });
+      return Array.isArray(tiles) ? tiles : [];
+    } catch (error) {
+      if (DEBUG) console.warn('Failed to query hillshade tiles from debug API', error);
+      return [];
     }
-    HTMLCanvasElement.prototype.getContext = function(type, attributes) {
-      if ((type === 'webgl' || type === 'experimental-webgl') && typeof WebGL2RenderingContext !== 'undefined') {
-        const webgl2 = originalGetContext.call(this, 'webgl2', attributes);
-        if (webgl2) {
-          webgl2Unsupported = false;
-          return webgl2;
-        }
-        webgl2Unsupported = true;
-      }
-      return originalGetContext.call(this, type, attributes);
-    };
-  })();
-
-  function getGradientDebugElement() {
-    if (gradientDebugState.element) {
-      const element = gradientDebugState.element;
-      if (typeof document === 'undefined' || !document.body || document.body.contains(element)) {
-        return element;
-      }
-    }
-    if (typeof document === 'undefined') {
-      return null;
-    }
-    const element = document.getElementById('gradientDebugPanel');
-    if (element) {
-      gradientDebugState.element = element;
-    }
-    return gradientDebugState.element;
-  }
-
-  function notifyWebGL2Unsupported() {
-    if (webgl2WarningDisplayed) {
-      return;
-    }
-    webgl2WarningDisplayed = true;
-    if (typeof console !== 'undefined' && console.error) {
-      console.error('Terrain analysis custom shaders require a WebGL 2.0 context, but only WebGL 1.0 is available.');
-    }
-    const element = getGradientDebugElement();
-    if (element) {
-      element.style.display = 'block';
-      element.classList.add('debug-warning');
-      element.innerHTML = '<strong>Terrain analysis unavailable</strong><div>This demo requires WebGL 2.0 for custom terrain effects. Your browser only exposed a WebGL 1.0 context, so the custom renderer was disabled.</div>';
-    }
-  }
-
-  function resetGradientDebugStats(options = {}) {
-    gradientDebugState.frameIndex = 0;
-    gradientDebugState.totalPrecomputed = 0;
-    gradientDebugState.totalFallback = 0;
-    const element = getGradientDebugElement();
-    if (!element) {
-      return;
-    }
-    element.classList.remove('debug-warning');
-    if (options.hide) {
-      element.style.display = 'none';
-      element.innerHTML = '';
-      return;
-    }
-    element.style.display = 'block';
-    element.innerHTML = '<strong>Gradient usage</strong><div>Waiting for terrain tiles…</div>';
-  }
-
-  function updateGradientDebugPanel(stats) {
-    const element = getGradientDebugElement();
-    if (!element) {
-      return;
-    }
-    if (!stats || stats.renderedCount <= 0) {
-      element.innerHTML = '<strong>Gradient usage</strong><div>No terrain tiles rendered.</div>';
-      element.classList.remove('debug-warning');
-      element.style.display = 'block';
-      return;
-    }
-
-    gradientDebugState.frameIndex += 1;
-    gradientDebugState.totalPrecomputed += stats.framePrecomputed;
-    gradientDebugState.totalFallback += stats.frameFallback;
-
-    const frameTotal = stats.framePrecomputed + stats.frameFallback;
-    const framePrecomputedPct = frameTotal > 0
-      ? Math.round((stats.framePrecomputed / frameTotal) * 100)
-      : 0;
-    const totalTiles = gradientDebugState.totalPrecomputed + gradientDebugState.totalFallback;
-    const totalPrecomputedPct = totalTiles > 0
-      ? Math.round((gradientDebugState.totalPrecomputed / totalTiles) * 100)
-      : 0;
-
-    const frameSummary = frameTotal > 0
-      ? `${stats.framePrecomputed}/${frameTotal} precomputed (${framePrecomputedPct}%)`
-      : 'No gradients this frame';
-    const cumulativeSummary = totalTiles > 0
-      ? `${gradientDebugState.totalPrecomputed}/${totalTiles} precomputed (${totalPrecomputedPct}%)`
-      : 'No gradients sampled yet';
-
-    element.innerHTML = `
-      <strong>Gradient usage</strong>
-      <div>Frame ${gradientDebugState.frameIndex}: ${frameSummary}</div>
-      <div>Fallback tiles this frame: ${stats.frameFallback}</div>
-      <div>Cumulative: ${cumulativeSummary}</div>
-      <div>Cumulative fallback: ${gradientDebugState.totalFallback}</div>
-    `;
-    element.classList.toggle('debug-warning', stats.frameFallback > 0);
-    element.style.display = 'block';
   }
 
   function extractHillshadeColorAttachment(tile) {
@@ -173,87 +96,28 @@
     return attachment || null;
   }
 
-  function getSourceCacheFromStyle(style, sourceId) {
-    if (!style || !sourceId) {
+  function collectNativeHillshadeTextures(mapInstance) {
+    const tiles = getHillshadeDebugTiles(mapInstance, { onlyPrepared: true });
+    if (!tiles.length) {
       return null;
     }
-    let cache = null;
-    try {
-      if (typeof style.getSourceCache === 'function') {
-        cache = style.getSourceCache(sourceId);
-      }
-    } catch (error) {
-      cache = null;
-    }
-    if (cache) {
-      return cache;
-    }
-    const candidates = [style.sourceCaches, style._sourceCaches];
-    for (const collection of candidates) {
-      if (collection && typeof collection === 'object' && collection[sourceId]) {
-        return collection[sourceId];
-      }
-    }
-    return null;
-  }
-
-  function getTilesFromSourceCache(cache) {
-    if (!cache) {
-      return [];
-    }
-    const stores = [cache._tiles, cache.tiles];
-    for (const store of stores) {
-      if (!store) continue;
-      if (Array.isArray(store)) {
-        return store.filter(Boolean);
-      }
-      if (store instanceof Map) {
-        return Array.from(store.values()).filter(Boolean);
-      }
-      if (typeof store === 'object') {
-        return Object.keys(store).map(key => store[key]).filter(Boolean);
-      }
-    }
-    return [];
-  }
-
-  function collectNativeHillshadeTextures(mapInstance) {
     const cache = new Map();
-    let pendingPreparation = false;
-
-    if (mapInstance && mapInstance.style) {
-      const sourceCache = getSourceCacheFromStyle(mapInstance.style, TERRAIN_SOURCE_ID);
-      const tiles = getTilesFromSourceCache(sourceCache);
-      for (const tile of tiles) {
-        const key = tile && tile.tileID ? tile.tileID.key : null;
-        if (!key) {
-          continue;
-        }
-        const texture = extractHillshadeColorAttachment(tile);
-        if (!texture) {
-          if (tile && tile.needsHillshadePrepare) {
-            pendingPreparation = true;
-          }
-          continue;
-        }
-
-        if (tile && tile.needsHillshadePrepare) {
-          tile.needsHillshadePrepare = false;
-        }
-
+    for (const tile of tiles) {
+      const key = tile && tile.tileID ? tile.tileID.key : null;
+      if (!key || tile.needsHillshadePrepare) {
+        continue;
+      }
+      const texture = extractHillshadeColorAttachment(tile);
+      if (texture) {
         cache.set(key, texture);
       }
     }
-
-    if (pendingPreparation && mapInstance && typeof mapInstance.triggerRepaint === 'function') {
-      mapInstance.triggerRepaint();
-    }
-
     return cache.size > 0 ? cache : null;
   }
 
   // Global state variables
   let currentMode = ""; // "hillshade", "normal", "avalanche", "slope", "aspect", "snow", "shadow", or "daylight"
+  let hillshadeMode = 'none'; // "none", "native", or "custom"
   let lastCustomMode = 'hillshade';
   const meshCache = new Map();
   let snowAltitude = 3000;
@@ -275,8 +139,9 @@
   let samplingDistance = 0.35;
   let shadowDateValue = null;
   let shadowTimeValue = null;
+  let map;
 
-  const analysisPreparer = TerrainAnalysisPreparer.create();
+  const gradientPreparer = TerrainGradientPreparer.create();
   const EARTH_CIRCUMFERENCE_METERS = 40075016.68557849;
   const MIN_METERS_PER_PIXEL = 1e-6;
 
@@ -389,16 +254,6 @@
     return copyColorArray(components, fallback);
   }
 
-  function colorArrayToCss(color, fallback = DEFAULT_HILLSHADE_SETTINGS.highlightColor) {
-    const source = Array.isArray(color) ? color : fallback;
-    const components = source.slice(0, 3).map(component => {
-      const numeric = Number(component);
-      return clamp01(Number.isFinite(numeric) ? numeric : 0);
-    });
-    const [r, g, b] = components.map(component => Math.round(component * 255));
-    return `rgb(${r}, ${g}, ${b})`;
-  }
-
   function toColorArray(value, fallback) {
     if (Array.isArray(value)) {
       const normalized = value.map(component => {
@@ -430,6 +285,8 @@
     const exaggeration = map.getPaintProperty(HILLSHADE_NATIVE_LAYER_ID, 'hillshade-exaggeration');
     const direction = map.getPaintProperty(HILLSHADE_NATIVE_LAYER_ID, 'hillshade-illumination-direction');
     const anchor = map.getPaintProperty(HILLSHADE_NATIVE_LAYER_ID, 'hillshade-illumination-anchor');
+    const opacity = map.getPaintProperty(HILLSHADE_NATIVE_LAYER_ID, 'hillshade-opacity');
+
     hillshadePaintSettings.highlightColor = toColorArray(highlight, DEFAULT_HILLSHADE_SETTINGS.highlightColor);
     hillshadePaintSettings.shadowColor = toColorArray(shadow, DEFAULT_HILLSHADE_SETTINGS.shadowColor);
     hillshadePaintSettings.accentColor = toColorArray(accent, DEFAULT_HILLSHADE_SETTINGS.accentColor);
@@ -442,6 +299,9 @@
     }
     if (typeof anchor === 'string') {
       hillshadePaintSettings.illuminationAnchor = anchor;
+    }
+    if (Number.isFinite(opacity)) {
+      hillshadePaintSettings.opacity = clamp01(opacity);
     }
   }
 
@@ -507,7 +367,7 @@
     if (!Number.isFinite(newDistance)) return;
     if (Math.abs(newDistance - samplingDistance) > 0.01) {
       samplingDistance = newDistance;
-      analysisPreparer.invalidateAll();
+      gradientPreparer.invalidateAll();
     }
   }
 
@@ -731,7 +591,7 @@
         timeSlider.value = minutes;
       }
       if (timeValue) timeValue.textContent = isoTime;
-      triggerShadowRepaint();
+      if (map && (currentMode === "shadow" || currentMode === "daylight")) map.triggerRepaint();
     };
 
     const updateShadowTimeBounds = (preferredMinutes = null) => {
@@ -788,7 +648,7 @@
       shadowDateValue = isoDate;
       if (dateValue) dateValue.textContent = isoDate;
       updateShadowTimeBounds();
-      triggerShadowRepaint();
+      if (map && (currentMode === "shadow" || currentMode === "daylight")) map.triggerRepaint();
     };
 
     if (dateSlider) {
@@ -1003,84 +863,6 @@
 
   let cachedTerrainInterface = null;
 
-  const TERRAIN_SEARCH_MAX_DEPTH = 6;
-
-  function isTerrainInterfaceCandidate(value) {
-    if (!value || typeof value !== 'object') {
-      return false;
-    }
-    if (!('tileManager' in value)) {
-      return false;
-    }
-    const {tileManager} = value;
-    if (!tileManager || typeof tileManager !== 'object') {
-      return false;
-    }
-    const hasRenderable = typeof tileManager.getRenderableTiles === 'function';
-    const hasSourceLookup = typeof tileManager.getSourceTile === 'function';
-    return hasRenderable && hasSourceLookup;
-  }
-
-  function deepSearchTerrainInterface(root, options = {}) {
-    const {maxDepth = TERRAIN_SEARCH_MAX_DEPTH} = options;
-    if (!root || typeof root !== 'object' || maxDepth <= 0) {
-      return null;
-    }
-
-    const queue = [];
-    const visited = new Set();
-    const enqueue = (value, depth) => {
-      if (!value || typeof value !== 'object') {
-        return;
-      }
-      if (visited.has(value) || depth > maxDepth) {
-        return;
-      }
-      visited.add(value);
-      queue.push({value, depth});
-    };
-
-    enqueue(root, 0);
-
-    while (queue.length > 0) {
-      const {value, depth} = queue.shift();
-      if (!value) continue;
-
-      if (isTerrainInterfaceCandidate(value)) {
-        return value;
-      }
-
-      const nextDepth = depth + 1;
-      if (nextDepth > maxDepth) {
-        continue;
-      }
-
-      if (value instanceof Map) {
-        for (const child of value.values()) {
-          enqueue(child, nextDepth);
-        }
-        continue;
-      }
-
-      const keys = Array.isArray(value)
-        ? value.keys ? Array.from(value.keys()) : []
-        : Object.keys(value);
-
-      for (const key of keys) {
-        try {
-          const child = value[key];
-          enqueue(child, nextDepth);
-        } catch (error) {
-          if (DEBUG && console && console.warn) {
-            console.warn('Failed to inspect potential terrain interface candidate property', key, error);
-          }
-        }
-      }
-    }
-
-    return null;
-  }
-
   function getTerrainInterface(mapInstance) {
     if (!mapInstance) {
       return cachedTerrainInterface && cachedTerrainInterface.tileManager
@@ -1089,54 +871,34 @@
     }
 
     const fromPublicAPI = mapInstance.terrain;
-    if (isTerrainInterfaceCandidate(fromPublicAPI)) {
+    if (fromPublicAPI && fromPublicAPI.tileManager) {
       cachedTerrainInterface = fromPublicAPI;
       return fromPublicAPI;
     }
 
-    const candidatePainters = [];
-    if (mapInstance.painter) {
-      candidatePainters.push(mapInstance.painter);
-    }
-    if (mapInstance._painter && mapInstance._painter !== mapInstance.painter) {
-      candidatePainters.push(mapInstance._painter);
+    const painterTerrain = mapInstance.painter && mapInstance.painter.terrain;
+    if (painterTerrain && painterTerrain.tileManager) {
+      cachedTerrainInterface = painterTerrain;
+      return painterTerrain;
     }
 
-    const candidateTerrains = [];
-    for (const painter of candidatePainters) {
-      if (isTerrainInterfaceCandidate(painter && painter.terrain)) {
-        candidateTerrains.push(painter.terrain);
+    const hasTerrain = Boolean(mapInstance.terrain || (mapInstance.painter && mapInstance.painter.terrain));
+    if (!hasTerrain) {
+      if (isTerrainFlattened && cachedTerrainInterface && cachedTerrainInterface.tileManager) {
+        return cachedTerrainInterface;
       }
-      const styleMapTerrain = painter && painter.style && painter.style.map && painter.style.map.terrain;
-      if (isTerrainInterfaceCandidate(styleMapTerrain)) {
-        candidateTerrains.push(styleMapTerrain);
-      }
+      cachedTerrainInterface = null;
+      return null;
     }
 
-    const style = mapInstance.style;
-    if (isTerrainInterfaceCandidate(style && style.map && style.map.terrain)) {
-      candidateTerrains.push(style.map.terrain);
+    if (cachedTerrainInterface && !cachedTerrainInterface.tileManager) {
+      cachedTerrainInterface = null;
+      return null;
     }
 
-    for (const terrain of candidateTerrains) {
-      if (isTerrainInterfaceCandidate(terrain)) {
-        cachedTerrainInterface = terrain;
-        return terrain;
-      }
-    }
-
-    const discovered = deepSearchTerrainInterface(mapInstance);
-    if (isTerrainInterfaceCandidate(discovered)) {
-      cachedTerrainInterface = discovered;
-      return discovered;
-    }
-
-    if (isTerrainFlattened && isTerrainInterfaceCandidate(cachedTerrainInterface)) {
-      return cachedTerrainInterface;
-    }
-
-    cachedTerrainInterface = null;
-    return null;
+    return cachedTerrainInterface && cachedTerrainInterface.tileManager
+      ? cachedTerrainInterface
+      : null;
   }
 
   function getTerrainTileManager(mapInstance) {
@@ -1206,9 +968,6 @@
   });
 
   const triggerShadowRepaint = () => {
-    if (currentMode === "shadow" || currentMode === "daylight") {
-      analysisPreparer.invalidateAll();
-    }
     if (map && (currentMode === "shadow" || currentMode === "daylight")) {
       map.triggerRepaint();
     }
@@ -1222,111 +981,101 @@
     return true;
   }
 
-  function ensureCustomTerrainLayer(options = {}) {
-    const { force = false } = options;
-    if (!force && !canModifyStyle()) return false;
-    if (map.getLayer('terrain-normal')) return true;
+  function ensureCustomTerrainLayer() {
+    if (!canModifyStyle()) return;
+    if (map.getLayer('terrain-normal')) return;
     terrainNormalLayer.frameCount = 0;
     map.addLayer(terrainNormalLayer);
-    return true;
   }
 
-  function removeCustomTerrainLayer(options = {}) {
-    const { force = false } = options;
-    if (!force && !canModifyStyle()) return false;
+  function removeCustomTerrainLayer() {
+    if (!canModifyStyle()) return;
     if (map.getLayer('terrain-normal')) {
       map.removeLayer('terrain-normal');
-      return true;
     }
-    return false;
   }
 
-  function ensureNativeHillshadeLayer(options = {}) {
-    const { force = false } = options;
-    if (!force && !canModifyStyle()) return false;
-    if (map.getLayer(HILLSHADE_NATIVE_LAYER_ID)) {
-      updateHillshadePaintSettingsFromMap();
-      return true;
-    }
+  function ensureNativeHillshadeLayer() {
+    if (!canModifyStyle()) return;
+    if (map.getLayer(HILLSHADE_NATIVE_LAYER_ID)) return;
     const layerDefinition = {
       id: HILLSHADE_NATIVE_LAYER_ID,
       type: 'hillshade',
-      source: TERRAIN_SOURCE_ID,
-      paint: {
-        'hillshade-highlight-color': colorArrayToCss(hillshadePaintSettings.highlightColor, DEFAULT_HILLSHADE_SETTINGS.highlightColor),
-        'hillshade-shadow-color': colorArrayToCss(hillshadePaintSettings.shadowColor, DEFAULT_HILLSHADE_SETTINGS.shadowColor),
-        'hillshade-accent-color': colorArrayToCss(hillshadePaintSettings.accentColor, DEFAULT_HILLSHADE_SETTINGS.accentColor),
-        'hillshade-exaggeration': Number.isFinite(hillshadePaintSettings.exaggeration)
-          ? hillshadePaintSettings.exaggeration
-          : DEFAULT_HILLSHADE_SETTINGS.exaggeration,
-        'hillshade-illumination-direction': Number.isFinite(hillshadePaintSettings.illuminationDirection)
-          ? hillshadePaintSettings.illuminationDirection
-          : DEFAULT_HILLSHADE_SETTINGS.illuminationDirection,
-        'hillshade-illumination-anchor': typeof hillshadePaintSettings.illuminationAnchor === 'string'
-          ? hillshadePaintSettings.illuminationAnchor
-          : DEFAULT_HILLSHADE_SETTINGS.illuminationAnchor
-      }
+      source: TERRAIN_SOURCE_ID
     };
     map.addLayer(layerDefinition);
     updateHillshadePaintSettingsFromMap();
-    return true;
+    if (HillshadeDebug && typeof HillshadeDebug.attachToMap === 'function') {
+      HillshadeDebug.attachToMap(map, {
+        layerId: HILLSHADE_NATIVE_LAYER_ID,
+        sourceId: TERRAIN_SOURCE_ID
+      });
+    }
   }
 
-  function invokeWhenStyleReady(callback) {
-    if (!map || typeof callback !== 'function') return;
-    if (canModifyStyle()) {
-      callback();
-      return;
+  function removeNativeHillshadeLayer() {
+    if (!canModifyStyle()) return;
+    if (map.getLayer(HILLSHADE_NATIVE_LAYER_ID)) {
+      updateHillshadePaintSettingsFromMap();
+      map.removeLayer(HILLSHADE_NATIVE_LAYER_ID);
     }
-    let executed = false;
-    const runWhenReady = () => {
-      if (executed || !map) return;
-      if (!canModifyStyle()) {
-        map.once('styledata', runWhenReady);
-        map.once('idle', runWhenReady);
-        return;
-      }
-      executed = true;
-      callback();
-    };
-    map.once('styledata', runWhenReady);
-    map.once('idle', runWhenReady);
   }
 
   function enableCustomHillshade(mode) {
-    if (webgl2Unsupported) {
-      notifyWebGL2Unsupported();
-      return;
-    }
+    const styleReady = canModifyStyle();
     const nextMode = mode || lastCustomMode || 'hillshade';
     lastCustomMode = nextMode;
     currentMode = nextMode;
     hillshadeMode = 'custom';
+    if (styleReady) {
+      removeNativeHillshadeLayer();
+      ensureCustomTerrainLayer();
+    }
     terrainNormalLayer.shaderMap.clear();
-    analysisPreparer.invalidateAll();
     updateButtons();
-    resetGradientDebugStats({ hide: false });
-    invokeWhenStyleReady(() => {
-      ensureNativeHillshadeLayer({ force: true });
-      updateHillshadePaintSettingsFromMap();
-      ensureCustomTerrainLayer({ force: true });
+    if (styleReady && map) {
       map.triggerRepaint();
-    });
+    }
   }
 
   function disableCustomHillshade() {
-    hillshadeMode = 'native';
+    const styleReady = canModifyStyle();
+    if (styleReady) {
+      removeCustomTerrainLayer();
+    }
+    if (hillshadeMode === 'custom') {
+      hillshadeMode = 'none';
+    }
     currentMode = '';
     terrainNormalLayer.shaderMap.clear();
-    analysisPreparer.invalidateAll();
     updateButtons();
-    resetGradientDebugStats({ hide: true });
-    invokeWhenStyleReady(() => {
-      removeCustomTerrainLayer({ force: true });
-      ensureNativeHillshadeLayer({ force: true });
-      updateHillshadePaintSettingsFromMap();
+    if (styleReady && map) {
       map.triggerRepaint();
-    });
+    }
+  }
+
+  function setNativeHillshadeEnabled(enabled) {
+    const styleReady = canModifyStyle();
+    if (enabled) {
+      if (styleReady) {
+        removeCustomTerrainLayer();
+        removeNativeHillshadeLayer();
+        ensureNativeHillshadeLayer();
+      }
+      hillshadeMode = 'native';
+      currentMode = '';
+    } else {
+      if (styleReady) {
+        removeNativeHillshadeLayer();
+      }
+      if (hillshadeMode === 'native') {
+        hillshadeMode = 'none';
+      }
+    }
+    updateButtons();
+    if (styleReady && map) {
+      map.triggerRepaint();
+    }
   }
 
   const shadowSampleCountSlider = document.getElementById('shadowSampleCountSlider');
@@ -1421,39 +1170,22 @@
     renderingMode: '3d',
     shaderMap: new Map(),
     frameCount: 0,
-    webglUnsupported: false,
-
+    
     onAdd(mapInstance, gl) {
       this.map = mapInstance;
       this.gl = gl;
       this.frameCount = 0;
-      this.webglUnsupported = !(gl instanceof WebGL2RenderingContext);
-      if (this.webglUnsupported) {
-        webgl2Unsupported = true;
-        notifyWebGL2Unsupported();
-        return;
-      }
-      webgl2Unsupported = false;
-      analysisPreparer.initialize(gl);
+      gradientPreparer.initialize(gl);
     },
   
     getShader(gl, shaderDescription) {
-      if (!currentMode) {
-        return null;
-      }
       const variantName = shaderDescription.variantName + "_" + currentMode;
       if (this.shaderMap.has(variantName)) return this.shaderMap.get(variantName);
-
+      
       // Build the shader sources using our TerrainShaders helper.
       const vertexSource = TerrainShaders.getVertexShader(shaderDescription, EXTENT);
       const fragmentSource = TerrainShaders.getFragmentShader(currentMode);
-      if (typeof fragmentSource !== 'string' || fragmentSource.length === 0) {
-        if (DEBUG) {
-          console.warn('Skipping shader compilation; no fragment shader for mode:', currentMode);
-        }
-        return null;
-      }
-
+      
       const program = gl.createProgram();
       const vertexShader = gl.createShader(gl.VERTEX_SHADER);
       const fragmentShader = gl.createShader(gl.FRAGMENT_SHADER);
@@ -1461,18 +1193,12 @@
       gl.compileShader(vertexShader);
       if (!gl.getShaderParameter(vertexShader, gl.COMPILE_STATUS)) {
         console.error("Vertex shader error:", gl.getShaderInfoLog(vertexShader));
-        gl.deleteShader(fragmentShader);
-        gl.deleteShader(vertexShader);
-        gl.deleteProgram(program);
         return null;
       }
       gl.shaderSource(fragmentShader, fragmentSource);
       gl.compileShader(fragmentShader);
       if (!gl.getShaderParameter(fragmentShader, gl.COMPILE_STATUS)) {
         console.error("Fragment shader error:", gl.getShaderInfoLog(fragmentShader));
-        gl.deleteShader(vertexShader);
-        gl.deleteShader(fragmentShader);
-        gl.deleteProgram(program);
         return null;
       }
       gl.attachShader(program, vertexShader);
@@ -1480,15 +1206,8 @@
       gl.linkProgram(program);
       if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
         console.error("Program link error:", gl.getProgramInfoLog(program));
-        gl.deleteShader(vertexShader);
-        gl.deleteShader(fragmentShader);
-        gl.deleteProgram(program);
         return null;
       }
-      gl.detachShader(program, vertexShader);
-      gl.detachShader(program, fragmentShader);
-      gl.deleteShader(vertexShader);
-      gl.deleteShader(fragmentShader);
       const neighborUniforms = NEIGHBOR_OFFSETS.map(offset => offset.uniform);
 
       const uniforms = [
@@ -1502,8 +1221,6 @@
         ...neighborUniforms,
         'u_gradient',
         'u_usePrecomputedGradient',
-        'u_precomputedAnalysis',
-        'u_usePrecomputedAnalysis',
         'u_dimension',
         'u_original_vertex_count',
         'u_terrain_unpack',
@@ -1564,7 +1281,7 @@
       return result;
     },
   
-    renderTiles(gl, shader, renderableTiles, terrainInterface, tileManager, terrainDataCache, textureCache, nativeGradientCache = null, sunParamsOverride = null, daylightParamsOverride = null) {
+    renderTiles(gl, shader, renderableTiles, terrainInterface, tileManager, terrainDataCache, textureCache, nativeGradientCache = null) {
       if (!terrainInterface || !tileManager) return;
       let renderedCount = 0;
       let skippedCount = 0;
@@ -1575,15 +1292,13 @@
         return textureCache.has(key) ? textureCache.get(key) : fallbackTexture;
       };
 
-      const bindTexture = (texture, unit, uniformName, options = {}) => {
+      const bindTexture = (texture, unit, uniformName) => {
         const location = shader.locations[uniformName];
         if (location == null || !texture) return;
         gl.activeTexture(gl.TEXTURE0 + unit);
         gl.bindTexture(gl.TEXTURE_2D, texture);
-        const minFilter = options.minFilter || gl.LINEAR;
-        const magFilter = options.magFilter || gl.LINEAR;
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, minFilter);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, magFilter);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
         gl.uniform1i(location, unit);
@@ -1607,16 +1322,12 @@
         gl.uniform1f(location, value);
       };
 
-      const sunParams = sunParamsOverride || (currentMode === "shadow" ? computeSunParameters(this.map) : null);
-      const daylightParams = daylightParamsOverride || (currentMode === "daylight" ? computeDaylightParameters(this.map) : null);
+      const sunParams = currentMode === "shadow" ? computeSunParameters(this.map) : null;
+      const daylightParams = currentMode === "daylight" ? computeDaylightParameters(this.map) : null;
       const gradientTextureUnit = NEIGHBOR_OFFSETS.length + 1;
-      const analysisTextureUnit = gradientTextureUnit + 1;
       const hillshadeUniforms = currentMode === "hillshade"
         ? getHillshadeUniformsForCustomLayer(this.map)
         : null;
-
-      let framePrecomputedCount = 0;
-      let frameFallbackCount = 0;
 
       if (hillshadeUniforms) {
         setVec3Uniform('u_hillshade_highlight_color', hillshadeUniforms.highlightColor);
@@ -1630,8 +1341,8 @@
 
       for (const tile of renderableTiles) {
         const sourceTile = tileManager.getSourceTile(tile.tileID, true);
-        if (!sourceTile) {
-          if (DEBUG) console.log(`Skipping tile ${tile.tileID.key}: missing source tile`);
+        if (!sourceTile || sourceTile.tileID.key !== tile.tileID.key) {
+          if (DEBUG) console.log(`Skipping tile ${tile.tileID.key}: source tile mismatch or overscaled`);
           skippedCount++;
           continue;
         }
@@ -1643,6 +1354,12 @@
 
         if (!terrainData || !terrainData.texture) {
           if (DEBUG) console.log(`Skipping tile ${tile.tileID.key}: no terrain data or texture`);
+          skippedCount++;
+          continue;
+        }
+
+        if (terrainData.fallback) {
+          if (DEBUG) console.log(`Skipping tile ${tile.tileID.key}: fallback tile`);
           skippedCount++;
           continue;
         }
@@ -1660,19 +1377,17 @@
 
         if (terrainData.texture && shader.locations.u_image != null) {
           bindTexture(terrainData.texture, 0, 'u_image');
-          NEIGHBOR_OFFSETS.forEach((neighbor, index) => {
-            const location = shader.locations[neighbor.uniform];
-            if (location == null) {
-              return;
-            }
-            const texture = getNeighborTexture(
-              tile.tileID,
-              neighbor.dx,
-              neighbor.dy,
-              terrainData.texture
-            );
-            bindTexture(texture, index + 1, neighbor.uniform);
-          });
+          if (currentMode === "shadow" || currentMode === "daylight") {
+            NEIGHBOR_OFFSETS.forEach((neighbor, index) => {
+              const texture = getNeighborTexture(
+                tile.tileID,
+                neighbor.dx,
+                neighbor.dy,
+                terrainData.texture
+              );
+              bindTexture(texture, index + 1, neighbor.uniform);
+            });
+          }
         }
 
         const tileKey = tile.tileID ? tile.tileID.key : null;
@@ -1680,33 +1395,17 @@
         if (tileKey && nativeGradientCache && nativeGradientCache.has(tileKey)) {
           gradientTexture = nativeGradientCache.get(tileKey);
         }
+        if (!gradientTexture) {
+          gradientTexture = gradientPreparer.getTexture(tile.tileID.key);
+        }
         const hasGradient = !!gradientTexture;
         if (shader.locations.u_usePrecomputedGradient != null) {
           gl.uniform1i(shader.locations.u_usePrecomputedGradient, hasGradient ? 1 : 0);
         }
-        if (hasGradient) {
-          framePrecomputedCount++;
-        } else {
-          frameFallbackCount++;
-        }
         if (hasGradient && gradientTexture) {
-          bindTexture(gradientTexture, gradientTextureUnit, 'u_gradient', { minFilter: gl.NEAREST, magFilter: gl.NEAREST });
+          bindTexture(gradientTexture, gradientTextureUnit, 'u_gradient');
         } else if (shader.locations.u_gradient != null) {
           gl.activeTexture(gl.TEXTURE0 + gradientTextureUnit);
-          gl.bindTexture(gl.TEXTURE_2D, null);
-        }
-
-        let analysisTexture = null;
-        if (tileKey && (currentMode === "shadow" || currentMode === "daylight")) {
-          analysisTexture = analysisPreparer.getTexture(tileKey);
-        }
-        if (shader.locations.u_usePrecomputedAnalysis != null) {
-          gl.uniform1i(shader.locations.u_usePrecomputedAnalysis, analysisTexture ? 1 : 0);
-        }
-        if (analysisTexture && shader.locations.u_precomputedAnalysis != null) {
-          bindTexture(analysisTexture, analysisTextureUnit, 'u_precomputedAnalysis');
-        } else if (shader.locations.u_precomputedAnalysis != null) {
-          gl.activeTexture(gl.TEXTURE0 + analysisTextureUnit);
           gl.bindTexture(gl.TEXTURE_2D, null);
         }
 
@@ -1833,22 +1532,12 @@
         renderedCount++;
       }
 
-      updateGradientDebugPanel({
-        framePrecomputed: framePrecomputedCount,
-        frameFallback: frameFallbackCount,
-        renderedCount
-      });
-
       if (DEBUG && (renderedCount > 0 || skippedCount > 0)) {
         console.log(`Rendered ${renderedCount} tiles, skipped ${skippedCount} tiles`);
       }
     },
 
     render(gl, matrix) {
-      if (this.webglUnsupported) {
-        notifyWebGL2Unsupported();
-        return;
-      }
       // Increment frame counter
       this.frameCount++;
       
@@ -1867,25 +1556,22 @@
         return;
       }
 
-      if (typeof tileManager.update === 'function') {
+      const terrainSpec = typeof this.map.getTerrain === 'function'
+        ? this.map.getTerrain()
+        : null;
+      const needsManualTileUpdate = (!terrainSpec || terrainSpec.exaggeration === 0)
+        && typeof tileManager.update === 'function';
+      if (needsManualTileUpdate) {
         try {
           tileManager.update(this.map.transform, terrainInterface);
         } catch (error) {
-          if (DEBUG) {
-            const context = isTerrainFlattened ? ' while terrain is flattened' : '';
-            console.error(`Failed to update terrain tiles${context}`, error);
-          }
+          if (DEBUG) console.error('Failed to update terrain tiles while terrain is flattened', error);
         }
       }
 
-      if (typeof tileManager.anyTilesAfterTime === 'function') {
-        const timestamp = (typeof performance !== 'undefined' && performance && typeof performance.now === 'function')
-          ? performance.now()
-          : Date.now();
-        if (tileManager.anyTilesAfterTime(timestamp - 100)) {
-          this.map.triggerRepaint();
-          return;
-        }
+      if (tileManager.anyTilesAfterTime(Date.now() - 100)) {
+        this.map.triggerRepaint();
+        return;
       }
 
       const renderableTiles = tileManager.getRenderableTiles();
@@ -1893,9 +1579,6 @@
       // Don't render if we have no tiles
       if (renderableTiles.length === 0) {
         if (DEBUG) console.log("No renderable tiles available");
-        if (hillshadeMode === 'custom' && currentMode) {
-          updateGradientDebugPanel({ framePrecomputed: 0, frameFallback: 0, renderedCount: 0 });
-        }
         this.map.triggerRepaint();
         return;
       }
@@ -1904,11 +1587,11 @@
       const textureCache = new Map();
       for (const tile of renderableTiles) {
         const sourceTile = tileManager.getSourceTile(tile.tileID, true);
-        if (!sourceTile) continue;
+        if (!sourceTile || sourceTile.tileID.key !== tile.tileID.key) continue;
         const terrainData = terrainInterface && terrainInterface.getTerrainData
           ? terrainInterface.getTerrainData(tile.tileID)
           : null;
-        if (!terrainData || !terrainData.texture) continue;
+        if (!terrainData || !terrainData.texture || terrainData.fallback) continue;
         const cacheKey = getTileCacheKey(tile.tileID);
         terrainDataCache.set(tile.tileID.key, terrainData);
         textureCache.set(cacheKey, terrainData.texture);
@@ -1918,40 +1601,16 @@
 
       const nativeGradientCache = collectNativeHillshadeTextures(this.map);
 
-      const sunParams = currentMode === "shadow" ? computeSunParameters(this.map) : null;
-      const daylightParams = currentMode === "daylight" ? computeDaylightParameters(this.map) : null;
-
-      if (currentMode === "shadow" || currentMode === "daylight") {
-        const shadowSettings = {
-          sampleCount: shadowSampleCount,
-          blurRadius: shadowBlurRadius,
-          maxDistance: shadowMaxDistance,
-          visibilityThreshold: shadowVisibilityThreshold,
-          edgeSoftness: shadowEdgeSoftness,
-          maxOpacity: shadowMaxOpacity,
-          rayStepMultiplier: shadowRayStepMultiplier
-        };
-        analysisPreparer.prepare({
-          gl,
-          mode: currentMode,
-          renderableTiles,
-          tileManager,
-          terrainInterface,
-          terrainDataCache,
-          textureCache,
-          neighborOffsets: NEIGHBOR_OFFSETS,
-          samplingDistance,
-          getGradientTexture: (tileKey) => {
-            if (!nativeGradientCache || !tileKey) {
-              return null;
-            }
-            return nativeGradientCache.get(tileKey) || null;
-          },
-          shadowSettings,
-          sunParams,
-          daylightParams
-        });
-      }
+      gradientPreparer.prepare({
+        gl,
+        renderableTiles,
+        tileManager,
+        terrainInterface,
+        terrainDataCache,
+        textureCache,
+        neighborOffsets: NEIGHBOR_OFFSETS,
+        samplingDistance
+      });
 
       const shader = this.getShader(gl, matrix.shaderData);
       if (!shader) return;
@@ -1965,7 +1624,7 @@
         gl.depthFunc(gl.LESS);
         gl.colorMask(false, false, false, false);
         gl.clear(gl.DEPTH_BUFFER_BIT);
-        this.renderTiles(gl, shader, renderableTiles, terrainInterface, tileManager, terrainDataCache, textureCache, nativeGradientCache, sunParams, daylightParams);
+        this.renderTiles(gl, shader, renderableTiles, terrainInterface, tileManager, terrainDataCache, textureCache, nativeGradientCache);
 
         gl.colorMask(true, true, true, true);
         gl.depthFunc(gl.LEQUAL);
@@ -1976,7 +1635,7 @@
           gl.ONE,
           gl.ONE_MINUS_SRC_ALPHA
         );
-        this.renderTiles(gl, shader, renderableTiles, terrainInterface, tileManager, terrainDataCache, textureCache, nativeGradientCache, sunParams, daylightParams);
+        this.renderTiles(gl, shader, renderableTiles, terrainInterface, tileManager, terrainDataCache, textureCache, nativeGradientCache);
       } else {
         gl.depthFunc(gl.LEQUAL);
         gl.clear(gl.DEPTH_BUFFER_BIT);
@@ -1991,7 +1650,7 @@
         } else {
           gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
         }
-        this.renderTiles(gl, shader, renderableTiles, terrainInterface, tileManager, terrainDataCache, textureCache, nativeGradientCache, sunParams, daylightParams);
+        this.renderTiles(gl, shader, renderableTiles, terrainInterface, tileManager, terrainDataCache, textureCache, nativeGradientCache);
       }
 
       gl.disable(gl.BLEND);
@@ -2005,6 +1664,13 @@
       version: 8,
       glyphs: "https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf",
       sources: {
+        swisstopo: {
+          type: 'raster',
+          tileSize: 256,
+          tiles: ['https://wmts.geo.admin.ch/1.0.0/ch.swisstopo.swissimage/default/current/3857/{z}/{x}/{y}.jpeg'],
+          attribution: '© Swisstopo',
+          maxzoom: 19
+        },
         [TERRAIN_SOURCE_ID]: {
           type: 'raster-dem',
           tiles: ['https://tiles.mapterhorn.com/{z}/{x}/{y}.webp'],
@@ -2014,9 +1680,10 @@
         }
       },
       layers: [
-        { id: 'background', type: 'background', paint: { 'background-color': '#ffffff' } }
+        { id: 'swisstopo', type: 'raster', source: 'swisstopo', paint: {'raster-opacity': 1.0} }
       ],
-      terrain: { source: TERRAIN_SOURCE_ID, exaggeration: 1.0 }
+      terrain: { source: TERRAIN_SOURCE_ID, exaggeration: 1.0 },
+      background: { paint: { "background-color": "#ffffff" } }
     },
     zoom: 14,
     center: [7.73044, 46.09915],
@@ -2028,7 +1695,9 @@
     fadeDuration: 500
   });
 
-  resetGradientDebugStats({ hide: true });
+  if (HillshadeDebug && typeof HillshadeDebug.attachToMap === 'function') {
+    HillshadeDebug.attachToMap(map, { sourceId: TERRAIN_SOURCE_ID, autoHookLayer: false });
+  }
 
   const originalSetTerrain = map.setTerrain.bind(map);
   const originalGetTerrain = typeof map.getTerrain === 'function'
@@ -2077,6 +1746,12 @@
     console.log("Terrain layer initialized");
     recomputeShadowTimeBounds();
     updateSamplingDistanceForZoom();
+    if (HillshadeDebug && typeof HillshadeDebug.attachToMap === 'function') {
+      HillshadeDebug.attachToMap(map, {
+        layerId: hillshadeMode === 'native' ? HILLSHADE_NATIVE_LAYER_ID : null,
+        sourceId: TERRAIN_SOURCE_ID
+      });
+    }
     if (hillshadeMode === 'native') {
       ensureNativeHillshadeLayer();
     } else if (hillshadeMode === 'custom' && currentMode) {
@@ -2105,7 +1780,7 @@
     if (!refreshedTerrain && previousTerrain && previousTerrain.tileManager && isTerrainFlattened) {
       cachedTerrainInterface = previousTerrain;
     }
-    analysisPreparer.invalidateAll();
+    gradientPreparer.invalidateAll();
     terrainNormalLayer.shaderMap.clear();
     if (map.getLayer('terrain-normal')) {
       terrainNormalLayer.frameCount = 0;
@@ -2121,15 +1796,8 @@
   const hillShadeNativeBtn = document.getElementById('hillShadeNativeBtn');
   if (hillShadeNativeBtn) {
     hillShadeNativeBtn.addEventListener('click', () => {
-      if (hillshadeMode !== 'native') {
-        disableCustomHillshade();
-      } else {
-        invokeWhenStyleReady(() => {
-          ensureNativeHillshadeLayer({ force: true });
-          updateHillshadePaintSettingsFromMap();
-          map.triggerRepaint();
-        });
-      }
+      const enableNative = hillshadeMode !== 'native';
+      setNativeHillshadeEnabled(enableNative);
     });
   }
 
