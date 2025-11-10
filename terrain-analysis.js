@@ -1578,17 +1578,19 @@
 
         if (terrainData.texture && shader.locations.u_image != null) {
           bindTexture(terrainData.texture, 0, 'u_image');
-          if (currentMode === "shadow" || currentMode === "daylight") {
-            NEIGHBOR_OFFSETS.forEach((neighbor, index) => {
-              const texture = getNeighborTexture(
-                tile.tileID,
-                neighbor.dx,
-                neighbor.dy,
-                terrainData.texture
-              );
-              bindTexture(texture, index + 1, neighbor.uniform);
-            });
-          }
+          NEIGHBOR_OFFSETS.forEach((neighbor, index) => {
+            const location = shader.locations[neighbor.uniform];
+            if (location == null) {
+              return;
+            }
+            const texture = getNeighborTexture(
+              tile.tileID,
+              neighbor.dx,
+              neighbor.dy,
+              terrainData.texture
+            );
+            bindTexture(texture, index + 1, neighbor.uniform);
+          });
         }
 
         const tileKey = tile.tileID ? tile.tileID.key : null;
