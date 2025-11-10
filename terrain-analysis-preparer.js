@@ -753,12 +753,12 @@ void main() {
 
       for (const tile of renderableTiles) {
         const sourceTile = tileManager.getSourceTile(tile.tileID, true);
-        if (!sourceTile || sourceTile.tileID.key !== tile.tileID.key) continue;
+        if (!sourceTile) continue;
         const tileKey = tile.tileID.key;
         activeKeys.add(tileKey);
 
         const terrainData = terrainDataCache.get(tile.tileID.key) || (terrainInterface && terrainInterface.getTerrainData ? terrainInterface.getTerrainData(tile.tileID) : null);
-        if (!terrainData || !terrainData.texture || terrainData.fallback) continue;
+        if (!terrainData || !terrainData.texture) continue;
 
         const dem = sourceTile.dem;
         const tileSize = dem && dem.dim ? dem.dim : (terrainInterface && terrainInterface.tileManager && terrainInterface.tileManager.tileSize ? terrainInterface.tileManager.tileSize : 512);
@@ -791,6 +791,7 @@ void main() {
               sunParams ? sunParams.warmIntensity : 0,
               demUid,
               tileSize,
+              terrainData && terrainData.fallback ? 1 : 0,
               this.invalidateVersion
             ].map(v => Number(v || 0).toFixed(6)).join(',');
           }
@@ -814,6 +815,7 @@ void main() {
             timeSig,
             demUid,
             tileSize,
+            terrainData && terrainData.fallback ? 1 : 0,
             this.invalidateVersion
           ].join('::');
         })();
