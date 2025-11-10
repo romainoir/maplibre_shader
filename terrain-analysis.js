@@ -111,6 +111,7 @@
     lightAltitude: DEFAULT_HILLSHADE_SETTINGS.lightAltitude,
     opacity: DEFAULT_HILLSHADE_SETTINGS.opacity
   };
+  let storedNativeHillshadeOpacity = DEFAULT_HILLSHADE_SETTINGS.opacity;
   let lastTerrainSpecification = { source: TERRAIN_SOURCE_ID, exaggeration: 1.0 };
   let isTerrainFlattened = false;
 
@@ -144,22 +145,82 @@
     return attachment || null;
   }
 
-  function collectNativeHillshadeTextures(mapInstance) {
-    const tiles = getHillshadeDebugTiles(mapInstance, { onlyPrepared: true });
-    if (!tiles.length) {
+  function getSourceCacheFromStyle(style, sourceId) {
+    if (!style || !sourceId) {
       return null;
     }
-    const cache = new Map();
-    for (const tile of tiles) {
-      const key = tile && tile.tileID ? tile.tileID.key : null;
-      if (!key || tile.needsHillshadePrepare) {
-        continue;
+    let cache = null;
+    try {
+      if (typeof style.getSourceCache === 'function') {
+        cache = style.getSourceCache(sourceId);
       }
-      const texture = extractHillshadeColorAttachment(tile);
-      if (texture) {
-        cache.set(key, texture);
+    } catch (error) {
+      cache = null;
+    }
+    if (cache) {
+      return cache;
+    }
+    const candidates = [style.sourceCaches, style._sourceCaches];
+    for (const collection of candidates) {
+      if (collection && typeof collection === 'object' && collection[sourceId]) {
+        return collection[sourceId];
       }
     }
+    return null;
+  }
+
+  function getTilesFromSourceCache(cache) {
+    if (!cache) {
+      return [];
+    }
+    const stores = [cache._tiles, cache.tiles];
+    for (const store of stores) {
+      if (!store) continue;
+      if (Array.isArray(store)) {
+        return store.filter(Boolean);
+      }
+      if (store instanceof Map) {
+        return Array.from(store.values()).filter(Boolean);
+      }
+      if (typeof store === 'object') {
+        return Object.keys(store).map(key => store[key]).filter(Boolean);
+      }
+    }
+    return [];
+  }
+
+  function collectNativeHillshadeTextures(mapInstance) {
+    const cache = new Map();
+
+    if (mapInstance && mapInstance.style) {
+      const sourceCache = getSourceCacheFromStyle(mapInstance.style, TERRAIN_SOURCE_ID);
+      const tiles = getTilesFromSourceCache(sourceCache);
+      for (const tile of tiles) {
+        const key = tile && tile.tileID ? tile.tileID.key : null;
+        if (!key || tile.needsHillshadePrepare) {
+          continue;
+        }
+        const texture = extractHillshadeColorAttachment(tile);
+        if (texture) {
+          cache.set(key, texture);
+        }
+      }
+    }
+
+    if (!cache.size) {
+      const debugTiles = getHillshadeDebugTiles(mapInstance, { onlyPrepared: true });
+      for (const tile of debugTiles) {
+        const key = tile && tile.tileID ? tile.tileID.key : null;
+        if (!key || tile.needsHillshadePrepare) {
+          continue;
+        }
+        const texture = extractHillshadeColorAttachment(tile);
+        if (texture) {
+          cache.set(key, texture);
+        }
+      }
+    }
+
     return cache.size > 0 ? cache : null;
   }
 
@@ -350,6 +411,7 @@
     if (Number.isFinite(opacity)) {
       hillshadePaintSettings.opacity = clamp01(opacity);
     }
+    storedNativeHillshadeOpacity = hillshadePaintSettings.opacity;
   }
 
   function computeHillshadeLightDirection(settings, mapInstance) {
@@ -1078,10 +1140,12 @@
   }
 
   function removeNativeHillshadeLayer(options = {}) {
-    const { force = false } = options;
+    const { force = false, skipPaintUpdate = false } = options;
     if (!force && !canModifyStyle()) return false;
     if (map.getLayer(HILLSHADE_NATIVE_LAYER_ID)) {
-      updateHillshadePaintSettingsFromMap();
+      if (!skipPaintUpdate) {
+        updateHillshadePaintSettingsFromMap();
+      }
       map.removeLayer(HILLSHADE_NATIVE_LAYER_ID);
       return true;
     }
@@ -1119,7 +1183,14 @@
     updateButtons();
     attachHillshadeDebugToMap();
     invokeWhenStyleReady(() => {
-      removeNativeHillshadeLayer({ force: true });
+      ensureNativeHillshadeLayer({ force: true });
+      if (map.getLayer(HILLSHADE_NATIVE_LAYER_ID)) {
+        const currentOpacity = map.getPaintProperty(HILLSHADE_NATIVE_LAYER_ID, 'hillshade-opacity');
+        if (Number.isFinite(currentOpacity)) {
+          storedNativeHillshadeOpacity = currentOpacity;
+        }
+        map.setPaintProperty(HILLSHADE_NATIVE_LAYER_ID, 'hillshade-opacity', 0.0);
+      }
       ensureCustomTerrainLayer({ force: true });
       map.triggerRepaint();
     });
@@ -1136,6 +1207,15 @@
     attachHillshadeDebugToMap();
     invokeWhenStyleReady(() => {
       removeCustomTerrainLayer({ force: true });
+      if (map.getLayer(HILLSHADE_NATIVE_LAYER_ID)) {
+        const restoreOpacity = Number.isFinite(storedNativeHillshadeOpacity)
+          ? storedNativeHillshadeOpacity
+          : hillshadePaintSettings.opacity;
+        if (Number.isFinite(restoreOpacity)) {
+          map.setPaintProperty(HILLSHADE_NATIVE_LAYER_ID, 'hillshade-opacity', restoreOpacity);
+        }
+        removeNativeHillshadeLayer({ force: true });
+      }
       map.triggerRepaint();
     });
   }
@@ -1146,8 +1226,16 @@
       currentMode = '';
       invokeWhenStyleReady(() => {
         removeCustomTerrainLayer({ force: true });
-        removeNativeHillshadeLayer({ force: true });
         ensureNativeHillshadeLayer({ force: true });
+        if (map.getLayer(HILLSHADE_NATIVE_LAYER_ID)) {
+          const opacity = Number.isFinite(storedNativeHillshadeOpacity)
+            ? storedNativeHillshadeOpacity
+            : hillshadePaintSettings.opacity;
+          if (Number.isFinite(opacity)) {
+            map.setPaintProperty(HILLSHADE_NATIVE_LAYER_ID, 'hillshade-opacity', opacity);
+          }
+          updateHillshadePaintSettingsFromMap();
+        }
         map.triggerRepaint();
       });
     } else {
@@ -1155,6 +1243,14 @@
         hillshadeMode = 'none';
       }
       invokeWhenStyleReady(() => {
+        if (map.getLayer(HILLSHADE_NATIVE_LAYER_ID)) {
+          const opacity = Number.isFinite(storedNativeHillshadeOpacity)
+            ? storedNativeHillshadeOpacity
+            : hillshadePaintSettings.opacity;
+          if (Number.isFinite(opacity)) {
+            map.setPaintProperty(HILLSHADE_NATIVE_LAYER_ID, 'hillshade-opacity', opacity);
+          }
+        }
         removeNativeHillshadeLayer({ force: true });
         map.triggerRepaint();
       });
