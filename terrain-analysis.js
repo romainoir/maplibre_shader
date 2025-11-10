@@ -1,90 +1,8 @@
 /* terrain-analysis.js */
 (function() {
   const DEBUG = false;
-  const HillshadeDebug = window.__MapLibreHillshadeDebug || null;
-  const hillshadeDebugFlagEnabled = (() => {
-    try {
-      const searchParams = new URLSearchParams(window.location.search || '');
-      if (searchParams.has('hillshadeDebug')) {
-        return true;
-      }
-      return typeof window.location.hash === 'string' && window.location.hash.includes('hillshadeDebug');
-    } catch (error) {
-      if (DEBUG) console.warn('Failed to evaluate hillshade debug flag', error);
-      return false;
-    }
-  })();
-
-  let isHillshadeDebugEnabled = false;
   let map;
-  let hillshadeMode = 'none'; // "none", "native", or "custom"
-
-  function attachHillshadeDebugToMap() {
-    if (!isHillshadeDebugEnabled || !map || !HillshadeDebug || typeof HillshadeDebug.attachToMap !== 'function') {
-      return;
-    }
-    try {
-      HillshadeDebug.attachToMap(map, {
-        layerId: hillshadeMode === 'native' ? HILLSHADE_NATIVE_LAYER_ID : null,
-        sourceId: TERRAIN_SOURCE_ID
-      });
-    } catch (error) {
-      if (DEBUG) console.warn('Failed to attach hillshade debug instrumentation', error);
-    }
-  }
-
-  function setHillshadeDebugEnabled(enabled, options) {
-    if (!HillshadeDebug || typeof HillshadeDebug.enable !== 'function' || typeof HillshadeDebug.disable !== 'function') {
-      if (isHillshadeDebugEnabled) {
-        isHillshadeDebugEnabled = false;
-        updateButtons();
-      }
-      return false;
-    }
-    const shouldEnable = Boolean(enabled);
-    if (shouldEnable === isHillshadeDebugEnabled) {
-      if (shouldEnable && options) {
-        HillshadeDebug.enable(options);
-        attachHillshadeDebugToMap();
-      }
-      return isHillshadeDebugEnabled;
-    }
-    if (shouldEnable) {
-      HillshadeDebug.enable(options);
-      isHillshadeDebugEnabled = true;
-      attachHillshadeDebugToMap();
-      if (!options || options.silent !== true) {
-        console.info('Hillshade debug instrumentation enabled.');
-      }
-    } else {
-      HillshadeDebug.disable();
-      isHillshadeDebugEnabled = false;
-      if (!options || options.silent !== true) {
-        console.info('Hillshade debug instrumentation disabled.');
-      }
-    }
-    updateButtons();
-    return isHillshadeDebugEnabled;
-  }
-
-  if (HillshadeDebug && typeof HillshadeDebug.install === 'function') {
-    HillshadeDebug.install();
-    if (hillshadeDebugFlagEnabled) {
-      setHillshadeDebugEnabled(true, { silent: true });
-    }
-    window.mapLibreHillshadeDebug = Object.freeze({
-      enable(options) {
-        return setHillshadeDebugEnabled(true, options);
-      },
-      disable() {
-        return setHillshadeDebugEnabled(false);
-      },
-      getDrawCalls: () => HillshadeDebug.getDrawCalls(),
-      getDemEvents: () => HillshadeDebug.getDemEvents(),
-      getDemSnapshots: () => HillshadeDebug.getDemSnapshots(),
-      getTiles: (options) => HillshadeDebug.getTiles(options)
-    });
-  }
+  let hillshadeMode = 'native'; // "native" or "custom"
   const EXTENT = 8192;
   const TILE_SIZE = 512;
   const DEM_MAX_ZOOM = 16; // native DEM max zoom
@@ -111,54 +29,20 @@
     lightAltitude: DEFAULT_HILLSHADE_SETTINGS.lightAltitude,
     opacity: DEFAULT_HILLSHADE_SETTINGS.opacity
   };
-  let storedNativeHillshadeVisibility = 'visible';
-  let storedNativeHillshadeOpacity = DEFAULT_HILLSHADE_SETTINGS.opacity;
-  let nativeHillshadeOpacitySupported = null;
   let lastTerrainSpecification = { source: TERRAIN_SOURCE_ID, exaggeration: 1.0 };
   let isTerrainFlattened = false;
 
   function getNativeHillshadeOpacity() {
-    if (nativeHillshadeOpacitySupported === false) {
-      return null;
-    }
     if (!map || typeof map.getLayer !== 'function' || !map.getLayer(HILLSHADE_NATIVE_LAYER_ID)) {
       return null;
     }
     try {
-      const value = map.getPaintProperty(HILLSHADE_NATIVE_LAYER_ID, 'hillshade-opacity');
-      if (nativeHillshadeOpacitySupported === null) {
-        nativeHillshadeOpacitySupported = true;
-      }
-      return value;
+      return map.getPaintProperty(HILLSHADE_NATIVE_LAYER_ID, 'hillshade-opacity');
     } catch (error) {
-      nativeHillshadeOpacitySupported = false;
       if (DEBUG) {
         console.warn('Hillshade opacity paint property is not supported by the current MapLibre build.', error);
       }
       return null;
-    }
-  }
-
-  function setNativeHillshadeOpacity(value) {
-    if (nativeHillshadeOpacitySupported === false) {
-      return false;
-    }
-    if (!map || typeof map.getLayer !== 'function' || !map.getLayer(HILLSHADE_NATIVE_LAYER_ID)) {
-      return false;
-    }
-    if (typeof map.setPaintProperty !== 'function') {
-      return false;
-    }
-    try {
-      map.setPaintProperty(HILLSHADE_NATIVE_LAYER_ID, 'hillshade-opacity', value);
-      nativeHillshadeOpacitySupported = true;
-      return true;
-    } catch (error) {
-      nativeHillshadeOpacitySupported = false;
-      if (DEBUG) {
-        console.warn('Failed to set the native hillshade opacity; falling back to visibility toggling.', error);
-      }
-      return false;
     }
   }
 
@@ -247,20 +131,6 @@
     element.style.display = 'block';
   }
 
-  function getHillshadeDebugTiles(mapInstance, options = {}) {
-    const debugApi = window.mapLibreHillshadeDebug;
-    if (!mapInstance || !debugApi || typeof debugApi.getTiles !== 'function') {
-      return [];
-    }
-    try {
-      const tiles = debugApi.getTiles({ map: mapInstance, sourceId: TERRAIN_SOURCE_ID, ...options });
-      return Array.isArray(tiles) ? tiles : [];
-    } catch (error) {
-      if (DEBUG) console.warn('Failed to query hillshade tiles from debug API', error);
-      return [];
-    }
-  }
-
   function extractHillshadeColorAttachment(tile) {
     if (!tile || !tile.fbo || !tile.fbo.colorAttachment) {
       return null;
@@ -328,20 +198,6 @@
       const sourceCache = getSourceCacheFromStyle(mapInstance.style, TERRAIN_SOURCE_ID);
       const tiles = getTilesFromSourceCache(sourceCache);
       for (const tile of tiles) {
-        const key = tile && tile.tileID ? tile.tileID.key : null;
-        if (!key || tile.needsHillshadePrepare) {
-          continue;
-        }
-        const texture = extractHillshadeColorAttachment(tile);
-        if (texture) {
-          cache.set(key, texture);
-        }
-      }
-    }
-
-    if (!cache.size) {
-      const debugTiles = getHillshadeDebugTiles(mapInstance, { onlyPrepared: true });
-      for (const tile of debugTiles) {
         const key = tile && tile.tileID ? tile.tileID.key : null;
         if (!key || tile.needsHillshadePrepare) {
           continue;
@@ -1157,12 +1013,6 @@
   // Update UI button states and slider visibility based on current mode
   function updateButtons() {
     const isCustomActive = hillshadeMode === 'custom';
-    const hillshadeDebugBtn = document.getElementById('hillshadeDebugBtn');
-    if (hillshadeDebugBtn) {
-      const debugAvailable = Boolean(HillshadeDebug && typeof HillshadeDebug.enable === 'function' && typeof HillshadeDebug.disable === 'function');
-      hillshadeDebugBtn.disabled = !debugAvailable;
-      hillshadeDebugBtn.classList.toggle('active', debugAvailable && isHillshadeDebugEnabled);
-    }
     const hillShadeNativeBtn = document.getElementById('hillShadeNativeBtn');
     if (hillShadeNativeBtn) {
       hillShadeNativeBtn.classList.toggle('active', hillshadeMode === 'native');
@@ -1260,7 +1110,10 @@
   function ensureNativeHillshadeLayer(options = {}) {
     const { force = false } = options;
     if (!force && !canModifyStyle()) return false;
-    if (map.getLayer(HILLSHADE_NATIVE_LAYER_ID)) return true;
+    if (map.getLayer(HILLSHADE_NATIVE_LAYER_ID)) {
+      updateHillshadePaintSettingsFromMap();
+      return true;
+    }
     const layerDefinition = {
       id: HILLSHADE_NATIVE_LAYER_ID,
       type: 'hillshade',
@@ -1277,35 +1130,15 @@
           : DEFAULT_HILLSHADE_SETTINGS.illuminationDirection,
         'hillshade-illumination-anchor': typeof hillshadePaintSettings.illuminationAnchor === 'string'
           ? hillshadePaintSettings.illuminationAnchor
-          : DEFAULT_HILLSHADE_SETTINGS.illuminationAnchor
+          : DEFAULT_HILLSHADE_SETTINGS.illuminationAnchor,
+        'hillshade-opacity': Number.isFinite(hillshadePaintSettings.opacity)
+          ? clamp01(hillshadePaintSettings.opacity)
+          : DEFAULT_HILLSHADE_SETTINGS.opacity
       }
     };
     map.addLayer(layerDefinition);
-    nativeHillshadeOpacitySupported = null;
-    if (typeof storedNativeHillshadeVisibility === 'string' && storedNativeHillshadeVisibility !== 'visible') {
-      map.setLayoutProperty(HILLSHADE_NATIVE_LAYER_ID, 'visibility', storedNativeHillshadeVisibility);
-    }
     updateHillshadePaintSettingsFromMap();
-    if (HillshadeDebug && typeof HillshadeDebug.attachToMap === 'function') {
-      HillshadeDebug.attachToMap(map, {
-        layerId: HILLSHADE_NATIVE_LAYER_ID,
-        sourceId: TERRAIN_SOURCE_ID
-      });
-    }
     return true;
-  }
-
-  function removeNativeHillshadeLayer(options = {}) {
-    const { force = false, skipPaintUpdate = false } = options;
-    if (!force && !canModifyStyle()) return false;
-    if (map.getLayer(HILLSHADE_NATIVE_LAYER_ID)) {
-      if (!skipPaintUpdate) {
-        updateHillshadePaintSettingsFromMap();
-      }
-      map.removeLayer(HILLSHADE_NATIVE_LAYER_ID);
-      return true;
-    }
-    return false;
   }
 
   function invokeWhenStyleReady(callback) {
@@ -1337,125 +1170,28 @@
     terrainNormalLayer.shaderMap.clear();
     analysisPreparer.invalidateAll();
     updateButtons();
-    attachHillshadeDebugToMap();
     resetGradientDebugStats({ hide: false });
     invokeWhenStyleReady(() => {
       ensureNativeHillshadeLayer({ force: true });
-      if (map.getLayer(HILLSHADE_NATIVE_LAYER_ID)) {
-        const currentVisibility = map.getLayoutProperty(HILLSHADE_NATIVE_LAYER_ID, 'visibility');
-        storedNativeHillshadeVisibility = typeof currentVisibility === 'string'
-          ? currentVisibility
-          : 'visible';
-        const currentOpacity = getNativeHillshadeOpacity();
-        const normalizedOpacity = Number.isFinite(currentOpacity)
-          ? clamp01(currentOpacity)
-          : DEFAULT_HILLSHADE_SETTINGS.opacity;
-        storedNativeHillshadeOpacity = normalizedOpacity;
-        hillshadePaintSettings.opacity = normalizedOpacity;
-        const opacitySet = setNativeHillshadeOpacity(0);
-        if (opacitySet) {
-          map.setLayoutProperty(HILLSHADE_NATIVE_LAYER_ID, 'visibility', 'visible');
-        } else {
-          map.setLayoutProperty(HILLSHADE_NATIVE_LAYER_ID, 'visibility', 'visible');
-          if (DEBUG) {
-            console.warn('Native hillshade opacity not supported; leaving layer visible to retain gradient textures.');
-          }
-        }
-      }
+      updateHillshadePaintSettingsFromMap();
       ensureCustomTerrainLayer({ force: true });
       map.triggerRepaint();
     });
   }
 
   function disableCustomHillshade() {
-    if (hillshadeMode === 'custom') {
-      hillshadeMode = 'none';
-    }
+    hillshadeMode = 'native';
     currentMode = '';
     terrainNormalLayer.shaderMap.clear();
     analysisPreparer.invalidateAll();
     updateButtons();
-    attachHillshadeDebugToMap();
     resetGradientDebugStats({ hide: true });
     invokeWhenStyleReady(() => {
       removeCustomTerrainLayer({ force: true });
-      if (map.getLayer(HILLSHADE_NATIVE_LAYER_ID)) {
-        map.setLayoutProperty(
-          HILLSHADE_NATIVE_LAYER_ID,
-          'visibility',
-          typeof storedNativeHillshadeVisibility === 'string' ? storedNativeHillshadeVisibility : 'visible'
-        );
-        const restoreOpacity = Number.isFinite(storedNativeHillshadeOpacity)
-          ? storedNativeHillshadeOpacity
-          : DEFAULT_HILLSHADE_SETTINGS.opacity;
-        const restored = setNativeHillshadeOpacity(restoreOpacity);
-        if (!restored) {
-          map.setLayoutProperty(
-            HILLSHADE_NATIVE_LAYER_ID,
-            'visibility',
-            typeof storedNativeHillshadeVisibility === 'string' ? storedNativeHillshadeVisibility : 'visible'
-          );
-        }
-        hillshadePaintSettings.opacity = clamp01(restoreOpacity);
-        removeNativeHillshadeLayer({ force: true });
-      }
+      ensureNativeHillshadeLayer({ force: true });
+      updateHillshadePaintSettingsFromMap();
       map.triggerRepaint();
     });
-  }
-
-  function setNativeHillshadeEnabled(enabled) {
-    resetGradientDebugStats({ hide: true });
-    if (enabled) {
-      hillshadeMode = 'native';
-      currentMode = '';
-      invokeWhenStyleReady(() => {
-        removeCustomTerrainLayer({ force: true });
-        ensureNativeHillshadeLayer({ force: true });
-        if (map.getLayer(HILLSHADE_NATIVE_LAYER_ID)) {
-          map.setLayoutProperty(
-            HILLSHADE_NATIVE_LAYER_ID,
-            'visibility',
-            typeof storedNativeHillshadeVisibility === 'string' ? storedNativeHillshadeVisibility : 'visible'
-          );
-          const restoreOpacity = Number.isFinite(storedNativeHillshadeOpacity)
-            ? storedNativeHillshadeOpacity
-            : DEFAULT_HILLSHADE_SETTINGS.opacity;
-          const restored = setNativeHillshadeOpacity(restoreOpacity);
-          if (!restored) {
-            map.setLayoutProperty(
-              HILLSHADE_NATIVE_LAYER_ID,
-              'visibility',
-              typeof storedNativeHillshadeVisibility === 'string' ? storedNativeHillshadeVisibility : 'visible'
-            );
-          }
-          hillshadePaintSettings.opacity = clamp01(restoreOpacity);
-          updateHillshadePaintSettingsFromMap();
-        }
-        map.triggerRepaint();
-      });
-    } else {
-      if (hillshadeMode === 'native') {
-        hillshadeMode = 'none';
-      }
-      invokeWhenStyleReady(() => {
-        if (map.getLayer(HILLSHADE_NATIVE_LAYER_ID)) {
-          const currentVisibility = map.getLayoutProperty(HILLSHADE_NATIVE_LAYER_ID, 'visibility');
-          storedNativeHillshadeVisibility = typeof currentVisibility === 'string'
-            ? currentVisibility
-            : 'visible';
-          const currentOpacity = getNativeHillshadeOpacity();
-          if (Number.isFinite(currentOpacity)) {
-            const normalized = clamp01(currentOpacity);
-            storedNativeHillshadeOpacity = normalized;
-            hillshadePaintSettings.opacity = normalized;
-          }
-        }
-        removeNativeHillshadeLayer({ force: true });
-        map.triggerRepaint();
-      });
-    }
-    updateButtons();
-    attachHillshadeDebugToMap();
   }
 
   const shadowSampleCountSlider = document.getElementById('shadowSampleCountSlider');
@@ -2150,10 +1886,6 @@
 
   resetGradientDebugStats({ hide: true });
 
-  if (HillshadeDebug && typeof HillshadeDebug.attachToMap === 'function') {
-    HillshadeDebug.attachToMap(map, { sourceId: TERRAIN_SOURCE_ID, autoHookLayer: false });
-  }
-
   const originalSetTerrain = map.setTerrain.bind(map);
   const originalGetTerrain = typeof map.getTerrain === 'function'
     ? map.getTerrain.bind(map)
@@ -2201,7 +1933,6 @@
     console.log("Terrain layer initialized");
     recomputeShadowTimeBounds();
     updateSamplingDistanceForZoom();
-    attachHillshadeDebugToMap();
     if (hillshadeMode === 'native') {
       ensureNativeHillshadeLayer();
     } else if (hillshadeMode === 'custom' && currentMode) {
@@ -2243,21 +1974,18 @@
   map.addControl(new maplibregl.TerrainControl());
   
   // Button click event listeners to toggle rendering modes.
-  const hillshadeDebugBtn = document.getElementById('hillshadeDebugBtn');
-  if (hillshadeDebugBtn) {
-    hillshadeDebugBtn.addEventListener('click', () => {
-      if (!HillshadeDebug) {
-        return;
-      }
-      setHillshadeDebugEnabled(!isHillshadeDebugEnabled);
-    });
-  }
-
   const hillShadeNativeBtn = document.getElementById('hillShadeNativeBtn');
   if (hillShadeNativeBtn) {
     hillShadeNativeBtn.addEventListener('click', () => {
-      const enableNative = hillshadeMode !== 'native';
-      setNativeHillshadeEnabled(enableNative);
+      if (hillshadeMode !== 'native') {
+        disableCustomHillshade();
+      } else {
+        invokeWhenStyleReady(() => {
+          ensureNativeHillshadeLayer({ force: true });
+          updateHillshadePaintSettingsFromMap();
+          map.triggerRepaint();
+        });
+      }
     });
   }
 
