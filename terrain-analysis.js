@@ -138,6 +138,17 @@
   const DEFAULT_DAYLIGHT_BOUNDS = { min: 360, max: 1080 };
   let shadowTimeBounds = { min: 0, max: 1439 };
   const GRADIENT_ZOOM_PIVOT = 14;
+  const MIN_GRADIENT_DISTANCE = 0.001;
+  const GRADIENT_DISTANCE_DECIMALS = 3;
+
+  function formatGradientDistance(value) {
+    return value.toFixed(GRADIENT_DISTANCE_DECIMALS);
+  }
+
+  function formatGradientDistanceLabel(value) {
+    return `${formatGradientDistance(value)} m`;
+  }
+
   const gradientParameters = {
     baseDistance: 0.35,
     minDistance: 0.05,
@@ -198,7 +209,7 @@
   }
 
   function sanitizeGradientParameters() {
-    const minDistance = Math.max(0.05, Math.min(gradientParameters.minDistance, gradientParameters.maxDistance));
+    const minDistance = Math.max(MIN_GRADIENT_DISTANCE, Math.min(gradientParameters.minDistance, gradientParameters.maxDistance));
     const maxDistance = Math.max(minDistance, Math.max(gradientParameters.minDistance, gradientParameters.maxDistance));
     gradientParameters.minDistance = minDistance;
     gradientParameters.maxDistance = maxDistance;
@@ -1045,43 +1056,48 @@
   function refreshGradientUI() {
     sanitizeGradientParameters();
     if (gradientSamplingSlider) {
-      gradientSamplingSlider.min = gradientParameters.minDistance.toFixed(2);
-      gradientSamplingSlider.max = gradientParameters.maxDistance.toFixed(2);
+      gradientSamplingSlider.step = formatGradientDistance(MIN_GRADIENT_DISTANCE);
+      gradientSamplingSlider.min = formatGradientDistance(gradientParameters.minDistance);
+      gradientSamplingSlider.max = formatGradientDistance(gradientParameters.maxDistance);
       if (document.activeElement !== gradientSamplingSlider) {
-        gradientSamplingSlider.value = samplingDistance.toFixed(2);
+        gradientSamplingSlider.value = formatGradientDistance(samplingDistance);
       }
     }
     if (gradientSamplingValueEl) {
       const modeLabel = isSamplingDistanceManual ? 'manual' : 'auto';
-      gradientSamplingValueEl.textContent = `${samplingDistance.toFixed(2)} m (${modeLabel})`;
+      gradientSamplingValueEl.textContent = `${formatGradientDistance(samplingDistance)} m (${modeLabel})`;
     }
     if (gradientBaseSlider) {
-      gradientBaseSlider.min = gradientParameters.minDistance.toFixed(2);
-      gradientBaseSlider.max = gradientParameters.maxDistance.toFixed(2);
+      gradientBaseSlider.step = formatGradientDistance(MIN_GRADIENT_DISTANCE);
+      gradientBaseSlider.min = formatGradientDistance(gradientParameters.minDistance);
+      gradientBaseSlider.max = formatGradientDistance(gradientParameters.maxDistance);
       if (document.activeElement !== gradientBaseSlider) {
-        gradientBaseSlider.value = gradientParameters.baseDistance.toFixed(2);
+        gradientBaseSlider.value = formatGradientDistance(gradientParameters.baseDistance);
       }
     }
     if (gradientBaseValueEl) {
-      gradientBaseValueEl.textContent = `${gradientParameters.baseDistance.toFixed(2)} m`;
+      gradientBaseValueEl.textContent = formatGradientDistanceLabel(gradientParameters.baseDistance);
     }
     if (gradientMinSlider) {
-      gradientMinSlider.max = gradientParameters.maxDistance.toFixed(2);
+      gradientMinSlider.step = formatGradientDistance(MIN_GRADIENT_DISTANCE);
+      gradientMinSlider.min = formatGradientDistance(MIN_GRADIENT_DISTANCE);
+      gradientMinSlider.max = formatGradientDistance(gradientParameters.maxDistance);
       if (document.activeElement !== gradientMinSlider) {
-        gradientMinSlider.value = gradientParameters.minDistance.toFixed(2);
+        gradientMinSlider.value = formatGradientDistance(gradientParameters.minDistance);
       }
     }
     if (gradientMinValueEl) {
-      gradientMinValueEl.textContent = `${gradientParameters.minDistance.toFixed(2)} m`;
+      gradientMinValueEl.textContent = formatGradientDistanceLabel(gradientParameters.minDistance);
     }
     if (gradientMaxSlider) {
-      gradientMaxSlider.min = gradientParameters.minDistance.toFixed(2);
+      gradientMaxSlider.step = formatGradientDistance(MIN_GRADIENT_DISTANCE);
+      gradientMaxSlider.min = formatGradientDistance(gradientParameters.minDistance);
       if (document.activeElement !== gradientMaxSlider) {
-        gradientMaxSlider.value = gradientParameters.maxDistance.toFixed(2);
+        gradientMaxSlider.value = formatGradientDistance(gradientParameters.maxDistance);
       }
     }
     if (gradientMaxValueEl) {
-      gradientMaxValueEl.textContent = `${gradientParameters.maxDistance.toFixed(2)} m`;
+      gradientMaxValueEl.textContent = formatGradientDistanceLabel(gradientParameters.maxDistance);
     }
     if (gradientAutoButton) {
       gradientAutoButton.disabled = !isSamplingDistanceManual;
