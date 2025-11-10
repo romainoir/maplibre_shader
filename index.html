@@ -35,11 +35,6 @@
     }
     .control-button.active { background: #d35f34; }
     .control-button:hover { background: #e67e54; }
-    .control-button:disabled {
-      background: #6f6f6f;
-      cursor: not-allowed;
-      opacity: 0.65;
-    }
     /* Slider containers */
     #snowSliderContainer,
     #shadowControls {
@@ -59,30 +54,6 @@
       gap: 6px;
     }
     input[type="range"] { vertical-align: middle; }
-    #gradientDebugPanel {
-      position: absolute;
-      bottom: 12px;
-      left: 12px;
-      background: rgba(0, 0, 0, 0.65);
-      color: #fff;
-      padding: 8px 12px;
-      border-radius: 4px;
-      font-family: monospace;
-      font-size: 12px;
-      line-height: 1.4;
-      max-width: 240px;
-      pointer-events: none;
-      display: none;
-      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
-    }
-    #gradientDebugPanel strong {
-      display: block;
-      font-size: 13px;
-      margin-bottom: 4px;
-    }
-    #gradientDebugPanel.debug-warning {
-      box-shadow: 0 0 0 2px rgba(255, 128, 0, 0.6);
-    }
   </style>
 </head>
 <body>
@@ -150,10 +121,10 @@
     </div>
   </div>
   <div id="map"></div>
-  <div id="gradientDebugPanel"></div>
-  <!-- Include shader definitions -->
+  <!-- Include shader definitions, gradient preparer and debugging helpers -->
+  <script src="maplibre-hillshade-debug.js"></script>
   <script src="terrain-shaders.js"></script>
-  <script src="terrain-analysis-preparer.js"></script>
+  <script src="terrain-gradient-preparer.js"></script>
   <!-- Main application script -->
   <script src="terrain-analysis.js"></script>
 </body>

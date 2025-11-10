@@ -85,65 +85,6 @@ const TerrainGradientPreparer = (function() {
     return Math.max(metersPerPixel, MIN_METERS_PER_PIXEL);
   }
 
-  function detectFloatFramebufferFormat(gl) {
-    const candidates = [
-      { internalFormat: gl.RGBA32F, format: gl.RGBA, type: gl.FLOAT },
-      { internalFormat: gl.RGBA16F, format: gl.RGBA, type: gl.HALF_FLOAT }
-    ];
-
-    const framebuffer = gl.createFramebuffer();
-    const texture = gl.createTexture();
-    if (!framebuffer || !texture) {
-      if (framebuffer) gl.deleteFramebuffer(framebuffer);
-      if (texture) gl.deleteTexture(texture);
-      return null;
-    }
-
-    gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
-    gl.bindTexture(gl.TEXTURE_2D, texture);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-
-    let selected = null;
-    for (const candidate of candidates) {
-      try {
-        gl.texImage2D(
-          gl.TEXTURE_2D,
-          0,
-          candidate.internalFormat,
-          1,
-          1,
-          0,
-          candidate.format,
-          candidate.type,
-          null
-        );
-        gl.framebufferTexture2D(
-          gl.FRAMEBUFFER,
-          gl.COLOR_ATTACHMENT0,
-          gl.TEXTURE_2D,
-          texture,
-          0
-        );
-        const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
-        if (status === gl.FRAMEBUFFER_COMPLETE) {
-          selected = candidate;
-          break;
-        }
-      } catch (error) {
-        selected = null;
-      }
-    }
-
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    gl.bindTexture(gl.TEXTURE_2D, null);
-    gl.deleteFramebuffer(framebuffer);
-    gl.deleteTexture(texture);
-    return selected;
-  }
-
   class GradientPreparer {
     constructor() {
       this.gl = null;
@@ -157,9 +98,6 @@ const TerrainGradientPreparer = (function() {
       this.invalidateVersion = 0;
       this.previousFramebuffer = null;
       this.previousViewport = null;
-      this.textureInternalFormat = null;
-      this.textureFormat = null;
-      this.textureType = null;
     }
 
     createShader(gl, type, source) {
@@ -218,16 +156,6 @@ const TerrainGradientPreparer = (function() {
         return;
       }
       this.supported = true;
-
-      const floatFormat = detectFloatFramebufferFormat(gl);
-      if (!floatFormat) {
-        console.warn('TerrainGradientPreparer could not determine a compatible float framebuffer format.');
-        this.supported = false;
-        return;
-      }
-      this.textureInternalFormat = floatFormat.internalFormat;
-      this.textureFormat = floatFormat.format;
-      this.textureType = floatFormat.type;
 
       const vertexSource = `#version 300 es\n`
         + `precision highp float;\n`
@@ -306,8 +234,8 @@ float getElevationExtended(vec2 pos) {
 ${GRADIENT_NEIGHBOR_FETCH_BLOCK}  return getElevationFromTexture(u_image, tilePos);
 }
 void main() {
+  float sampleDist = max(u_samplingDistance, 0.0001);
   float metersPerPixel = max(u_metersPerPixel, 0.0001);
-  float sampleDist = max(u_samplingDistance, metersPerPixel);
   float metersPerTile = metersPerPixel * u_dimension.x;
   float delta = sampleDist / metersPerTile;
   float delta2 = delta * 2.0;
@@ -405,14 +333,11 @@ void main() {
         state.texture = gl.createTexture();
       }
       gl.bindTexture(gl.TEXTURE_2D, state.texture);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-      const internalFormat = this.textureInternalFormat || gl.RGBA16F;
-      const format = this.textureFormat || gl.RGBA;
-      const type = this.textureType || gl.HALF_FLOAT;
-      gl.texImage2D(gl.TEXTURE_2D, 0, internalFormat, size, size, 0, format, type, null);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, size, size, 0, gl.RGBA, gl.HALF_FLOAT, null);
 
       if (!state.framebuffer) {
         state.framebuffer = gl.createFramebuffer();
@@ -571,9 +496,9 @@ void main() {
         state.demUid = demUid;
         state.size = tileSize;
 
-        // Do not override the native hillshade preparation flag here. When
-        // MapLibre's own hillshade layer is present it will manage this state
-        // and produce the gradients that our custom pipeline can reuse.
+        if (sourceTile) {
+          sourceTile.needsHillshadePrepare = false;
+        }
       }
 
       gl.disableVertexAttribArray(this.attributes.a_pos);
