@@ -15,6 +15,8 @@ const TerrainGradientPreparer = (function() {
     '1,1': 'u_image_bottomRight'
   };
 
+  const MAX_CONFIGURABLE_NEIGHBOR_OFFSET = 4;
+
   function gradientFormatOffsetPart(value) {
     if (value === 0) {
       return '0';
@@ -23,12 +25,61 @@ const TerrainGradientPreparer = (function() {
     return `${prefix}${Math.abs(value)}`;
   }
 
+  function gradientNeighborCountForOffset(offset) {
+    if (!Number.isFinite(offset) || offset <= 0) {
+      return 0;
+    }
+    const clamped = Math.floor(Math.max(0, offset));
+    return 2 * clamped * (clamped + 1);
+  }
+
+  function gradientMaxOffsetForUnits(unitCount) {
+    if (!Number.isFinite(unitCount) || unitCount < 2) {
+      return 0;
+    }
+    const availableNeighborSamplers = Math.max(0, Math.floor(unitCount) - 1);
+    let offset = 0;
+    while (offset < MAX_CONFIGURABLE_NEIGHBOR_OFFSET) {
+      const next = offset + 1;
+      if (gradientNeighborCountForOffset(next) > availableNeighborSamplers) {
+        break;
+      }
+      offset = next;
+    }
+    return offset;
+  }
+
   function gradientUniformNameForOffset(dx, dy) {
     const key = `${dx},${dy}`;
     if (GRADIENT_NEIGHBOR_NAME_OVERRIDES[key]) {
       return GRADIENT_NEIGHBOR_NAME_OVERRIDES[key];
     }
     return `u_image_${gradientFormatOffsetPart(dx)}_${gradientFormatOffsetPart(dy)}`;
+  }
+
+  function getGradientNeighborOffsetLimit() {
+    return Math.min(MAX_CONFIGURABLE_NEIGHBOR_OFFSET, GRADIENT_SUPPORTED_NEIGHBOR_OFFSET);
+  }
+
+  function updateGradientTextureUnitLimit(limit) {
+    if (!Number.isFinite(limit)) {
+      return { limitChanged: false, needsRebuild: false };
+    }
+    const nextLimit = Math.max(0, Math.floor(limit));
+    if (nextLimit === GRADIENT_TEXTURE_UNIT_LIMIT) {
+      return { limitChanged: false, needsRebuild: false };
+    }
+    GRADIENT_TEXTURE_UNIT_LIMIT = nextLimit;
+    const previousCap = getGradientNeighborOffsetLimit();
+    GRADIENT_SUPPORTED_NEIGHBOR_OFFSET = gradientMaxOffsetForUnits(GRADIENT_TEXTURE_UNIT_LIMIT);
+    const nextCap = getGradientNeighborOffsetLimit();
+    let needsRebuild = false;
+    if (GRADIENT_MAX_NEIGHBOR_OFFSET > nextCap) {
+      GRADIENT_MAX_NEIGHBOR_OFFSET = nextCap;
+      needsRebuild = true;
+    }
+    const limitChanged = previousCap !== nextCap || needsRebuild;
+    return { limitChanged, needsRebuild };
   }
 
   function gradientBuildNeighborOffsets(maxOffset) {
@@ -43,6 +94,8 @@ const TerrainGradientPreparer = (function() {
     return offsets;
   }
 
+  let GRADIENT_TEXTURE_UNIT_LIMIT = 16;
+  let GRADIENT_SUPPORTED_NEIGHBOR_OFFSET = gradientMaxOffsetForUnits(GRADIENT_TEXTURE_UNIT_LIMIT);
   let GRADIENT_NEIGHBOR_OFFSETS = gradientBuildNeighborOffsets(GRADIENT_MAX_NEIGHBOR_OFFSET);
   let GRADIENT_NEIGHBOR_UNIFORM_DECLARATIONS = GRADIENT_NEIGHBOR_OFFSETS
     .map(({ uniform }) => `uniform sampler2D ${uniform};`)
@@ -310,7 +363,6 @@ void main() {
         return;
       }
       this.dispose(gl);
-      this.gl = gl;
 
       const isWebGL2 = typeof WebGL2RenderingContext !== 'undefined' && gl instanceof WebGL2RenderingContext;
       if (!isWebGL2) {
@@ -324,7 +376,12 @@ void main() {
         this.supported = false;
         return;
       }
+      const limitResult = updateGradientTextureUnitLimit(gl.getParameter(gl.MAX_TEXTURE_IMAGE_UNITS));
+      if (limitResult && limitResult.needsRebuild) {
+        rebuildGradientConfiguration();
+      }
       this.supported = true;
+      this.gl = gl;
 
       const vertexSource = `#version 300 es\n`
         + `precision highp float;\n`
@@ -414,8 +471,8 @@ void main() {
         state.texture = gl.createTexture();
       }
       gl.bindTexture(gl.TEXTURE_2D, state.texture);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, size, size, 0, gl.RGBA, gl.HALF_FLOAT, null);
@@ -618,7 +675,9 @@ void main() {
     configure(options = {}) {
       let changed = false;
       if (options && typeof options.maxNeighborOffset === 'number') {
-        const next = Math.max(0, Math.min(4, Math.round(options.maxNeighborOffset)));
+        const cap = getGradientNeighborOffsetLimit();
+        const requested = Math.max(0, Math.round(options.maxNeighborOffset));
+        const next = Math.max(0, Math.min(cap, requested));
         if (next !== GRADIENT_MAX_NEIGHBOR_OFFSET) {
           GRADIENT_MAX_NEIGHBOR_OFFSET = next;
           changed = true;
@@ -631,6 +690,15 @@ void main() {
     },
     getMaxNeighborOffset() {
       return GRADIENT_MAX_NEIGHBOR_OFFSET;
+    },
+    getNeighborOffsetLimit() {
+      return getGradientNeighborOffsetLimit();
+    },
+    setTextureUnitLimit(limit) {
+      const result = updateGradientTextureUnitLimit(limit);
+      if (result && result.needsRebuild) {
+        rebuildGradientConfiguration();
+      }
     },
     create() {
       const instance = new GradientPreparer();
