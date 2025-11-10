@@ -3,29 +3,15 @@
   const DEBUG = false;
   const HillshadeDebug = window.__MapLibreHillshadeDebug || null;
   const hillshadeDebugEnabled = (() => {
-    const NEGATIVE_FLAGS = ['0', 'false', 'off', 'disable', 'disabled', 'no'];
-    const isDisabledValue = (value) => {
-      if (typeof value !== 'string') return false;
-      return NEGATIVE_FLAGS.includes(value.trim().toLowerCase());
-    };
     try {
       const searchParams = new URLSearchParams(window.location.search || '');
       if (searchParams.has('hillshadeDebug')) {
-        const value = searchParams.get('hillshadeDebug');
-        return !isDisabledValue(value);
-      }
-      if (typeof window.location.hash === 'string' && window.location.hash.includes('hillshadeDebug')) {
-        const hash = window.location.hash;
-        const match = hash.match(/hillshadeDebug=([^&]+)/i);
-        if (match) {
-          return !isDisabledValue(match[1]);
-        }
         return true;
       }
-      return true;
+      return typeof window.location.hash === 'string' && window.location.hash.includes('hillshadeDebug');
     } catch (error) {
       if (DEBUG) console.warn('Failed to evaluate hillshade debug flag', error);
-      return true;
+      return false;
     }
   })();
 
@@ -111,37 +97,10 @@
   }
 
   function collectNativeHillshadeTextures(mapInstance) {
-    if (!mapInstance) {
-      return null;
-    }
-
-    let tiles = getHillshadeDebugTiles(mapInstance, { onlyPrepared: true });
-
-    if (!tiles.length) {
-      const mapStyle = mapInstance && mapInstance.style;
-      if (mapStyle) {
-        let sourceCache = null;
-        try {
-          const sourceCaches = mapStyle.sourceCaches || mapStyle._sourceCaches || {};
-          sourceCache = sourceCaches[TERRAIN_SOURCE_ID] || (typeof mapStyle.getSourceCache === 'function'
-            ? mapStyle.getSourceCache(TERRAIN_SOURCE_ID)
-            : null);
-        } catch (error) {
-          sourceCache = null;
-        }
-        if (sourceCache) {
-          const tileEntries = sourceCache._tiles || sourceCache.tiles || {};
-          tiles = Array.isArray(tileEntries)
-            ? tileEntries.filter(Boolean)
-            : Object.keys(tileEntries).map(key => tileEntries[key]).filter(Boolean);
-        }
-      }
-    }
-
+    const tiles = getHillshadeDebugTiles(mapInstance, { onlyPrepared: true });
     if (!tiles.length) {
       return null;
     }
-
     const cache = new Map();
     for (const tile of tiles) {
       const key = tile && tile.tileID ? tile.tileID.key : null;
@@ -156,271 +115,11 @@
     return cache.size > 0 ? cache : null;
   }
 
-  function initNativeTexturePreview() {
-    if (texturePreviewInitialized) {
-      return;
-    }
-    texturePreviewInitialized = true;
-    texturePreviewContainer = document.getElementById('maplibreTexturePreview');
-    texturePreviewCanvas = document.getElementById('maplibreTexturePreviewCanvas');
-    texturePreviewInfoElement = document.getElementById('maplibreTexturePreviewInfo');
-    if (texturePreviewCanvas) {
-      try {
-        texturePreviewContext = texturePreviewCanvas.getContext('2d');
-      } catch (error) {
-        texturePreviewContext = null;
-      }
-    }
-    const toggle = document.getElementById('showRgTextureToggle');
-    if (toggle) {
-      showNativeRgTexturePreview = toggle.checked;
-      toggle.addEventListener('change', (event) => {
-        showNativeRgTexturePreview = !!event.target.checked;
-        updateNativeTexturePreviewVisibility();
-        texturePreviewLastTileKey = null;
-        if (showNativeRgTexturePreview) {
-          if (debugControlsVisible) {
-            scheduleNativeTexturePreviewUpdate(true);
-          }
-        } else {
-          clearNativeTexturePreview('Aucune texture disponible');
-        }
-      });
-    } else {
-      showNativeRgTexturePreview = false;
-    }
-    updateNativeTexturePreviewVisibility();
-  }
-
-  function updateNativeTexturePreviewVisibility() {
-    if (!texturePreviewContainer) {
-      return;
-    }
-    const shouldShow = showNativeRgTexturePreview && debugControlsVisible;
-    texturePreviewContainer.classList.toggle('active', shouldShow);
-    if (!shouldShow) {
-      return;
-    }
-    if (texturePreviewInfoElement && !texturePreviewInfoElement.textContent) {
-      texturePreviewInfoElement.textContent = 'Lecture de la texture…';
-    }
-  }
-
-  function clearNativeTexturePreview(message) {
-    if (texturePreviewContext && texturePreviewCanvas) {
-      texturePreviewContext.clearRect(0, 0, texturePreviewCanvas.width, texturePreviewCanvas.height);
-    }
-    if (texturePreviewInfoElement) {
-      texturePreviewInfoElement.textContent = message || 'Aucune texture disponible';
-    }
-  }
-
-  function flipImageDataY(data, width, height) {
-    if (!data || width <= 0 || height <= 0) {
-      return;
-    }
-    const rowSize = width * 4;
-    const temp = new Uint8ClampedArray(rowSize);
-    for (let y = 0; y < Math.floor(height / 2); y++) {
-      const topOffset = y * rowSize;
-      const bottomOffset = (height - 1 - y) * rowSize;
-      temp.set(data.subarray(topOffset, topOffset + rowSize));
-      data.copyWithin(topOffset, bottomOffset, bottomOffset + rowSize);
-      data.set(temp, bottomOffset);
-    }
-  }
-
-  function selectNativeGradientTile(mapInstance, gradientCache) {
-    if (!gradientCache || gradientCache.size === 0) {
-      return null;
-    }
-    const tileManager = getTerrainTileManager(mapInstance);
-    if (tileManager && typeof tileManager.getRenderableTiles === 'function') {
-      try {
-        const renderableTiles = tileManager.getRenderableTiles();
-        for (const tile of renderableTiles) {
-          const key = tile && tile.tileID ? tile.tileID.key : null;
-          if (key && gradientCache.has(key)) {
-            return { tile, texture: gradientCache.get(key), tileKey: key };
-          }
-        }
-      } catch (error) {
-        // ignore selection errors
-      }
-    }
-    for (const [tileKey, texture] of gradientCache.entries()) {
-      return { texture, tileKey };
-    }
-    return null;
-  }
-
-  function scheduleNativeTexturePreviewUpdate(force = false) {
-    if (!showNativeRgTexturePreview || !debugControlsVisible) {
-      return;
-    }
-    if (force) {
-      texturePreviewLastUpdateTime = 0;
-    }
-    if (typeof requestAnimationFrame === 'function') {
-      requestAnimationFrame(() => updateNativeTexturePreview(force));
-    } else {
-      updateNativeTexturePreview(force);
-    }
-  }
-
-  function updateNativeTexturePreview(force = false) {
-    if (!showNativeRgTexturePreview || !debugControlsVisible || !map) {
-      return;
-    }
-    if (!texturePreviewInitialized) {
-      initNativeTexturePreview();
-    }
-    if (!texturePreviewCanvas || !texturePreviewInfoElement) {
-      return;
-    }
-
-    const gl = map && map.painter && map.painter.context ? map.painter.context.gl : null;
-    if (!gl) {
-      clearNativeTexturePreview('Contexte WebGL indisponible');
-      return;
-    }
-
-    const gradientCache = collectNativeHillshadeTextures(map);
-    if (!gradientCache || gradientCache.size === 0) {
-      clearNativeTexturePreview('Aucune texture disponible');
-      texturePreviewLastTileKey = null;
-      return;
-    }
-
-    const selection = selectNativeGradientTile(map, gradientCache);
-    if (!selection || !selection.texture) {
-      clearNativeTexturePreview('Aucune texture disponible');
-      texturePreviewLastTileKey = null;
-      return;
-    }
-
-    const tileManager = getTerrainTileManager(map);
-    let tile = selection.tile || null;
-    if (!tile && selection.tileKey && tileManager && typeof tileManager.getTileByID === 'function') {
-      try {
-        tile = tileManager.getTileByID(selection.tileKey) || null;
-      } catch (error) {
-        tile = null;
-      }
-    }
-
-    const tileKey = selection.tileKey || (tile && tile.tileID ? tile.tileID.key : null);
-    const now = (typeof performance !== 'undefined' && performance && performance.now) ? performance.now() : Date.now();
-    if (!force && tileKey && tileKey === texturePreviewLastTileKey && now - texturePreviewLastUpdateTime < 250) {
-      return;
-    }
-
-    let width = TILE_SIZE;
-    let height = TILE_SIZE;
-    let canonical = null;
-    if (tile && tileManager && typeof tileManager.getSourceTile === 'function') {
-      canonical = tile.tileID && tile.tileID.canonical ? tile.tileID.canonical : null;
-      try {
-        const sourceTile = tileManager.getSourceTile(tile.tileID, true);
-        if (sourceTile && sourceTile.dem && Number.isFinite(sourceTile.dem.dim)) {
-          width = sourceTile.dem.dim;
-          height = sourceTile.dem.dim;
-        } else if (sourceTile && Number.isFinite(sourceTile.tileSize)) {
-          width = sourceTile.tileSize;
-          height = sourceTile.tileSize;
-        }
-      } catch (error) {
-        // ignore source tile lookup errors
-      }
-    }
-
-    const texture = selection.texture;
-    const previousTexture = gl.getParameter(gl.TEXTURE_BINDING_2D);
-    gl.bindTexture(gl.TEXTURE_2D, texture);
-    if (typeof gl.getTexLevelParameter === 'function') {
-      try {
-        const texWidth = gl.getTexLevelParameter(gl.TEXTURE_2D, 0, gl.TEXTURE_WIDTH);
-        const texHeight = gl.getTexLevelParameter(gl.TEXTURE_2D, 0, gl.TEXTURE_HEIGHT);
-        if (Number.isFinite(texWidth) && texWidth > 0) {
-          width = texWidth;
-        }
-        if (Number.isFinite(texHeight) && texHeight > 0) {
-          height = texHeight;
-        }
-      } catch (error) {
-        // WebGL1 contexts do not expose getTexLevelParameter
-      }
-    }
-    gl.bindTexture(gl.TEXTURE_2D, previousTexture);
-
-    if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
-      clearNativeTexturePreview('Dimensions de texture invalides');
-      return;
-    }
-
-    const previousFramebuffer = gl.getParameter(gl.FRAMEBUFFER_BINDING);
-    const framebuffer = gl.createFramebuffer();
-    gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
-    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
-    const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
-    if (status !== gl.FRAMEBUFFER_COMPLETE) {
-      gl.bindFramebuffer(gl.FRAMEBUFFER, previousFramebuffer);
-      gl.deleteFramebuffer(framebuffer);
-      clearNativeTexturePreview('Impossible de lire la texture');
-      return;
-    }
-
-    const pixelCount = width * height * 4;
-    const pixels = new Uint8Array(pixelCount);
-    gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
-    gl.bindFramebuffer(gl.FRAMEBUFFER, previousFramebuffer);
-    gl.deleteFramebuffer(framebuffer);
-
-    const clamped = new Uint8ClampedArray(pixels.buffer);
-    flipImageDataY(clamped, width, height);
-
-    if (texturePreviewCanvas.width !== width || texturePreviewCanvas.height !== height) {
-      texturePreviewCanvas.width = width;
-      texturePreviewCanvas.height = height;
-    }
-    if (texturePreviewContext) {
-      const imageData = new ImageData(clamped, width, height);
-      texturePreviewContext.putImageData(imageData, 0, 0);
-    }
-
-    const infoParts = [];
-    if (canonical) {
-      infoParts.push(`z${canonical.z}`);
-      infoParts.push(`x${canonical.x}`);
-      infoParts.push(`y${canonical.y}`);
-    } else if (tileKey) {
-      infoParts.push(tileKey.toString());
-    }
-    infoParts.push(`${width}×${height}`);
-    texturePreviewInfoElement.textContent = infoParts.join(' • ');
-
-    texturePreviewLastTileKey = tileKey || null;
-    texturePreviewLastUpdateTime = now;
-  }
-
-  function handleMapRenderForTexturePreview() {
-    if (!showNativeRgTexturePreview || !debugControlsVisible) {
-      return;
-    }
-    const now = (typeof performance !== 'undefined' && performance && performance.now) ? performance.now() : Date.now();
-    if (now - texturePreviewLastUpdateTime < 250) {
-      return;
-    }
-    updateNativeTexturePreview();
-  }
-
   // Global state variables
   let currentMode = ""; // "hillshade", "normal", "avalanche", "slope", "aspect", "snow", "shadow", or "daylight"
   let hillshadeMode = 'none'; // "none", "native", or "custom"
   let lastCustomMode = 'hillshade';
   const meshCache = new Map();
-  const terrainCustomLayers = new Map();
-  let activeCustomLayerMode = null;
   let snowAltitude = 3000;
   let snowMaxSlope = 55; // in degrees
   let shadowSampleCount = 1;
@@ -437,27 +136,10 @@
   const SHADOW_BUFFER_MINUTES = 30;
   const DEFAULT_DAYLIGHT_BOUNDS = { min: 360, max: 1080 };
   let shadowTimeBounds = { min: 0, max: 1439 };
-  let samplingDistanceBase = 0.35;
-  let samplingDistance = samplingDistanceBase;
-  let usePrecomputedGradients = true;
+  let samplingDistance = 0.35;
   let shadowDateValue = null;
   let shadowTimeValue = null;
   let map;
-  let debugControlsVisible = false;
-  let debugButtonElement = null;
-  let debugControlsElement = null;
-  let neighborOffsetSliderElement = null;
-  let neighborOffsetValueElement = null;
-  let samplingDistanceSliderElement = null;
-  let samplingDistanceValueElement = null;
-  let showNativeRgTexturePreview = true;
-  let texturePreviewContainer = null;
-  let texturePreviewCanvas = null;
-  let texturePreviewContext = null;
-  let texturePreviewInfoElement = null;
-  let texturePreviewLastTileKey = null;
-  let texturePreviewLastUpdateTime = 0;
-  let texturePreviewInitialized = false;
 
   const gradientPreparer = TerrainGradientPreparer.create();
   const EARTH_CIRCUMFERENCE_METERS = 40075016.68557849;
@@ -475,21 +157,6 @@
     const mercatorY = canonical.y + 0.5;
     const n = Math.PI - (2 * Math.PI * mercatorY) / scale;
     return (180 / Math.PI) * Math.atan(Math.sinh(n));
-  }
-
-  function mercatorYToLatitude(y, scale) {
-    const n = Math.PI - (2 * Math.PI * y) / scale;
-    return (180 / Math.PI) * Math.atan(Math.sinh(n));
-  }
-
-  function getTileLatRange(y, z) {
-    const scale = Math.pow(2, Math.max(0, z || 0));
-    if (!Number.isFinite(scale) || scale <= 0) {
-      return { lat1: 0, lat2: 0 };
-    }
-    const lat1 = mercatorYToLatitude(y, scale);
-    const lat2 = mercatorYToLatitude(y + 1, scale);
-    return { lat1, lat2 };
   }
 
   function computeMetersPerPixelForTile(canonical, tileSize) {
@@ -608,33 +275,17 @@
     return fallback.slice();
   }
 
-  function getHillshadePaintProperty(propertyName, fallback) {
-    if (!map || typeof map.getPaintProperty !== 'function') {
-      return fallback;
-    }
-    try {
-      const value = map.getPaintProperty(HILLSHADE_NATIVE_LAYER_ID, propertyName);
-      return value === undefined || value === null ? fallback : value;
-    } catch (error) {
-      if (DEBUG) {
-        console.warn(`Failed to read hillshade paint property "${propertyName}"`, error);
-      }
-      return fallback;
-    }
-  }
-
   function updateHillshadePaintSettingsFromMap() {
     if (!map || typeof map.getLayer !== 'function' || !map.getLayer(HILLSHADE_NATIVE_LAYER_ID)) {
       return;
     }
-
-    const highlight = getHillshadePaintProperty('hillshade-highlight-color', DEFAULT_HILLSHADE_SETTINGS.highlightColor);
-    const shadow = getHillshadePaintProperty('hillshade-shadow-color', DEFAULT_HILLSHADE_SETTINGS.shadowColor);
-    const accent = getHillshadePaintProperty('hillshade-accent-color', DEFAULT_HILLSHADE_SETTINGS.accentColor);
-    const exaggeration = getHillshadePaintProperty('hillshade-exaggeration', DEFAULT_HILLSHADE_SETTINGS.exaggeration);
-    const direction = getHillshadePaintProperty('hillshade-illumination-direction', DEFAULT_HILLSHADE_SETTINGS.illuminationDirection);
-    const anchor = getHillshadePaintProperty('hillshade-illumination-anchor', DEFAULT_HILLSHADE_SETTINGS.illuminationAnchor);
-    const opacity = getHillshadePaintProperty('hillshade-opacity', DEFAULT_HILLSHADE_SETTINGS.opacity);
+    const highlight = map.getPaintProperty(HILLSHADE_NATIVE_LAYER_ID, 'hillshade-highlight-color');
+    const shadow = map.getPaintProperty(HILLSHADE_NATIVE_LAYER_ID, 'hillshade-shadow-color');
+    const accent = map.getPaintProperty(HILLSHADE_NATIVE_LAYER_ID, 'hillshade-accent-color');
+    const exaggeration = map.getPaintProperty(HILLSHADE_NATIVE_LAYER_ID, 'hillshade-exaggeration');
+    const direction = map.getPaintProperty(HILLSHADE_NATIVE_LAYER_ID, 'hillshade-illumination-direction');
+    const anchor = map.getPaintProperty(HILLSHADE_NATIVE_LAYER_ID, 'hillshade-illumination-anchor');
+    const opacity = map.getPaintProperty(HILLSHADE_NATIVE_LAYER_ID, 'hillshade-opacity');
 
     hillshadePaintSettings.highlightColor = toColorArray(highlight, DEFAULT_HILLSHADE_SETTINGS.highlightColor);
     hillshadePaintSettings.shadowColor = toColorArray(shadow, DEFAULT_HILLSHADE_SETTINGS.shadowColor);
@@ -703,10 +354,10 @@
     if (!Number.isFinite(zoom)) {
       return samplingDistance;
     }
-    const base = Math.max(0.05, samplingDistanceBase);
+    const base = 0.35;
     const effectiveZoom = Math.min(Math.max(zoom, 0), DEM_MAX_ZOOM);
     const scaled = base * Math.pow(2, 14 - effectiveZoom);
-    return clamp(scaled, 0.1, 3.0);
+    return clamp(scaled, 0.2, 3.0);
   }
 
   function updateSamplingDistanceForZoom() {
@@ -823,10 +474,7 @@
     patchPrototype(window.maplibregl?.Transform?.prototype);
     patchPrototype(window.maplibregl?.MercatorTransform?.prototype);
   })();
-  // Runtime-configurable neighbor tile sampling parameters.
-  let maxNeighborOffset = (typeof TerrainShaders !== 'undefined' && typeof TerrainShaders.getMaxNeighborOffset === 'function')
-    ? TerrainShaders.getMaxNeighborOffset()
-    : 0;
+  const MAX_NEIGHBOR_OFFSET = 2;
   const NEIGHBOR_NAME_OVERRIDES = {
     '-1,0': 'u_image_left',
     '1,0': 'u_image_right',
@@ -870,103 +518,7 @@
     return offsets;
   }
 
-  let NEIGHBOR_OFFSETS = generateNeighborOffsets(maxNeighborOffset);
-
-  function getSupportedNeighborOffsetLimit() {
-    const limits = [];
-    if (TerrainShaders && typeof TerrainShaders.getNeighborOffsetLimit === 'function') {
-      const shaderLimit = TerrainShaders.getNeighborOffsetLimit();
-      if (Number.isFinite(shaderLimit)) {
-        limits.push(shaderLimit);
-      }
-    }
-    if (TerrainGradientPreparer && typeof TerrainGradientPreparer.getNeighborOffsetLimit === 'function') {
-      const gradientLimit = TerrainGradientPreparer.getNeighborOffsetLimit();
-      if (Number.isFinite(gradientLimit)) {
-        limits.push(gradientLimit);
-      }
-    }
-    if (limits.length === 0) {
-      return 0;
-    }
-    return Math.max(0, Math.min(...limits));
-  }
-
-  function updateNeighborOffsetDisplay() {
-    if (neighborOffsetSliderElement) {
-      neighborOffsetSliderElement.value = String(maxNeighborOffset);
-    }
-    if (neighborOffsetValueElement) {
-      neighborOffsetValueElement.textContent = String(maxNeighborOffset);
-    }
-  }
-
-  function applyNeighborOffsetConfiguration(offset) {
-    const limit = getSupportedNeighborOffsetLimit();
-    const requested = Math.max(0, Math.round(Number(offset) || 0));
-    let target = Math.max(0, Math.min(limit, requested));
-
-    let shaderOffset = target;
-    if (TerrainShaders && typeof TerrainShaders.configure === 'function') {
-      TerrainShaders.configure({ maxNeighborOffset: target });
-      if (typeof TerrainShaders.getMaxNeighborOffset === 'function') {
-        shaderOffset = TerrainShaders.getMaxNeighborOffset();
-      }
-    }
-
-    let gradientOffset = target;
-    if (TerrainGradientPreparer && typeof TerrainGradientPreparer.configure === 'function') {
-      TerrainGradientPreparer.configure({ maxNeighborOffset: target });
-      if (typeof TerrainGradientPreparer.getMaxNeighborOffset === 'function') {
-        gradientOffset = TerrainGradientPreparer.getMaxNeighborOffset();
-      }
-    }
-
-    const finalOffset = Math.max(0, Math.min(target, shaderOffset, gradientOffset));
-
-    if (TerrainShaders && typeof TerrainShaders.configure === 'function' && shaderOffset !== finalOffset) {
-      TerrainShaders.configure({ maxNeighborOffset: finalOffset });
-    }
-    if (TerrainGradientPreparer && typeof TerrainGradientPreparer.configure === 'function' && gradientOffset !== finalOffset) {
-      TerrainGradientPreparer.configure({ maxNeighborOffset: finalOffset });
-    }
-
-    maxNeighborOffset = finalOffset;
-    NEIGHBOR_OFFSETS = generateNeighborOffsets(maxNeighborOffset);
-  }
-
-  function setNeighborSamplingRadius(offset) {
-    const limit = getSupportedNeighborOffsetLimit();
-    const target = Math.max(0, Math.min(limit, Math.round(Number(offset) || 0)));
-    if (target === maxNeighborOffset) {
-      updateNeighborOffsetDisplay();
-      return false;
-    }
-    applyNeighborOffsetConfiguration(target);
-    updateNeighborOffsetDisplay();
-    forEachTerrainLayer(layer => {
-      if (layer && typeof layer.resetState === 'function') {
-        layer.resetState({ clearShaders: true });
-      }
-    });
-    gradientPreparer.invalidateAll();
-    return true;
-  }
-
-  function refreshNeighborSliderLimit() {
-    const limit = getSupportedNeighborOffsetLimit();
-    if (neighborOffsetSliderElement) {
-      neighborOffsetSliderElement.max = String(limit);
-    }
-    if (maxNeighborOffset > limit) {
-      setNeighborSamplingRadius(limit);
-    } else {
-      updateNeighborOffsetDisplay();
-    }
-  }
-
-  applyNeighborOffsetConfiguration(maxNeighborOffset);
-  updateNeighborOffsetDisplay();
+  const NEIGHBOR_OFFSETS = generateNeighborOffsets(MAX_NEIGHBOR_OFFSET);
 
   function getTileCacheKey(tileID) {
     if (!tileID || !tileID.canonical) return '';
@@ -1401,79 +953,8 @@
     if (shadowControls) {
       shadowControls.style.display = (isCustomActive && (currentMode === "shadow" || currentMode === "daylight")) ? "flex" : "none";
     }
-    if (debugButtonElement) {
-      debugButtonElement.classList.toggle('active', debugControlsVisible);
-    }
-    if (debugControlsElement) {
-      debugControlsElement.style.display = debugControlsVisible ? 'flex' : 'none';
-    }
-    updateNativeTexturePreviewVisibility();
   }
-
-  function setDebugControlsVisible(visible) {
-    debugControlsVisible = !!visible;
-    updateButtons();
-    if (debugControlsVisible && showNativeRgTexturePreview) {
-      scheduleNativeTexturePreviewUpdate(true);
-    }
-  }
-
-  debugButtonElement = document.getElementById('debugBtn');
-  debugControlsElement = document.getElementById('debugControls');
-  if (debugControlsElement) {
-    debugControlsElement.style.display = 'none';
-  }
-  initNativeTexturePreview();
-  if (debugButtonElement) {
-    debugButtonElement.addEventListener('click', () => {
-      setDebugControlsVisible(!debugControlsVisible);
-    });
-  }
-
-  neighborOffsetSliderElement = document.getElementById('neighborOffsetSlider');
-  neighborOffsetValueElement = document.getElementById('neighborOffsetValue');
-  if (neighborOffsetSliderElement) {
-    refreshNeighborSliderLimit();
-    neighborOffsetSliderElement.addEventListener('input', (e) => {
-      const changed = setNeighborSamplingRadius(Number(e.target.value));
-      if (changed && map) {
-        map.triggerRepaint();
-      }
-    });
-  }
-  if (!neighborOffsetSliderElement || !neighborOffsetValueElement) {
-    updateNeighborOffsetDisplay();
-  }
-
-  samplingDistanceSliderElement = document.getElementById('samplingDistanceSlider');
-  samplingDistanceValueElement = document.getElementById('samplingDistanceValue');
-  if (samplingDistanceSliderElement && samplingDistanceValueElement) {
-    samplingDistanceSliderElement.value = samplingDistanceBase.toFixed(2);
-    samplingDistanceValueElement.textContent = samplingDistanceBase.toFixed(2);
-    samplingDistanceSliderElement.addEventListener('input', (e) => {
-      const next = Math.max(0.05, parseFloat(e.target.value));
-      if (!Number.isFinite(next)) {
-        return;
-      }
-      samplingDistanceBase = next;
-      samplingDistanceValueElement.textContent = samplingDistanceBase.toFixed(2);
-      updateSamplingDistanceForZoom();
-      gradientPreparer.invalidateAll();
-      if (map) map.triggerRepaint();
-    });
-  }
-
-  const precomputedGradientToggle = document.getElementById('precomputedGradientToggle');
-  if (precomputedGradientToggle) {
-    precomputedGradientToggle.checked = usePrecomputedGradients;
-    precomputedGradientToggle.addEventListener('change', (e) => {
-      usePrecomputedGradients = !!e.target.checked;
-      if (map) map.triggerRepaint();
-    });
-  }
-
-  setDebugControlsVisible(false);
-
+  
   // Slider event listeners
   document.getElementById('snowAltitudeSlider').addEventListener('input', (e) => {
     snowAltitude = parseFloat(e.target.value);
@@ -1500,29 +981,17 @@
     return true;
   }
 
-  function ensureCustomTerrainLayer(mode) {
-    if (!canModifyStyle()) return null;
-    const layerId = getCustomLayerId(mode);
-    let layer = terrainCustomLayers.get(mode);
-    if (!layer) {
-      layer = createTerrainCustomLayer(mode);
-      terrainCustomLayers.set(mode, layer);
-    }
-    if (!map.getLayer(layerId)) {
-      map.addLayer(layer);
-    }
-    return layer;
+  function ensureCustomTerrainLayer() {
+    if (!canModifyStyle()) return;
+    if (map.getLayer('terrain-normal')) return;
+    terrainNormalLayer.frameCount = 0;
+    map.addLayer(terrainNormalLayer);
   }
 
-  function removeCustomTerrainLayer(mode) {
+  function removeCustomTerrainLayer() {
     if (!canModifyStyle()) return;
-    const layerId = getCustomLayerId(mode);
-    if (map.getLayer(layerId)) {
-      map.removeLayer(layerId);
-    }
-    const layer = terrainCustomLayers.get(mode);
-    if (layer && typeof layer.resetState === 'function') {
-      layer.resetState();
+    if (map.getLayer('terrain-normal')) {
+      map.removeLayer('terrain-normal');
     }
   }
 
@@ -1560,16 +1029,9 @@
     hillshadeMode = 'custom';
     if (styleReady) {
       removeNativeHillshadeLayer();
-      if (activeCustomLayerMode && activeCustomLayerMode !== nextMode) {
-        removeCustomTerrainLayer(activeCustomLayerMode);
-      }
-      const layer = ensureCustomTerrainLayer(nextMode);
-      if (layer && typeof layer.resetState === 'function') {
-        layer.resetState({ clearShaders: true });
-      }
+      ensureCustomTerrainLayer();
     }
-    gradientPreparer.invalidateAll();
-    activeCustomLayerMode = nextMode;
+    terrainNormalLayer.shaderMap.clear();
     updateButtons();
     if (styleReady && map) {
       map.triggerRepaint();
@@ -1578,15 +1040,14 @@
 
   function disableCustomHillshade() {
     const styleReady = canModifyStyle();
-    if (styleReady && activeCustomLayerMode) {
-      removeCustomTerrainLayer(activeCustomLayerMode);
+    if (styleReady) {
+      removeCustomTerrainLayer();
     }
-    activeCustomLayerMode = null;
-    gradientPreparer.invalidateAll();
     if (hillshadeMode === 'custom') {
       hillshadeMode = 'none';
     }
     currentMode = '';
+    terrainNormalLayer.shaderMap.clear();
     updateButtons();
     if (styleReady && map) {
       map.triggerRepaint();
@@ -1597,11 +1058,7 @@
     const styleReady = canModifyStyle();
     if (enabled) {
       if (styleReady) {
-        if (activeCustomLayerMode) {
-          removeCustomTerrainLayer(activeCustomLayerMode);
-        }
-        activeCustomLayerMode = null;
-        gradientPreparer.invalidateAll();
+        removeCustomTerrainLayer();
         removeNativeHillshadeLayer();
         ensureNativeHillshadeLayer();
       }
@@ -1688,20 +1145,6 @@
   }
 
   // Minimal getTileMesh: create or return cached mesh for a tile
-  function getCustomLayerId(mode) {
-    return `terrain-${mode}`;
-  }
-
-  function forEachTerrainLayer(callback) {
-    terrainCustomLayers.forEach((layer, mode) => {
-      try {
-        callback(layer, mode);
-      } catch (error) {
-        if (DEBUG) console.warn('Terrain layer callback failed', error);
-      }
-    });
-  }
-
   function getTileMesh(gl, tile) {
     const key = `mesh_${tile.tileID.key}`;
     if (meshCache.has(key)) return meshCache.get(key);
@@ -1720,608 +1163,500 @@
     return mesh;
   }
   
-  function createTerrainCustomLayer(mode) {
-    return {
-      id: getCustomLayerId(mode),
-      type: 'custom',
-      renderingMode: '3d',
-      mode,
-      shaderMap: new Map(),
-      frameCount: 0,
-      map: null,
-      gl: null,
-      currentFrameState: null,
-      isFramePrepared: false,
-      needsRepaint: false,
+  // Define the custom terrain layer.
+  const terrainNormalLayer = {
+    id: 'terrain-normal',
+    type: 'custom',
+    renderingMode: '3d',
+    shaderMap: new Map(),
+    frameCount: 0,
+    
+    onAdd(mapInstance, gl) {
+      this.map = mapInstance;
+      this.gl = gl;
+      this.frameCount = 0;
+      gradientPreparer.initialize(gl);
+    },
+  
+    getShader(gl, shaderDescription) {
+      const variantName = shaderDescription.variantName + "_" + currentMode;
+      if (this.shaderMap.has(variantName)) return this.shaderMap.get(variantName);
+      
+      // Build the shader sources using our TerrainShaders helper.
+      const vertexSource = TerrainShaders.getVertexShader(shaderDescription, EXTENT);
+      const fragmentSource = TerrainShaders.getFragmentShader(currentMode);
+      
+      const program = gl.createProgram();
+      const vertexShader = gl.createShader(gl.VERTEX_SHADER);
+      const fragmentShader = gl.createShader(gl.FRAGMENT_SHADER);
+      gl.shaderSource(vertexShader, vertexSource);
+      gl.compileShader(vertexShader);
+      if (!gl.getShaderParameter(vertexShader, gl.COMPILE_STATUS)) {
+        console.error("Vertex shader error:", gl.getShaderInfoLog(vertexShader));
+        return null;
+      }
+      gl.shaderSource(fragmentShader, fragmentSource);
+      gl.compileShader(fragmentShader);
+      if (!gl.getShaderParameter(fragmentShader, gl.COMPILE_STATUS)) {
+        console.error("Fragment shader error:", gl.getShaderInfoLog(fragmentShader));
+        return null;
+      }
+      gl.attachShader(program, vertexShader);
+      gl.attachShader(program, fragmentShader);
+      gl.linkProgram(program);
+      if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+        console.error("Program link error:", gl.getProgramInfoLog(program));
+        return null;
+      }
+      const neighborUniforms = NEIGHBOR_OFFSETS.map(offset => offset.uniform);
 
-      resetState(options = {}) {
-        if (options.clearShaders) {
-          this.shaderMap.clear();
-        }
-        this.frameCount = 0;
-        this.currentFrameState = null;
-        this.isFramePrepared = false;
-        this.needsRepaint = false;
-      },
-
-      onAdd(mapInstance, gl) {
-        this.map = mapInstance;
-        this.gl = gl;
-        this.resetState();
-        gradientPreparer.initialize(gl);
-        if (gl && typeof gl.getParameter === 'function') {
-          const maxTextureUnits = gl.getParameter(gl.MAX_TEXTURE_IMAGE_UNITS);
-          if (TerrainShaders && typeof TerrainShaders.setTextureUnitLimit === 'function') {
-            TerrainShaders.setTextureUnitLimit(maxTextureUnits);
-          }
-          if (TerrainGradientPreparer && typeof TerrainGradientPreparer.setTextureUnitLimit === 'function') {
-            TerrainGradientPreparer.setTextureUnitLimit(maxTextureUnits);
-          }
-          refreshNeighborSliderLimit();
-        }
-      },
-
-      onRemove() {
-        this.resetState();
-        this.map = null;
-        this.gl = null;
-      },
-
-      getShader(gl, shaderDescription) {
-        const variantName = `${shaderDescription.variantName}_${this.mode}`;
-        if (this.shaderMap.has(variantName)) {
-          return this.shaderMap.get(variantName);
-        }
-
-        const vertexSource = TerrainShaders.getVertexShader(shaderDescription, EXTENT);
-        const fragmentSource = TerrainShaders.getFragmentShader(this.mode);
-
-        const program = gl.createProgram();
-        const vertexShader = gl.createShader(gl.VERTEX_SHADER);
-        const fragmentShader = gl.createShader(gl.FRAGMENT_SHADER);
-        gl.shaderSource(vertexShader, vertexSource);
-        gl.compileShader(vertexShader);
-        if (!gl.getShaderParameter(vertexShader, gl.COMPILE_STATUS)) {
-          console.error('Vertex shader error:', gl.getShaderInfoLog(vertexShader));
-          return null;
-        }
-        gl.shaderSource(fragmentShader, fragmentSource);
-        gl.compileShader(fragmentShader);
-        if (!gl.getShaderParameter(fragmentShader, gl.COMPILE_STATUS)) {
-          console.error('Fragment shader error:', gl.getShaderInfoLog(fragmentShader));
-          return null;
-        }
-        gl.attachShader(program, vertexShader);
-        gl.attachShader(program, fragmentShader);
-        gl.linkProgram(program);
-        if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-          console.error('Program link error:', gl.getProgramInfoLog(program));
-          return null;
-        }
-
-        const neighborUniforms = NEIGHBOR_OFFSETS.map(offset => offset.uniform);
-        const uniforms = [
-          'u_matrix',
-          'u_projection_matrix',
-          'u_projection_clipping_plane',
-          'u_projection_transition',
-          'u_projection_tile_mercator_coords',
-          'u_projection_fallback_matrix',
-          'u_image',
-          ...neighborUniforms,
-          'u_gradient',
-          'u_usePrecomputedGradient',
-          'u_dimension',
-          'u_original_vertex_count',
-          'u_terrain_unpack',
-          'u_terrain_exaggeration',
-          'u_zoom',
-          'u_metersPerPixel',
-          'u_latrange',
-          'u_lightDir',
-          'u_shadowsEnabled',
-          'u_samplingDistance'
-        ];
-
-        if (this.mode === 'hillshade') {
+      const uniforms = [
+        'u_matrix',
+        'u_projection_matrix',
+        'u_projection_clipping_plane',
+        'u_projection_transition',
+        'u_projection_tile_mercator_coords',
+        'u_projection_fallback_matrix',
+        'u_image',
+        ...neighborUniforms,
+        'u_gradient',
+        'u_usePrecomputedGradient',
+        'u_dimension',
+        'u_original_vertex_count',
+        'u_terrain_unpack',
+        'u_terrain_exaggeration',
+        'u_zoom',
+        'u_metersPerPixel',
+        'u_latrange',
+        'u_lightDir',
+        'u_shadowsEnabled',
+        'u_samplingDistance'
+      ];
+      if (currentMode === "hillshade") {
+        uniforms.push(
+          'u_hillshade_highlight_color',
+          'u_hillshade_shadow_color',
+          'u_hillshade_accent_color',
+          'u_hillshade_exaggeration',
+          'u_hillshade_light_dir',
+          'u_hillshade_light_altitude',
+          'u_hillshade_opacity'
+        );
+      }
+      if (currentMode === "snow") {
+        uniforms.push('u_snow_altitude', 'u_snow_maxSlope');
+      }
+      if (currentMode === "shadow" || currentMode === "daylight") {
+        uniforms.push(
+          'u_shadowSampleCount',
+          'u_shadowBlurRadius',
+          'u_shadowMaxDistance',
+          'u_shadowVisibilityThreshold',
+          'u_shadowEdgeSoftness',
+          'u_shadowMaxOpacity',
+          'u_shadowRayStepMultiplier'
+        );
+        if (currentMode === "shadow") {
           uniforms.push(
-            'u_hillshade_highlight_color',
-            'u_hillshade_shadow_color',
-            'u_hillshade_accent_color',
-            'u_hillshade_exaggeration',
-            'u_hillshade_light_dir',
-            'u_hillshade_light_altitude',
-            'u_hillshade_opacity'
+            'u_sunDirection',
+            'u_sunAltitude',
+            'u_sunWarmColor',
+            'u_sunWarmIntensity'
+          );
+        } else {
+          uniforms.push(
+            'u_daylightSampleCount',
+            'u_daylightSunDir[0]',
+            'u_daylightSunAltitude[0]',
+            'u_daylightSampleWeight[0]',
+            'u_daylightSampleTime[0]'
           );
         }
-        if (this.mode === 'snow') {
-          uniforms.push('u_snow_altitude', 'u_snow_maxSlope');
+      }
+      const locations = {};
+      uniforms.forEach(u => { locations[u] = gl.getUniformLocation(program, u); });
+      const attributes = { a_pos: gl.getAttribLocation(program, 'a_pos') };
+      const result = { program, locations, attributes };
+      this.shaderMap.set(variantName, result);
+      return result;
+    },
+  
+    renderTiles(gl, shader, renderableTiles, terrainInterface, tileManager, terrainDataCache, textureCache, nativeGradientCache = null) {
+      if (!terrainInterface || !tileManager) return;
+      let renderedCount = 0;
+      let skippedCount = 0;
+
+      const getNeighborTexture = (tileID, dx, dy, fallbackTexture) => {
+        const key = getNeighborCacheKey(tileID, dx, dy);
+        if (!key) return fallbackTexture;
+        return textureCache.has(key) ? textureCache.get(key) : fallbackTexture;
+      };
+
+      const bindTexture = (texture, unit, uniformName) => {
+        const location = shader.locations[uniformName];
+        if (location == null || !texture) return;
+        gl.activeTexture(gl.TEXTURE0 + unit);
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        gl.uniform1i(location, unit);
+      };
+
+      const setVec3Uniform = (uniformName, values) => {
+        const location = shader.locations[uniformName];
+        if (!location || !values || values.length < 3) return;
+        gl.uniform3f(location, values[0], values[1], values[2]);
+      };
+
+      const setVec2Uniform = (uniformName, values) => {
+        const location = shader.locations[uniformName];
+        if (!location || !values || values.length < 2) return;
+        gl.uniform2f(location, values[0], values[1]);
+      };
+
+      const setFloatUniform = (uniformName, value) => {
+        const location = shader.locations[uniformName];
+        if (!location || !Number.isFinite(value)) return;
+        gl.uniform1f(location, value);
+      };
+
+      const sunParams = currentMode === "shadow" ? computeSunParameters(this.map) : null;
+      const daylightParams = currentMode === "daylight" ? computeDaylightParameters(this.map) : null;
+      const gradientTextureUnit = NEIGHBOR_OFFSETS.length + 1;
+      const hillshadeUniforms = currentMode === "hillshade"
+        ? getHillshadeUniformsForCustomLayer(this.map)
+        : null;
+
+      if (hillshadeUniforms) {
+        setVec3Uniform('u_hillshade_highlight_color', hillshadeUniforms.highlightColor);
+        setVec3Uniform('u_hillshade_shadow_color', hillshadeUniforms.shadowColor);
+        setVec3Uniform('u_hillshade_accent_color', hillshadeUniforms.accentColor);
+        setFloatUniform('u_hillshade_exaggeration', hillshadeUniforms.exaggeration);
+        setVec2Uniform('u_hillshade_light_dir', hillshadeUniforms.lightDir);
+        setFloatUniform('u_hillshade_light_altitude', hillshadeUniforms.lightAltitude);
+        setFloatUniform('u_hillshade_opacity', hillshadeUniforms.opacity);
+      }
+
+      for (const tile of renderableTiles) {
+        const sourceTile = tileManager.getSourceTile(tile.tileID, true);
+        if (!sourceTile || sourceTile.tileID.key !== tile.tileID.key) {
+          if (DEBUG) console.log(`Skipping tile ${tile.tileID.key}: source tile mismatch or overscaled`);
+          skippedCount++;
+          continue;
         }
-        if (this.mode === 'shadow' || this.mode === 'daylight') {
-          uniforms.push(
-            'u_shadowSampleCount',
-            'u_shadowBlurRadius',
-            'u_shadowMaxDistance',
-            'u_shadowVisibilityThreshold',
-            'u_shadowEdgeSoftness',
-            'u_shadowMaxOpacity',
-            'u_shadowRayStepMultiplier'
-          );
-          if (this.mode === 'shadow') {
-            uniforms.push(
-              'u_sunDirection',
-              'u_sunAltitude',
-              'u_sunWarmColor',
-              'u_sunWarmIntensity'
-            );
+
+        let terrainData = terrainDataCache.get(tile.tileID.key) || null;
+        if (!terrainData && terrainInterface && terrainInterface.getTerrainData) {
+          terrainData = terrainInterface.getTerrainData(tile.tileID);
+        }
+
+        if (!terrainData || !terrainData.texture) {
+          if (DEBUG) console.log(`Skipping tile ${tile.tileID.key}: no terrain data or texture`);
+          skippedCount++;
+          continue;
+        }
+
+        if (terrainData.fallback) {
+          if (DEBUG) console.log(`Skipping tile ${tile.tileID.key}: fallback tile`);
+          skippedCount++;
+          continue;
+        }
+
+        const mesh = getTileMesh(gl, tile);
+        if (!mesh) continue;
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, mesh.vbo);
+        gl.enableVertexAttribArray(shader.attributes.a_pos);
+        gl.vertexAttribPointer(shader.attributes.a_pos, 2, gl.SHORT, false, 4, 0);
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, mesh.ibo);
+
+        const canonical = tile.tileID.canonical;
+        const tileSize = sourceTile.dem && sourceTile.dem.dim ? sourceTile.dem.dim : TILE_SIZE;
+
+        if (terrainData.texture && shader.locations.u_image != null) {
+          bindTexture(terrainData.texture, 0, 'u_image');
+          if (currentMode === "shadow" || currentMode === "daylight") {
+            NEIGHBOR_OFFSETS.forEach((neighbor, index) => {
+              const texture = getNeighborTexture(
+                tile.tileID,
+                neighbor.dx,
+                neighbor.dy,
+                terrainData.texture
+              );
+              bindTexture(texture, index + 1, neighbor.uniform);
+            });
           }
-          if (this.mode === 'daylight') {
-            uniforms.push(
-              'u_daylight_minAltitude',
-              'u_daylight_sampleCount',
-              'u_daylight_samples',
-              'u_daylight_sampleTimes',
-              'u_daylight_visibilityThreshold',
-              'u_daylight_sunColor',
-              'u_daylight_horizonDarkening',
-              'u_daylight_shadowColor'
-            );
-          }
         }
 
-        const locations = uniforms.reduce((acc, uniform) => {
-          acc[uniform] = gl.getUniformLocation(program, uniform);
-          return acc;
-        }, {});
-        const attributes = { a_pos: gl.getAttribLocation(program, 'a_pos') };
-        const result = { program, locations, attributes };
-        this.shaderMap.set(variantName, result);
-        return result;
-      },
-
-      prepareFrame(gl, matrix) {
-        this.currentFrameState = null;
-        this.isFramePrepared = false;
-        this.needsRepaint = false;
-
-        if (!this.map) {
-          return;
+        const tileKey = tile.tileID ? tile.tileID.key : null;
+        let gradientTexture = null;
+        if (tileKey && nativeGradientCache && nativeGradientCache.has(tileKey)) {
+          gradientTexture = nativeGradientCache.get(tileKey);
+        }
+        if (!gradientTexture) {
+          gradientTexture = gradientPreparer.getTexture(tile.tileID.key);
+        }
+        const hasGradient = !!gradientTexture;
+        if (shader.locations.u_usePrecomputedGradient != null) {
+          gl.uniform1i(shader.locations.u_usePrecomputedGradient, hasGradient ? 1 : 0);
+        }
+        if (hasGradient && gradientTexture) {
+          bindTexture(gradientTexture, gradientTextureUnit, 'u_gradient');
+        } else if (shader.locations.u_gradient != null) {
+          gl.activeTexture(gl.TEXTURE0 + gradientTextureUnit);
+          gl.bindTexture(gl.TEXTURE_2D, null);
         }
 
-        const terrainInterface = getTerrainInterface(this.map);
-        const tileManager = terrainInterface ? terrainInterface.tileManager : null;
-        if (!tileManager) {
-          if (DEBUG) console.warn('Tile manager not available; skipping custom terrain prepare');
-          this.needsRepaint = true;
-          return;
-        }
-
-        const terrainSpec = typeof this.map.getTerrain === 'function'
-          ? this.map.getTerrain()
-          : null;
-        const needsManualTileUpdate = (!terrainSpec || terrainSpec.exaggeration === 0)
-          && typeof tileManager.update === 'function';
-        if (needsManualTileUpdate) {
-          try {
-            tileManager.update(this.map.transform, terrainInterface);
-          } catch (error) {
-            if (DEBUG) console.error('Failed to update terrain tiles while terrain is flattened', error);
-          }
-        }
-
-        if (tileManager.anyTilesAfterTime(Date.now() - 100)) {
-          this.needsRepaint = true;
-          return;
-        }
-
-        const renderableTiles = tileManager.getRenderableTiles();
-        if (renderableTiles.length === 0) {
-          this.needsRepaint = true;
-          return;
-        }
-
-        const terrainDataCache = new Map();
-        const textureCache = new Map();
-        for (const tile of renderableTiles) {
-          const sourceTile = tileManager.getSourceTile(tile.tileID, true);
-          if (!sourceTile || sourceTile.tileID.key !== tile.tileID.key) continue;
-          const terrainData = terrainInterface && terrainInterface.getTerrainData
-            ? terrainInterface.getTerrainData(tile.tileID)
-            : null;
-          if (!terrainData || !terrainData.texture || terrainData.fallback) continue;
-          terrainDataCache.set(tile.tileID.key, terrainData);
-          textureCache.set(getTileCacheKey(tile.tileID), terrainData.texture);
-        }
-
-        if (terrainDataCache.size === 0) {
-          this.needsRepaint = true;
-          return;
-        }
-
-        updateSamplingDistanceForZoom();
-        const nativeGradientCache = collectNativeHillshadeTextures(this.map);
-
-        gradientPreparer.prepare({
-          gl,
-          renderableTiles,
-          tileManager,
-          terrainInterface,
-          terrainDataCache,
-          textureCache,
-          neighborOffsets: NEIGHBOR_OFFSETS,
-          samplingDistance
+        const projectionData = this.map.transform.getProjectionData({
+          overscaledTileID: tile.tileID,
+          applyGlobeMatrix: true
         });
 
-        const shader = this.getShader(gl, matrix.shaderData);
-        if (!shader) {
-          this.needsRepaint = true;
-          return;
-        }
-
-        this.currentFrameState = {
-          renderableTiles,
-          terrainInterface,
-          tileManager,
-          terrainDataCache,
-          textureCache,
-          nativeGradientCache,
-          shader
-        };
-        this.isFramePrepared = true;
-      },
-
-      renderTiles(gl, mode, state) {
-        const { renderableTiles, terrainInterface, tileManager, terrainDataCache, textureCache, nativeGradientCache, shader } = state;
-        if (!terrainInterface || !tileManager || !shader) return;
-
-        let renderedCount = 0;
-        let skippedCount = 0;
-
-        const getNeighborTexture = (tileID, dx, dy, fallbackTexture) => {
-          const key = getNeighborCacheKey(tileID, dx, dy);
-          if (!key) return fallbackTexture;
-          return textureCache.has(key) ? textureCache.get(key) : fallbackTexture;
-        };
-
-        const bindTexture = (texture, unit, uniformName, filter = gl.LINEAR) => {
-          const location = shader.locations[uniformName];
-          if (location == null || !texture) return;
-          gl.activeTexture(gl.TEXTURE0 + unit);
-          gl.bindTexture(gl.TEXTURE_2D, texture);
-          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
-          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
-          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-          gl.uniform1i(location, unit);
-        };
-
-        const setVec3Uniform = (uniformName, values) => {
-          const location = shader.locations[uniformName];
-          if (!location || !values || values.length < 3) return;
-          gl.uniform3f(location, values[0], values[1], values[2]);
-        };
-
-        const setVec2Uniform = (uniformName, values) => {
-          const location = shader.locations[uniformName];
-          if (!location || !values || values.length < 2) return;
-          gl.uniform2f(location, values[0], values[1]);
-        };
-
-        const setFloatUniform = (uniformName, value) => {
-          const location = shader.locations[uniformName];
-          if (!location || !Number.isFinite(value)) return;
-          gl.uniform1f(location, value);
-        };
-
-        const sunParams = mode === 'shadow' ? computeSunParameters(this.map) : null;
-        const daylightParams = mode === 'daylight' ? computeDaylightParameters(this.map) : null;
-        const gradientTextureUnit = NEIGHBOR_OFFSETS.length + 1;
-        const hillshadeUniforms = mode === 'hillshade'
-          ? getHillshadeUniformsForCustomLayer(this.map)
-          : null;
-
-        if (hillshadeUniforms) {
-          setVec3Uniform('u_hillshade_highlight_color', hillshadeUniforms.highlightColor);
-          setVec3Uniform('u_hillshade_shadow_color', hillshadeUniforms.shadowColor);
-          setVec3Uniform('u_hillshade_accent_color', hillshadeUniforms.accentColor);
-          setFloatUniform('u_hillshade_exaggeration', hillshadeUniforms.exaggeration);
-          setVec2Uniform('u_hillshade_light_dir', hillshadeUniforms.lightDir);
-          setFloatUniform('u_hillshade_light_altitude', hillshadeUniforms.lightAltitude);
-          setFloatUniform('u_hillshade_opacity', hillshadeUniforms.opacity);
-        }
-
-        for (const tile of renderableTiles) {
-          const sourceTile = tileManager.getSourceTile(tile.tileID, true);
-          if (!sourceTile || sourceTile.tileID.key !== tile.tileID.key) {
-            if (DEBUG) console.log(`Skipping tile ${tile.tileID.key}: source tile mismatch or overscaled`);
-            skippedCount++;
-            continue;
-          }
-
-          let terrainData = terrainDataCache.get(tile.tileID.key) || null;
-          if (!terrainData && terrainInterface && terrainInterface.getTerrainData) {
-            terrainData = terrainInterface.getTerrainData(tile.tileID);
-          }
-
-          if (!terrainData || !terrainData.texture) {
-            if (DEBUG) console.log(`Skipping tile ${tile.tileID.key}: no terrain data or texture`);
-            skippedCount++;
-            continue;
-          }
-
-          if (terrainData.fallback) {
-            if (DEBUG) console.log(`Skipping tile ${tile.tileID.key}: fallback tile`);
-            skippedCount++;
-            continue;
-          }
-
-          const mesh = getTileMesh(gl, tile);
-          if (!mesh) continue;
-
-          gl.bindBuffer(gl.ARRAY_BUFFER, mesh.vbo);
-          gl.enableVertexAttribArray(shader.attributes.a_pos);
-          gl.vertexAttribPointer(shader.attributes.a_pos, 2, gl.SHORT, false, 4, 0);
-          gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, mesh.ibo);
-
-          const canonical = tile.tileID.canonical;
-          const tileSize = sourceTile.dem && sourceTile.dem.dim ? sourceTile.dem.dim : TILE_SIZE;
-
-          if (terrainData.texture && shader.locations.u_image != null) {
-            bindTexture(terrainData.texture, 0, 'u_image');
-            if (NEIGHBOR_OFFSETS.length > 0) {
-              NEIGHBOR_OFFSETS.forEach((neighbor, index) => {
-                const texture = getNeighborTexture(
-                  tile.tileID,
-                  neighbor.dx,
-                  neighbor.dy,
-                  terrainData.texture
-                );
-                bindTexture(texture, index + 1, neighbor.uniform);
-              });
-            }
-          }
-
-          const tileKey = tile.tileID ? tile.tileID.key : null;
-          let gradientTexture = null;
-          if (tileKey && nativeGradientCache && nativeGradientCache.has(tileKey)) {
-            gradientTexture = nativeGradientCache.get(tileKey);
-          }
-          if (!gradientTexture) {
-            gradientTexture = gradientPreparer.getTexture(tile.tileID.key);
-          }
-          const gradientEnabled = usePrecomputedGradients && !!gradientTexture;
-          if (shader.locations.u_usePrecomputedGradient != null) {
-            gl.uniform1i(shader.locations.u_usePrecomputedGradient, gradientEnabled ? 1 : 0);
-          }
-          if (gradientEnabled && gradientTexture) {
-            bindTexture(gradientTexture, gradientTextureUnit, 'u_gradient', gl.NEAREST);
-          } else if (shader.locations.u_gradient != null) {
-            gl.activeTexture(gl.TEXTURE0 + gradientTextureUnit);
-            gl.bindTexture(gl.TEXTURE_2D, null);
-          }
-
-          const projectionData = this.map.transform.getProjectionData({
-            overscaledTileID: tile.tileID,
-            applyGlobeMatrix: true
-          });
-
-          if (shader.locations.u_projection_tile_mercator_coords != null) {
-            gl.uniform4f(
-              shader.locations.u_projection_tile_mercator_coords,
-              ...projectionData.tileMercatorCoords
-            );
-          }
-          if (shader.locations.u_projection_clipping_plane != null) {
-            gl.uniform4f(shader.locations.u_projection_clipping_plane, ...projectionData.clippingPlane);
-          }
-          if (shader.locations.u_projection_transition != null) {
-            gl.uniform1f(shader.locations.u_projection_transition, projectionData.projectionTransition);
-          }
-          if (shader.locations.u_projection_matrix != null) {
-            gl.uniformMatrix4fv(shader.locations.u_projection_matrix, false, projectionData.mainMatrix);
-          }
-          if (shader.locations.u_projection_fallback_matrix != null) {
-            gl.uniformMatrix4fv(shader.locations.u_projection_fallback_matrix, false, projectionData.fallbackMatrix);
-          }
-          gl.uniform2f(shader.locations.u_dimension, tileSize, tileSize);
-          gl.uniform1i(shader.locations.u_original_vertex_count, mesh.originalVertexCount);
-          gl.uniform1f(shader.locations.u_terrain_exaggeration, 1.0);
+        if (shader.locations.u_projection_tile_mercator_coords != null) {
           gl.uniform4f(
-            shader.locations.u_terrain_unpack,
-            256.0,
-            1.0,
-            1.0 / 256.0,
-            32768.0
+            shader.locations.u_projection_tile_mercator_coords,
+            ...projectionData.tileMercatorCoords
           );
+        }
+        if (shader.locations.u_projection_clipping_plane != null) {
+          gl.uniform4f(shader.locations.u_projection_clipping_plane, ...projectionData.clippingPlane);
+        }
+        if (shader.locations.u_projection_transition != null) {
+          gl.uniform1f(shader.locations.u_projection_transition, projectionData.projectionTransition);
+        }
+        if (shader.locations.u_projection_matrix != null) {
+          gl.uniformMatrix4fv(shader.locations.u_projection_matrix, false, projectionData.mainMatrix);
+        }
+        if (shader.locations.u_projection_fallback_matrix != null) {
+          gl.uniformMatrix4fv(shader.locations.u_projection_fallback_matrix, false, projectionData.fallbackMatrix);
+        }
+        gl.uniform2f(shader.locations.u_dimension, tileSize, tileSize);
+        gl.uniform1i(shader.locations.u_original_vertex_count, mesh.originalVertexCount);
+        gl.uniform1f(shader.locations.u_terrain_exaggeration, 1.0);
+        const rgbaFactors = {
+            r: 256.0,
+            g: 1.0,
+            b: 1.0 / 256.0,
+            base: 32768.0
+        };
+        if (shader.locations.u_terrain_unpack != null) {
+          gl.uniform4f(
+              shader.locations.u_terrain_unpack,
+              rgbaFactors.r,
+              rgbaFactors.g,
+              rgbaFactors.b,
+              rgbaFactors.base
+          );
+        }
+        if (shader.locations.u_latrange != null) {
+          gl.uniform2f(shader.locations.u_latrange, 47.0, 45.0);
+        }
+        if (shader.locations.u_zoom != null) {
+          gl.uniform1f(shader.locations.u_zoom, canonical.z);
+        }
+        const metersPerPixel = computeMetersPerPixelForTile(canonical, tileSize);
+        if (shader.locations.u_metersPerPixel != null) {
+          gl.uniform1f(shader.locations.u_metersPerPixel, metersPerPixel);
+        }
+        if (shader.locations.u_samplingDistance != null) {
+          gl.uniform1f(shader.locations.u_samplingDistance, samplingDistance);
+        }
 
-          const zoom = this.map.getZoom ? this.map.getZoom() : 0;
-          if (shader.locations.u_zoom != null) {
-            gl.uniform1f(shader.locations.u_zoom, zoom);
-          }
-          let metersPerPixel = computeMetersPerPixelForTile(canonical, tileSize);
-          if (this.map && this.map.transform && typeof this.map.transform.pixelsToMeters === 'function') {
-            const pixelsToMeters = this.map.transform.pixelsToMeters(1, canonical ? canonical.y : undefined);
-            if (Number.isFinite(pixelsToMeters)) {
-              metersPerPixel = Math.max(pixelsToMeters, MIN_METERS_PER_PIXEL);
-            }
-          }
-          if (shader.locations.u_metersPerPixel != null) {
-            gl.uniform1f(shader.locations.u_metersPerPixel, metersPerPixel);
-          }
-          if (shader.locations.u_latrange != null) {
-            const { lat1, lat2 } = getTileLatRange(canonical.y, canonical.z);
-            gl.uniform2f(shader.locations.u_latrange, lat1, lat2);
-          }
-          if (shader.locations.u_samplingDistance != null) {
-            gl.uniform1f(shader.locations.u_samplingDistance, samplingDistance);
-          }
-
-          if (shader.locations.u_lightDir != null) {
-            const bearing = this.map.getBearing ? this.map.getBearing() : 0;
-            const rad = (bearing * Math.PI) / 180;
-            gl.uniform2f(shader.locations.u_lightDir, Math.cos(rad), Math.sin(rad));
-          }
-          if (shader.locations.u_shadowsEnabled != null) {
-            gl.uniform1f(shader.locations.u_shadowsEnabled, (mode === 'shadow' || mode === 'daylight') ? 1.0 : 0.0);
-          }
-
-          if (mode === 'snow' && shader.locations.u_snow_altitude != null) {
-            gl.uniform1f(shader.locations.u_snow_altitude, snowAltitude);
-          }
-          if (mode === 'snow' && shader.locations.u_snow_maxSlope != null) {
+        if (currentMode === "snow" && shader.locations.u_snow_altitude != null) {
+          gl.uniform1f(shader.locations.u_snow_altitude, snowAltitude);
+          if (shader.locations.u_snow_maxSlope != null) {
             gl.uniform1f(shader.locations.u_snow_maxSlope, snowMaxSlope);
           }
-
-          if ((mode === 'shadow' || mode === 'daylight') && shader.locations.u_shadowSampleCount != null) {
-            gl.uniform1i(shader.locations.u_shadowSampleCount, shadowSampleCount);
-          }
-          if ((mode === 'shadow' || mode === 'daylight') && shader.locations.u_shadowBlurRadius != null) {
-            gl.uniform1f(shader.locations.u_shadowBlurRadius, shadowBlurRadius);
-          }
-          if ((mode === 'shadow' || mode === 'daylight') && shader.locations.u_shadowMaxDistance != null) {
-            gl.uniform1f(shader.locations.u_shadowMaxDistance, shadowMaxDistance);
-          }
-          if ((mode === 'shadow' || mode === 'daylight') && shader.locations.u_shadowVisibilityThreshold != null) {
-            gl.uniform1f(shader.locations.u_shadowVisibilityThreshold, shadowVisibilityThreshold);
-          }
-          if ((mode === 'shadow' || mode === 'daylight') && shader.locations.u_shadowEdgeSoftness != null) {
-            gl.uniform1f(shader.locations.u_shadowEdgeSoftness, shadowEdgeSoftness);
-          }
-          if ((mode === 'shadow' || mode === 'daylight') && shader.locations.u_shadowMaxOpacity != null) {
-            gl.uniform1f(shader.locations.u_shadowMaxOpacity, shadowMaxOpacity);
-          }
-          if ((mode === 'shadow' || mode === 'daylight') && shader.locations.u_shadowRayStepMultiplier != null) {
-            gl.uniform1f(shader.locations.u_shadowRayStepMultiplier, shadowRayStepMultiplier);
-          }
-
-          if (mode === 'shadow' && sunParams) {
-            if (shader.locations.u_sunDirection != null) {
-              gl.uniform2f(shader.locations.u_sunDirection, sunParams.direction[0], sunParams.direction[1]);
-            }
+        }
+        if (currentMode === "shadow" && shader.locations.u_sunDirection != null) {
+          if (sunParams) {
+            gl.uniform2f(shader.locations.u_sunDirection, sunParams.dirX, sunParams.dirY);
             if (shader.locations.u_sunAltitude != null) {
               gl.uniform1f(shader.locations.u_sunAltitude, sunParams.altitude);
             }
-            if (shader.locations.u_sunWarmColor != null) {
-              gl.uniform3f(shader.locations.u_sunWarmColor, sunParams.warmColor[0], sunParams.warmColor[1], sunParams.warmColor[2]);
+            if (shader.locations.u_sunWarmColor != null && Array.isArray(sunParams.warmColor)) {
+              gl.uniform3f(
+                shader.locations.u_sunWarmColor,
+                sunParams.warmColor[0],
+                sunParams.warmColor[1],
+                sunParams.warmColor[2]
+              );
             }
             if (shader.locations.u_sunWarmIntensity != null) {
               gl.uniform1f(shader.locations.u_sunWarmIntensity, sunParams.warmIntensity);
             }
           }
-
-          if (mode === 'daylight' && daylightParams) {
-            if (shader.locations.u_daylight_minAltitude != null) {
-              gl.uniform1f(shader.locations.u_daylight_minAltitude, daylightParams.minAltitude);
-            }
-            if (shader.locations.u_daylight_sampleCount != null) {
-              gl.uniform1i(shader.locations.u_daylight_sampleCount, daylightParams.count);
-            }
-            if (shader.locations.u_daylight_samples != null) {
-              gl.uniform3fv(shader.locations.u_daylight_samples, daylightParams.samples);
-            }
-            if (shader.locations.u_daylight_sampleTimes != null) {
-              gl.uniform1fv(shader.locations.u_daylight_sampleTimes, daylightParams.sampleTimes);
-            }
-            if (shader.locations.u_daylight_visibilityThreshold != null) {
-              gl.uniform1f(shader.locations.u_daylight_visibilityThreshold, daylightParams.visibilityThreshold);
-            }
-            if (shader.locations.u_daylight_sunColor != null) {
-              gl.uniform3f(shader.locations.u_daylight_sunColor, daylightParams.sunColor[0], daylightParams.sunColor[1], daylightParams.sunColor[2]);
-            }
-            if (shader.locations.u_daylight_horizonDarkening != null) {
-              gl.uniform3f(shader.locations.u_daylight_horizonDarkening, daylightParams.horizonDarkening[0], daylightParams.horizonDarkening[1], daylightParams.horizonDarkening[2]);
-            }
-            if (shader.locations.u_daylight_shadowColor != null) {
-              gl.uniform3f(shader.locations.u_daylight_shadowColor, daylightParams.shadowColor[0], daylightParams.shadowColor[1], daylightParams.shadowColor[2]);
-            }
+        } else if (currentMode === "daylight" && daylightParams) {
+          if (shader.locations.u_daylightSampleCount != null) {
+            gl.uniform1i(shader.locations.u_daylightSampleCount, daylightParams.sampleCount);
           }
-
-          gl.drawElements(gl.TRIANGLES, mesh.indexCount, gl.UNSIGNED_SHORT, 0);
-          renderedCount++;
-        }
-
-        if (DEBUG && (renderedCount > 0 || skippedCount > 0)) {
-          console.log(`Rendered ${renderedCount} tiles, skipped ${skippedCount} tiles`);
-        }
-      },
-
-      prerender(gl, matrix) {
-        this.prepareFrame(gl, matrix);
-        if (this.needsRepaint && this.map) {
-          this.map.triggerRepaint();
-        }
-      },
-
-      render(gl, matrix) {
-        this.frameCount++;
-
-        if (this.frameCount < 3) {
-          if (this.map) {
-            this.map.triggerRepaint();
+          if (shader.locations['u_daylightSunDir[0]'] != null) {
+            gl.uniform2fv(shader.locations['u_daylightSunDir[0]'], daylightParams.sunDirections);
           }
-          this.currentFrameState = null;
-          this.isFramePrepared = false;
-          return;
-        }
-
-        if (!this.isFramePrepared) {
-          this.prepareFrame(gl, matrix);
-        }
-
-        const state = this.currentFrameState;
-        if (!state) {
-          if (this.needsRepaint && this.map) {
-            this.map.triggerRepaint();
+          if (shader.locations['u_daylightSunAltitude[0]'] != null) {
+            gl.uniform1fv(shader.locations['u_daylightSunAltitude[0]'], daylightParams.sunAltitudes);
           }
-          return;
+          if (shader.locations['u_daylightSampleWeight[0]'] != null) {
+            gl.uniform1fv(shader.locations['u_daylightSampleWeight[0]'], daylightParams.sampleWeights);
+          }
+          if (shader.locations['u_daylightSampleTime[0]'] != null) {
+            gl.uniform1fv(shader.locations['u_daylightSampleTime[0]'], daylightParams.sampleTimes);
+          }
         }
 
-        gl.useProgram(state.shader.program);
-        gl.enable(gl.CULL_FACE);
-        gl.cullFace(gl.BACK);
-        gl.enable(gl.DEPTH_TEST);
+        if ((currentMode === "shadow" || currentMode === "daylight") && shader.locations.u_shadowSampleCount != null) {
+          gl.uniform1i(shader.locations.u_shadowSampleCount, Math.floor(shadowSampleCount));
+        }
+        if ((currentMode === "shadow" || currentMode === "daylight") && shader.locations.u_shadowBlurRadius != null) {
+          gl.uniform1f(shader.locations.u_shadowBlurRadius, shadowBlurRadius);
+        }
+        if ((currentMode === "shadow" || currentMode === "daylight") && shader.locations.u_shadowMaxDistance != null) {
+          gl.uniform1f(shader.locations.u_shadowMaxDistance, shadowMaxDistance);
+        }
+        if ((currentMode === "shadow" || currentMode === "daylight") && shader.locations.u_shadowVisibilityThreshold != null) {
+          gl.uniform1f(shader.locations.u_shadowVisibilityThreshold, shadowVisibilityThreshold);
+        }
+        if ((currentMode === "shadow" || currentMode === "daylight") && shader.locations.u_shadowEdgeSoftness != null) {
+          gl.uniform1f(shader.locations.u_shadowEdgeSoftness, shadowEdgeSoftness);
+        }
+        if ((currentMode === "shadow" || currentMode === "daylight") && shader.locations.u_shadowMaxOpacity != null) {
+          gl.uniform1f(shader.locations.u_shadowMaxOpacity, shadowMaxOpacity);
+        }
+        if ((currentMode === "shadow" || currentMode === "daylight") && shader.locations.u_shadowRayStepMultiplier != null) {
+          gl.uniform1f(shader.locations.u_shadowRayStepMultiplier, shadowRayStepMultiplier);
+        }
 
-        if (this.mode === 'snow' || this.mode === 'slope') {
-          gl.depthFunc(gl.LESS);
-          gl.colorMask(false, false, false, false);
-          gl.clear(gl.DEPTH_BUFFER_BIT);
-          this.renderTiles(gl, this.mode, state);
+        gl.drawElements(gl.TRIANGLES, mesh.indexCount, gl.UNSIGNED_SHORT, 0);
+        renderedCount++;
+      }
 
-          gl.colorMask(true, true, true, true);
-          gl.depthFunc(gl.LEQUAL);
-          gl.enable(gl.BLEND);
+      if (DEBUG && (renderedCount > 0 || skippedCount > 0)) {
+        console.log(`Rendered ${renderedCount} tiles, skipped ${skippedCount} tiles`);
+      }
+    },
+
+    render(gl, matrix) {
+      // Increment frame counter
+      this.frameCount++;
+      
+      // Skip the first few frames to ensure everything is initialized
+      if (this.frameCount < 3) {
+        this.map.triggerRepaint();
+        return;
+      }
+      
+      // Wait for tiles to stabilize after rapid movement
+      const terrainInterface = getTerrainInterface(this.map);
+      const tileManager = terrainInterface ? terrainInterface.tileManager : null;
+      if (!tileManager) {
+        if (DEBUG) console.warn("Tile manager not available; skipping render");
+        this.map.triggerRepaint();
+        return;
+      }
+
+      const terrainSpec = typeof this.map.getTerrain === 'function'
+        ? this.map.getTerrain()
+        : null;
+      const needsManualTileUpdate = (!terrainSpec || terrainSpec.exaggeration === 0)
+        && typeof tileManager.update === 'function';
+      if (needsManualTileUpdate) {
+        try {
+          tileManager.update(this.map.transform, terrainInterface);
+        } catch (error) {
+          if (DEBUG) console.error('Failed to update terrain tiles while terrain is flattened', error);
+        }
+      }
+
+      if (tileManager.anyTilesAfterTime(Date.now() - 100)) {
+        this.map.triggerRepaint();
+        return;
+      }
+
+      const renderableTiles = tileManager.getRenderableTiles();
+
+      // Don't render if we have no tiles
+      if (renderableTiles.length === 0) {
+        if (DEBUG) console.log("No renderable tiles available");
+        this.map.triggerRepaint();
+        return;
+      }
+
+      const terrainDataCache = new Map();
+      const textureCache = new Map();
+      for (const tile of renderableTiles) {
+        const sourceTile = tileManager.getSourceTile(tile.tileID, true);
+        if (!sourceTile || sourceTile.tileID.key !== tile.tileID.key) continue;
+        const terrainData = terrainInterface && terrainInterface.getTerrainData
+          ? terrainInterface.getTerrainData(tile.tileID)
+          : null;
+        if (!terrainData || !terrainData.texture || terrainData.fallback) continue;
+        const cacheKey = getTileCacheKey(tile.tileID);
+        terrainDataCache.set(tile.tileID.key, terrainData);
+        textureCache.set(cacheKey, terrainData.texture);
+      }
+
+      updateSamplingDistanceForZoom();
+
+      const nativeGradientCache = collectNativeHillshadeTextures(this.map);
+
+      gradientPreparer.prepare({
+        gl,
+        renderableTiles,
+        tileManager,
+        terrainInterface,
+        terrainDataCache,
+        textureCache,
+        neighborOffsets: NEIGHBOR_OFFSETS,
+        samplingDistance
+      });
+
+      const shader = this.getShader(gl, matrix.shaderData);
+      if (!shader) return;
+      gl.useProgram(shader.program);
+
+      gl.enable(gl.CULL_FACE);
+      gl.cullFace(gl.BACK);
+      gl.enable(gl.DEPTH_TEST);
+
+      if (currentMode === "snow" || currentMode === "slope") {
+        gl.depthFunc(gl.LESS);
+        gl.colorMask(false, false, false, false);
+        gl.clear(gl.DEPTH_BUFFER_BIT);
+        this.renderTiles(gl, shader, renderableTiles, terrainInterface, tileManager, terrainDataCache, textureCache, nativeGradientCache);
+
+        gl.colorMask(true, true, true, true);
+        gl.depthFunc(gl.LEQUAL);
+        gl.enable(gl.BLEND);
+        gl.blendFuncSeparate(
+          gl.SRC_ALPHA,
+          gl.ONE_MINUS_SRC_ALPHA,
+          gl.ONE,
+          gl.ONE_MINUS_SRC_ALPHA
+        );
+        this.renderTiles(gl, shader, renderableTiles, terrainInterface, tileManager, terrainDataCache, textureCache, nativeGradientCache);
+      } else {
+        gl.depthFunc(gl.LEQUAL);
+        gl.clear(gl.DEPTH_BUFFER_BIT);
+        gl.enable(gl.BLEND);
+        if (currentMode === "shadow" || currentMode === "daylight") {
           gl.blendFuncSeparate(
             gl.SRC_ALPHA,
             gl.ONE_MINUS_SRC_ALPHA,
             gl.ONE,
             gl.ONE_MINUS_SRC_ALPHA
           );
-          this.renderTiles(gl, this.mode, state);
         } else {
-          gl.depthFunc(gl.LEQUAL);
-          gl.clear(gl.DEPTH_BUFFER_BIT);
-          gl.enable(gl.BLEND);
-          if (this.mode === 'shadow' || this.mode === 'daylight') {
-            gl.blendFuncSeparate(
-              gl.SRC_ALPHA,
-              gl.ONE_MINUS_SRC_ALPHA,
-              gl.ONE,
-              gl.ONE_MINUS_SRC_ALPHA
-            );
-          } else {
-            gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-          }
-          this.renderTiles(gl, this.mode, state);
+          gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
         }
-
-        gl.disable(gl.BLEND);
-        this.currentFrameState = null;
-        this.isFramePrepared = false;
-        this.needsRepaint = false;
+        this.renderTiles(gl, shader, renderableTiles, terrainInterface, tileManager, terrainDataCache, textureCache, nativeGradientCache);
       }
-    };
-  }
 
+      gl.disable(gl.BLEND);
+    }
+  };
+  
   // Map setup and initialization.
   map = new maplibregl.Map({
     container: 'map',
@@ -2359,8 +1694,6 @@
     minZoom: 2,
     fadeDuration: 500
   });
-
-  map.on('render', handleMapRenderForTexturePreview);
 
   if (HillshadeDebug && typeof HillshadeDebug.attachToMap === 'function') {
     HillshadeDebug.attachToMap(map, { sourceId: TERRAIN_SOURCE_ID, autoHookLayer: false });
@@ -2422,8 +1755,7 @@
     if (hillshadeMode === 'native') {
       ensureNativeHillshadeLayer();
     } else if (hillshadeMode === 'custom' && currentMode) {
-      activeCustomLayerMode = currentMode;
-      ensureCustomTerrainLayer(currentMode);
+      ensureCustomTerrainLayer();
     }
     updateButtons();
   });
@@ -2449,16 +1781,10 @@
       cachedTerrainInterface = previousTerrain;
     }
     gradientPreparer.invalidateAll();
-    forEachTerrainLayer(layer => {
-      if (layer && typeof layer.resetState === 'function') {
-        layer.resetState({ clearShaders: true });
-      }
-    });
-    if (activeCustomLayerMode) {
-      const layerId = getCustomLayerId(activeCustomLayerMode);
-      if (map.getLayer(layerId)) {
-        map.triggerRepaint();
-      }
+    terrainNormalLayer.shaderMap.clear();
+    if (map.getLayer('terrain-normal')) {
+      terrainNormalLayer.frameCount = 0;
+      map.triggerRepaint();
     }
   });
   
