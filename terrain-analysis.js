@@ -1014,6 +1014,7 @@
     if (shadowControls) {
       shadowControls.style.display = (isCustomActive && (currentMode === "shadow" || currentMode === "daylight")) ? "flex" : "none";
     }
+    refreshDebugPanel();
   }
   
   // Slider event listeners
@@ -1052,6 +1053,129 @@
   gradientMaxSlider = document.getElementById('gradientMaxSlider');
   gradientMaxValueEl = document.getElementById('gradientMaxValue');
   gradientAutoButton = document.getElementById('gradientAutoButton');
+
+  const debugPanelEl = document.getElementById('debugPanel');
+  const debugContentEl = document.getElementById('debugContent');
+  const debugState = {
+    lastRender: null
+  };
+
+  function publishRenderDebugInfo(info) {
+    if (info) {
+      debugState.lastRender = { ...info, timestamp: Date.now() };
+    } else {
+      debugState.lastRender = null;
+    }
+    refreshDebugPanel();
+  }
+
+  function refreshDebugPanel() {
+    if (!debugContentEl) {
+      return;
+    }
+
+    const lines = [];
+    const modeLabel = (() => {
+      if (hillshadeMode === 'custom') {
+        return `custom/${currentMode || 'idle'}`;
+      }
+      if (hillshadeMode === 'native') {
+        return 'native hillshade';
+      }
+      return hillshadeMode || 'none';
+    })();
+
+    lines.push(`Mode: ${modeLabel}`);
+
+    if (map) {
+      const zoom = Number.isFinite(map.getZoom()) ? map.getZoom().toFixed(2) : 'n/a';
+      const pitch = Number.isFinite(map.getPitch()) ? map.getPitch().toFixed(1) : 'n/a';
+      const bearing = Number.isFinite(map.getBearing()) ? map.getBearing().toFixed(1) : 'n/a';
+      lines.push(`View: zoom ${zoom}, pitch ${pitch}, bearing ${bearing}`);
+
+      const terrainSpec = typeof map.getTerrain === 'function' ? map.getTerrain() : null;
+      const exaggeration = terrainSpec && Number.isFinite(terrainSpec.exaggeration)
+        ? terrainSpec.exaggeration
+        : (Number.isFinite(lastTerrainSpecification?.exaggeration) ? lastTerrainSpecification.exaggeration : null);
+      if (Number.isFinite(exaggeration)) {
+        lines.push(`Terrain exaggeration: ${exaggeration.toFixed(3)}`);
+      }
+
+      const tileManager = getTerrainTileManager(map);
+      if (tileManager && typeof tileManager.getRenderableTiles === 'function') {
+        try {
+          const tiles = tileManager.getRenderableTiles();
+          const tileCount = Array.isArray(tiles) ? tiles.length : 0;
+          lines.push(`Renderable tiles (current): ${tileCount}`);
+        } catch (error) {
+          lines.push('Renderable tiles (current): unavailable');
+        }
+      }
+    }
+
+    const lastRender = debugState.lastRender;
+    const samplingCandidate = lastRender && Number.isFinite(lastRender.samplingDistance)
+      ? lastRender.samplingDistance
+      : samplingDistance;
+    const samplingLabel = Number.isFinite(samplingCandidate)
+      ? formatGradientDistanceLabel(samplingCandidate)
+      : 'n/a';
+    const samplingMode = lastRender && typeof lastRender.isSamplingDistanceManual === 'boolean'
+      ? (lastRender.isSamplingDistanceManual ? 'manual' : 'auto')
+      : (isSamplingDistanceManual ? 'manual' : 'auto');
+    lines.push(`Gradient sampling: ${samplingLabel} (${samplingMode})`);
+
+    if (lastRender && lastRender.debugMetrics) {
+      const metrics = lastRender.debugMetrics;
+      const drawn = Number.isFinite(metrics.drawnTiles) ? metrics.drawnTiles : 0;
+      const total = Number.isFinite(metrics.totalTiles) ? metrics.totalTiles : (Number.isFinite(lastRender.renderableTileCount) ? lastRender.renderableTileCount : 0);
+      const skipped = Number.isFinite(metrics.skippedTiles) ? metrics.skippedTiles : 0;
+      const passes = Number.isFinite(metrics.passes) ? metrics.passes : 0;
+      lines.push(`Custom tiles (last frame): drawn ${drawn}/${total}, skipped ${skipped}, passes ${passes}`);
+      if (lastRender.neighborSamplingActive) {
+        lines.push('Neighbor sampling: active');
+      } else {
+        lines.push('Neighbor sampling: inactive');
+      }
+      if (Number.isFinite(lastRender.terrainDataCount)) {
+        lines.push(`Terrain textures cached: ${lastRender.terrainDataCount}`);
+      }
+      if (Number.isFinite(lastRender.textureCacheCount)) {
+        lines.push(`Neighbor texture cache entries: ${lastRender.textureCacheCount}`);
+      }
+      if (Number.isFinite(lastRender.nativeGradientTiles)) {
+        lines.push(`Native gradient textures: ${lastRender.nativeGradientTiles}`);
+      }
+    }
+
+    const gradientInfo = lastRender?.gradientDebug
+      || (typeof gradientPreparer.getDebugInfo === 'function' ? gradientPreparer.getDebugInfo() : null);
+    if (gradientInfo) {
+      const gradientMode = gradientInfo.supported ? 'precomputed textures' : 'runtime fallback';
+      lines.push(`Gradient pipeline: ${gradientMode}`);
+      if (!gradientInfo.supported && gradientInfo.unsupportedReason) {
+        lines.push(`Gradient fallback reason: ${gradientInfo.unsupportedReason}`);
+      }
+      if (Number.isFinite(gradientInfo.tileStateCount)) {
+        lines.push(`Gradient tile cache: ${gradientInfo.tileStateCount}`);
+      }
+      const frameInfo = gradientInfo.lastFrameInfo;
+      if (frameInfo) {
+        const prepared = Number.isFinite(frameInfo.preparedTiles) ? frameInfo.preparedTiles : 0;
+        const reused = Number.isFinite(frameInfo.reusedTiles) ? frameInfo.reusedTiles : 0;
+        const discarded = Number.isFinite(frameInfo.discardedTiles) ? frameInfo.discardedTiles : 0;
+        lines.push(`Gradient tiles prepared/reused: ${prepared}/${reused}, discarded ${discarded}`);
+        const neighborMatches = Number.isFinite(frameInfo.neighborMatches) ? frameInfo.neighborMatches : 0;
+        const neighborFallbacks = Number.isFinite(frameInfo.neighborFallbacks) ? frameInfo.neighborFallbacks : 0;
+        lines.push(`Gradient neighbor fetch: ok ${neighborMatches}, fallback ${neighborFallbacks}`);
+      }
+    }
+
+    if (debugPanelEl) {
+      debugPanelEl.style.display = lines.length ? 'block' : 'none';
+    }
+    debugContentEl.textContent = lines.join('\n');
+  }
 
   function refreshGradientUI() {
     sanitizeGradientParameters();
@@ -1102,6 +1226,7 @@
     if (gradientAutoButton) {
       gradientAutoButton.disabled = !isSamplingDistanceManual;
     }
+    refreshDebugPanel();
   }
 
   sanitizeGradientParameters();
@@ -1517,10 +1642,17 @@
       return result;
     },
   
-    renderTiles(gl, shader, renderableTiles, terrainInterface, tileManager, terrainDataCache, textureCache, nativeGradientCache = null) {
+    renderTiles(gl, shader, renderableTiles, terrainInterface, tileManager, terrainDataCache, textureCache, nativeGradientCache = null, debugMetrics = null) {
       if (!terrainInterface || !tileManager) return;
       let renderedCount = 0;
       let skippedCount = 0;
+
+      if (debugMetrics) {
+        if (!Number.isFinite(debugMetrics.totalTiles)) {
+          debugMetrics.totalTiles = renderableTiles.length;
+        }
+        debugMetrics.passes = (debugMetrics.passes || 0) + 1;
+      }
 
       const getNeighborTexture = (tileID, dx, dy, fallbackTexture) => {
         const key = getNeighborCacheKey(tileID, dx, dy);
@@ -1769,10 +1901,16 @@
 
         gl.drawElements(gl.TRIANGLES, mesh.indexCount, gl.UNSIGNED_SHORT, 0);
         renderedCount++;
+        if (debugMetrics) {
+          debugMetrics.drawnTiles = (debugMetrics.drawnTiles || 0) + 1;
+        }
       }
 
       if (DEBUG && (renderedCount > 0 || skippedCount > 0)) {
         console.log(`Rendered ${renderedCount} tiles, skipped ${skippedCount} tiles`);
+      }
+      if (debugMetrics) {
+        debugMetrics.skippedTiles = (debugMetrics.skippedTiles || 0) + skippedCount;
       }
     },
 
@@ -1818,6 +1956,19 @@
       // Don't render if we have no tiles
       if (renderableTiles.length === 0) {
         if (DEBUG) console.log("No renderable tiles available");
+        publishRenderDebugInfo({
+          debugMetrics: { totalTiles: 0, drawnTiles: 0, skippedTiles: 0, passes: 0 },
+          renderableTileCount: 0,
+          terrainDataCount: 0,
+          textureCacheCount: 0,
+          nativeGradientTiles: 0,
+          samplingDistance,
+          isSamplingDistanceManual,
+          neighborSamplingActive: currentMode === "shadow" || currentMode === "daylight",
+          hillshadeMode,
+          currentMode,
+          gradientDebug: typeof gradientPreparer.getDebugInfo === 'function' ? gradientPreparer.getDebugInfo() : null
+        });
         this.map.triggerRepaint();
         return;
       }
@@ -1855,6 +2006,13 @@
       if (!shader) return;
       gl.useProgram(shader.program);
 
+      const debugMetrics = {
+        totalTiles: renderableTiles.length,
+        drawnTiles: 0,
+        skippedTiles: 0,
+        passes: 0
+      };
+
       gl.enable(gl.CULL_FACE);
       gl.cullFace(gl.BACK);
       gl.enable(gl.DEPTH_TEST);
@@ -1863,7 +2021,7 @@
         gl.depthFunc(gl.LESS);
         gl.colorMask(false, false, false, false);
         gl.clear(gl.DEPTH_BUFFER_BIT);
-        this.renderTiles(gl, shader, renderableTiles, terrainInterface, tileManager, terrainDataCache, textureCache, nativeGradientCache);
+        this.renderTiles(gl, shader, renderableTiles, terrainInterface, tileManager, terrainDataCache, textureCache, nativeGradientCache, debugMetrics);
 
         gl.colorMask(true, true, true, true);
         gl.depthFunc(gl.LEQUAL);
@@ -1874,7 +2032,7 @@
           gl.ONE,
           gl.ONE_MINUS_SRC_ALPHA
         );
-        this.renderTiles(gl, shader, renderableTiles, terrainInterface, tileManager, terrainDataCache, textureCache, nativeGradientCache);
+        this.renderTiles(gl, shader, renderableTiles, terrainInterface, tileManager, terrainDataCache, textureCache, nativeGradientCache, debugMetrics);
       } else {
         gl.depthFunc(gl.LEQUAL);
         gl.clear(gl.DEPTH_BUFFER_BIT);
@@ -1889,10 +2047,27 @@
         } else {
           gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
         }
-        this.renderTiles(gl, shader, renderableTiles, terrainInterface, tileManager, terrainDataCache, textureCache, nativeGradientCache);
+        this.renderTiles(gl, shader, renderableTiles, terrainInterface, tileManager, terrainDataCache, textureCache, nativeGradientCache, debugMetrics);
       }
 
       gl.disable(gl.BLEND);
+
+      const gradientDebug = typeof gradientPreparer.getDebugInfo === 'function'
+        ? gradientPreparer.getDebugInfo()
+        : null;
+      publishRenderDebugInfo({
+        debugMetrics,
+        renderableTileCount: renderableTiles.length,
+        terrainDataCount: terrainDataCache.size,
+        textureCacheCount: textureCache.size,
+        nativeGradientTiles: nativeGradientCache ? nativeGradientCache.size : 0,
+        samplingDistance,
+        isSamplingDistanceManual,
+        neighborSamplingActive: currentMode === "shadow" || currentMode === "daylight",
+        hillshadeMode,
+        currentMode,
+        gradientDebug
+      });
     }
   };
   
@@ -1932,6 +2107,10 @@
     maxZoom: 16,
     minZoom: 2,
     fadeDuration: 500
+  });
+
+  map.on('render', () => {
+    refreshDebugPanel();
   });
 
   if (HillshadeDebug && typeof HillshadeDebug.attachToMap === 'function') {
