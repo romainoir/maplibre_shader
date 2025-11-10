@@ -53,8 +53,10 @@ export class TerrainTileManager extends Evented {
     tileSize: number;
     /**
      * raster-dem tiles will load for performance the actualZoom - deltaZoom zoom-level.
+     * A deltaZoom of 0 ensures terrain tiles use DEM data at the same zoom level in order to
+     * avoid visible seams where tiles meet.
      */
-    deltaZoom: number;
+    private _deltaZoom: number;
     /**
      * used to determine whether depth & coord framebuffers need updating
      */
@@ -68,10 +70,26 @@ export class TerrainTileManager extends Evented {
         this._sourceTileCache = {};
         this.minzoom = 0;
         this.maxzoom = 22;
-        this.deltaZoom = 1;
-        this.tileSize = tileManager._source.tileSize * 2 ** this.deltaZoom;
+        this._deltaZoom = 0;
         tileManager.usedForTerrain = true;
-        tileManager.tileSize = this.tileSize;
+        this._applyDeltaZoom();
+    }
+
+    get deltaZoom(): number {
+        return this._deltaZoom;
+    }
+
+    set deltaZoom(value: number) {
+        if (this._deltaZoom === value) {
+            return;
+        }
+        this._deltaZoom = value;
+        this._applyDeltaZoom();
+    }
+
+    private _applyDeltaZoom() {
+        this.tileSize = this.tileManager._source.tileSize * 2 ** this._deltaZoom;
+        this.tileManager.tileSize = this.tileSize;
     }
 
     destruct() {
