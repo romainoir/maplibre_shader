@@ -962,13 +962,26 @@
       return fromPublicAPI;
     }
 
-    const painterTerrain = mapInstance.painter && mapInstance.painter.terrain;
-    if (painterTerrain && painterTerrain.tileManager) {
-      cachedTerrainInterface = painterTerrain;
-      return painterTerrain;
+    const candidatePainters = [];
+    if (mapInstance.painter) {
+      candidatePainters.push(mapInstance.painter);
+    }
+    if (mapInstance._painter && mapInstance._painter !== mapInstance.painter) {
+      candidatePainters.push(mapInstance._painter);
+    }
+    for (const painter of candidatePainters) {
+      const painterTerrain = painter && painter.terrain;
+      if (painterTerrain && painterTerrain.tileManager) {
+        cachedTerrainInterface = painterTerrain;
+        return painterTerrain;
+      }
     }
 
-    const hasTerrain = Boolean(mapInstance.terrain || (mapInstance.painter && mapInstance.painter.terrain));
+    const hasTerrain = Boolean(
+      mapInstance.terrain
+      || (mapInstance.painter && mapInstance.painter.terrain)
+      || (mapInstance._painter && mapInstance._painter.terrain)
+    );
     if (!hasTerrain) {
       if (isTerrainFlattened && cachedTerrainInterface && cachedTerrainInterface.tileManager) {
         return cachedTerrainInterface;
