@@ -140,24 +140,6 @@ describe('DEMData.backfillBorder with encoding', () => {
 
         test('border region is initially populated with neighboring data', testDEMBorderRegion(dem0));
         test('backfillBorder correctly populates borders with neighboring data', testDEMBackfill(dem0, dem1));
-        test('border status reports reflected vs neighbor sourced data', () => {
-            const base = new DEMData('status-base', createMockImage(4, 4), 'mapbox');
-            const neighbor = new DEMData('status-neighbor', createMockImage(4, 4), 'mapbox');
-
-            const initialStatus = base.getBorderStatus();
-            expect(initialStatus.left).toBe('reflected');
-            expect(initialStatus.topRight).toBe('reflected');
-
-            base.backfillBorder(neighbor, -1, 0);
-            const leftFilled = base.getBorderStatus();
-            expect(leftFilled.left).toBe('neighbor');
-            expect(leftFilled.right).toBe('reflected');
-
-            base.backfillBorder(neighbor, 1, -1);
-            const afterCorner = base.getBorderStatus();
-            expect(afterCorner.topRight).toBe('neighbor');
-            expect(afterCorner.bottomLeft).toBe('reflected');
-        });
     });
 
     describe('terrarium encoding', () => {

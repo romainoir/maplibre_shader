@@ -753,21 +753,20 @@
     });
     if (dem && typeof dem.get === 'function' && Number.isFinite(info.dim)) {
       info.borderSamples = sampleDemBorders(dem, info.dim);
+      const analysis = analyzeDemBorderOrigins(dem, info.dim);
+      if (analysis) {
+        info.borderAnalysis = analysis;
+        if (analysis.hasNeighbor) {
+          info.hasNeighborBackfill = true;
+          info.backfilledSegments = analysis.neighborSegments.slice();
+        } else {
+          info.hasNeighborBackfill = false;
+          info.backfilledSegments = [];
+        }
+      }
     } else if (dem && ArrayBuffer.isView(dem.data)) {
       const array = dem.data;
       info.dataSample = captureTypedArraySample(array, debugState.options.indexSampleLimit);
-    }
-    if (dem && typeof dem.getBorderStatus === 'function') {
-      const status = dem.getBorderStatus();
-      info.borderStatus = status;
-      const neighborKeys = [];
-      for (const key in status) {
-        if (Object.prototype.hasOwnProperty.call(status, key) && status[key] === 'neighbor') {
-          neighborKeys.push(key);
-        }
-      }
-      info.backfilledNeighbors = neighborKeys;
-      info.hasNeighborBackfill = neighborKeys.length > 0;
     }
     return info;
   }
@@ -795,6 +794,111 @@
       return samples;
     } catch (error) {
       console.warn('Failed to sample DEM border', error);
+      return null;
+    }
+  }
+
+  function analyzeDemBorderOrigins(dem, dim) {
+    try {
+      const size = Number(dim);
+      if (!Number.isFinite(size) || size <= 0 || size > 4096) {
+        return null;
+      }
+      const tolerance = 1e-3;
+      const maxSamples = 16;
+      const step = Math.max(1, Math.floor(size / maxSamples));
+      const samplePositions = [];
+      for (let i = 0; i < size; i += step) {
+        samplePositions.push(i);
+      }
+      if (samplePositions[samplePositions.length - 1] !== size - 1) {
+        samplePositions.push(size - 1);
+      }
+
+      const edges = {};
+      const neighborEdges = [];
+      const edgeDescriptors = [
+        {key: 'left', border: (i) => [-1, i], adjacent: (i) => [0, i]},
+        {key: 'right', border: (i) => [size, i], adjacent: (i) => [size - 1, i]},
+        {key: 'top', border: (i) => [i, -1], adjacent: (i) => [i, 0]},
+        {key: 'bottom', border: (i) => [i, size], adjacent: (i) => [i, size - 1]}
+      ];
+
+      edgeDescriptors.forEach(({key, border, adjacent}) => {
+        const samples = [];
+        let validSamples = 0;
+        let maxAbsDiff = 0;
+        samplePositions.forEach((pos) => {
+          const [bx, by] = border(pos);
+          const [ix, iy] = adjacent(pos);
+          const borderValue = safelySampleDem(dem, bx, by);
+          const interiorValue = safelySampleDem(dem, ix, iy);
+          if (!Number.isFinite(borderValue) || !Number.isFinite(interiorValue)) {
+            return;
+          }
+          validSamples++;
+          const diff = Math.abs(borderValue - interiorValue);
+          if (diff > maxAbsDiff) {
+            maxAbsDiff = diff;
+          }
+          samples.push({index: pos, border: borderValue, adjacent: interiorValue, diff});
+        });
+        const origin = validSamples === 0 ? 'unknown' : (maxAbsDiff <= tolerance ? 'reflected' : 'neighbor');
+        if (origin === 'neighbor') {
+          neighborEdges.push(key);
+        }
+        edges[key] = {
+          origin,
+          maxAbsDiff: validSamples === 0 ? null : maxAbsDiff,
+          validSamples,
+          sampleStep: step,
+          samples
+        };
+      });
+
+      const corners = {};
+      const neighborCorners = [];
+      const cornerDescriptors = [
+        {key: 'topLeft', border: [-1, -1], adjacent: [0, 0]},
+        {key: 'topRight', border: [size, -1], adjacent: [size - 1, 0]},
+        {key: 'bottomLeft', border: [-1, size], adjacent: [0, size - 1]},
+        {key: 'bottomRight', border: [size, size], adjacent: [size - 1, size - 1]}
+      ];
+
+      cornerDescriptors.forEach(({key, border, adjacent}) => {
+        const borderValue = safelySampleDem(dem, border[0], border[1]);
+        const interiorValue = safelySampleDem(dem, adjacent[0], adjacent[1]);
+        let origin = 'unknown';
+        let diff = null;
+        if (Number.isFinite(borderValue) && Number.isFinite(interiorValue)) {
+          diff = Math.abs(borderValue - interiorValue);
+          origin = diff <= tolerance ? 'reflected' : 'neighbor';
+        }
+        if (origin === 'neighbor') {
+          neighborCorners.push(key);
+        }
+        corners[key] = {
+          origin,
+          diff,
+          border: Number.isFinite(borderValue) ? borderValue : null,
+          adjacent: Number.isFinite(interiorValue) ? interiorValue : null
+        };
+      });
+
+      return {
+        tolerance,
+        dimension: size,
+        sampleStep: step,
+        samplePositions,
+        edges,
+        corners,
+        neighborEdges,
+        neighborCorners,
+        neighborSegments: neighborEdges.concat(neighborCorners),
+        hasNeighbor: neighborEdges.length > 0 || neighborCorners.length > 0
+      };
+    } catch (error) {
+      console.warn('Failed to analyze DEM border origin', error);
       return null;
     }
   }
