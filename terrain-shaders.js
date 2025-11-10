@@ -213,25 +213,18 @@ ${SHADER_NEIGHBOR_FETCH_BLOCK_LOD}      return getElevationFromTextureLod(u_imag
       float metersPerTile  = metersPerPixel * u_dimension.x;
       float sampleDist = max(u_samplingDistance, 0.0001);
       float delta = sampleDist / metersPerTile;
-      float delta2 = delta * 2.0;
-      float denom = 12.0 * sampleDist;
+      float denom = 2.0 * sampleDist;
 
-      vec2 dx1 = vec2(delta, 0.0);
-      vec2 dx2 = vec2(delta2, 0.0);
-      vec2 dy1 = vec2(0.0, delta);
-      vec2 dy2 = vec2(0.0, delta2);
+      vec2 dx = vec2(delta, 0.0);
+      vec2 dy = vec2(0.0, delta);
 
-      float leftFar = getElevationExtended(safePos - dx2);
-      float leftNear = getElevationExtended(safePos - dx1);
-      float rightNear = getElevationExtended(safePos + dx1);
-      float rightFar = getElevationExtended(safePos + dx2);
-      float topFar = getElevationExtended(safePos - dy2);
-      float topNear = getElevationExtended(safePos - dy1);
-      float bottomNear = getElevationExtended(safePos + dy1);
-      float bottomFar = getElevationExtended(safePos + dy2);
+      float left = getElevationExtended(safePos - dx);
+      float right = getElevationExtended(safePos + dx);
+      float top = getElevationExtended(safePos - dy);
+      float bottom = getElevationExtended(safePos + dy);
 
-      float gx = (leftFar - 8.0 * leftNear + 8.0 * rightNear - rightFar) / denom;
-      float gy = (topFar - 8.0 * topNear + 8.0 * bottomNear - bottomFar) / denom;
+      float gx = (right - left) / denom;
+      float gy = (bottom - top) / denom;
 
       return vec2(gx, gy);
     }
