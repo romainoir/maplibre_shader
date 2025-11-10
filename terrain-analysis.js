@@ -248,7 +248,6 @@
   let shadowDateValue = null;
   let shadowTimeValue = null;
 
-  const gradientPreparer = TerrainGradientPreparer.create();
   const analysisPreparer = TerrainAnalysisPreparer.create();
   const EARTH_CIRCUMFERENCE_METERS = 40075016.68557849;
   const MIN_METERS_PER_PIXEL = 1e-6;
@@ -480,7 +479,6 @@
     if (!Number.isFinite(newDistance)) return;
     if (Math.abs(newDistance - samplingDistance) > 0.01) {
       samplingDistance = newDistance;
-      gradientPreparer.invalidateAll();
       analysisPreparer.invalidateAll();
     }
   }
@@ -1373,7 +1371,6 @@
       this.map = mapInstance;
       this.gl = gl;
       this.frameCount = 0;
-      gradientPreparer.initialize(gl);
       analysisPreparer.initialize(gl);
     },
   
@@ -1599,9 +1596,6 @@
         if (tileKey && nativeGradientCache && nativeGradientCache.has(tileKey)) {
           gradientTexture = nativeGradientCache.get(tileKey);
         }
-        if (!gradientTexture) {
-          gradientTexture = gradientPreparer.getTexture(tile.tileID.key);
-        }
         const hasGradient = !!gradientTexture;
         if (shader.locations.u_usePrecomputedGradient != null) {
           gl.uniform1i(shader.locations.u_usePrecomputedGradient, hasGradient ? 1 : 0);
@@ -1819,17 +1813,6 @@
 
       const nativeGradientCache = collectNativeHillshadeTextures(this.map);
 
-      gradientPreparer.prepare({
-        gl,
-        renderableTiles,
-        tileManager,
-        terrainInterface,
-        terrainDataCache,
-        textureCache,
-        neighborOffsets: NEIGHBOR_OFFSETS,
-        samplingDistance
-      });
-
       const sunParams = currentMode === "shadow" ? computeSunParameters(this.map) : null;
       const daylightParams = currentMode === "daylight" ? computeDaylightParameters(this.map) : null;
 
@@ -1853,7 +1836,12 @@
           textureCache,
           neighborOffsets: NEIGHBOR_OFFSETS,
           samplingDistance,
-          getGradientTexture: (tileKey) => gradientPreparer.getTexture(tileKey),
+          getGradientTexture: (tileKey) => {
+            if (!nativeGradientCache || !tileKey) {
+              return null;
+            }
+            return nativeGradientCache.get(tileKey) || null;
+          },
           shadowSettings,
           sunParams,
           daylightParams
@@ -2015,7 +2003,6 @@
     if (!refreshedTerrain && previousTerrain && previousTerrain.tileManager && isTerrainFlattened) {
       cachedTerrainInterface = previousTerrain;
     }
-    gradientPreparer.invalidateAll();
     analysisPreparer.invalidateAll();
     terrainNormalLayer.shaderMap.clear();
     if (map.getLayer('terrain-normal')) {
