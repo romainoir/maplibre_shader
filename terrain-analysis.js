@@ -989,6 +989,84 @@
 
   let cachedTerrainInterface = null;
 
+  const TERRAIN_SEARCH_MAX_DEPTH = 6;
+
+  function isTerrainInterfaceCandidate(value) {
+    if (!value || typeof value !== 'object') {
+      return false;
+    }
+    if (!('tileManager' in value)) {
+      return false;
+    }
+    const {tileManager} = value;
+    if (!tileManager || typeof tileManager !== 'object') {
+      return false;
+    }
+    const hasRenderable = typeof tileManager.getRenderableTiles === 'function';
+    const hasSourceLookup = typeof tileManager.getSourceTile === 'function';
+    return hasRenderable && hasSourceLookup;
+  }
+
+  function deepSearchTerrainInterface(root, options = {}) {
+    const {maxDepth = TERRAIN_SEARCH_MAX_DEPTH} = options;
+    if (!root || typeof root !== 'object' || maxDepth <= 0) {
+      return null;
+    }
+
+    const queue = [];
+    const visited = new Set();
+    const enqueue = (value, depth) => {
+      if (!value || typeof value !== 'object') {
+        return;
+      }
+      if (visited.has(value) || depth > maxDepth) {
+        return;
+      }
+      visited.add(value);
+      queue.push({value, depth});
+    };
+
+    enqueue(root, 0);
+
+    while (queue.length > 0) {
+      const {value, depth} = queue.shift();
+      if (!value) continue;
+
+      if (isTerrainInterfaceCandidate(value)) {
+        return value;
+      }
+
+      const nextDepth = depth + 1;
+      if (nextDepth > maxDepth) {
+        continue;
+      }
+
+      if (value instanceof Map) {
+        for (const child of value.values()) {
+          enqueue(child, nextDepth);
+        }
+        continue;
+      }
+
+      const keys = Array.isArray(value)
+        ? value.keys ? Array.from(value.keys()) : []
+        : Object.keys(value);
+
+      for (const key of keys) {
+        try {
+          const child = value[key];
+          enqueue(child, nextDepth);
+        } catch (error) {
+          if (DEBUG && console && console.warn) {
+            console.warn('Failed to inspect potential terrain interface candidate property', key, error);
+          }
+        }
+      }
+    }
+
+    return null;
+  }
+
   function getTerrainInterface(mapInstance) {
     if (!mapInstance) {
       return cachedTerrainInterface && cachedTerrainInterface.tileManager
@@ -997,7 +1075,7 @@
     }
 
     const fromPublicAPI = mapInstance.terrain;
-    if (fromPublicAPI && fromPublicAPI.tileManager) {
+    if (isTerrainInterfaceCandidate(fromPublicAPI)) {
       cachedTerrainInterface = fromPublicAPI;
       return fromPublicAPI;
     }
@@ -1012,49 +1090,39 @@
 
     const candidateTerrains = [];
     for (const painter of candidatePainters) {
-      if (painter && painter.terrain) {
+      if (isTerrainInterfaceCandidate(painter && painter.terrain)) {
         candidateTerrains.push(painter.terrain);
       }
       const styleMapTerrain = painter && painter.style && painter.style.map && painter.style.map.terrain;
-      if (styleMapTerrain) {
+      if (isTerrainInterfaceCandidate(styleMapTerrain)) {
         candidateTerrains.push(styleMapTerrain);
       }
     }
 
     const style = mapInstance.style;
-    if (style && style.map && style.map.terrain) {
+    if (isTerrainInterfaceCandidate(style && style.map && style.map.terrain)) {
       candidateTerrains.push(style.map.terrain);
     }
 
     for (const terrain of candidateTerrains) {
-      if (terrain && terrain.tileManager) {
+      if (isTerrainInterfaceCandidate(terrain)) {
         cachedTerrainInterface = terrain;
         return terrain;
       }
     }
 
-    const hasTerrain = Boolean(
-      mapInstance.terrain
-      || (mapInstance.painter && (mapInstance.painter.terrain || (mapInstance.painter.style && mapInstance.painter.style.map && mapInstance.painter.style.map.terrain)))
-      || (mapInstance._painter && (mapInstance._painter.terrain || (mapInstance._painter.style && mapInstance._painter.style.map && mapInstance._painter.style.map.terrain)))
-      || (mapInstance.style && mapInstance.style.map && mapInstance.style.map.terrain)
-    );
-    if (!hasTerrain) {
-      if (isTerrainFlattened && cachedTerrainInterface && cachedTerrainInterface.tileManager) {
-        return cachedTerrainInterface;
-      }
-      cachedTerrainInterface = null;
-      return null;
+    const discovered = deepSearchTerrainInterface(mapInstance);
+    if (isTerrainInterfaceCandidate(discovered)) {
+      cachedTerrainInterface = discovered;
+      return discovered;
     }
 
-    if (cachedTerrainInterface && !cachedTerrainInterface.tileManager) {
-      cachedTerrainInterface = null;
-      return null;
+    if (isTerrainFlattened && isTerrainInterfaceCandidate(cachedTerrainInterface)) {
+      return cachedTerrainInterface;
     }
 
-    return cachedTerrainInterface && cachedTerrainInterface.tileManager
-      ? cachedTerrainInterface
-      : null;
+    cachedTerrainInterface = null;
+    return null;
   }
 
   function getTerrainTileManager(mapInstance) {
