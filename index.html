@@ -115,6 +115,37 @@
       opacity: 0.55;
       cursor: default;
     }
+    #debugPanel {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      z-index: 12;
+      max-width: 320px;
+      padding: 12px;
+      border-radius: 8px;
+      background: rgba(0, 0, 0, 0.7);
+      color: #f5f5f5;
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+      font-size: 12px;
+      line-height: 1.5;
+      box-shadow: 0 8px 16px rgba(0, 0, 0, 0.35);
+      backdrop-filter: blur(4px);
+      pointer-events: auto;
+      user-select: text;
+    }
+    #debugPanel h3 {
+      margin: 0 0 8px;
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: #ffd7b5;
+    }
+    #debugContent {
+      margin: 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
   </style>
 </head>
 <body>
@@ -208,6 +239,10 @@
       <span id="gradientMaxValue">3.000 m</span>
     </div>
     <button id="gradientAutoButton" type="button">Use Auto Sampling</button>
+  </div>
+  <div id="debugPanel">
+    <h3>Debug Info</h3>
+    <pre id="debugContent">Initializing…</pre>
   </div>
   <div id="map"></div>
   <!-- Include shader definitions, gradient preparer and debugging helpers -->

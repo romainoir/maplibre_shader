@@ -94,10 +94,29 @@ const TerrainGradientPreparer = (function() {
       this.quadVbo = null;
       this.quadIbo = null;
       this.supported = true;
+      this.unsupportedReason = null;
       this.tileStates = new Map();
       this.invalidateVersion = 0;
       this.previousFramebuffer = null;
       this.previousViewport = null;
+      this.neighborCount = GRADIENT_NEIGHBOR_OFFSETS.length;
+      this.maxNeighborOffset = GRADIENT_MAX_NEIGHBOR_OFFSET;
+      this.lastFrameInfo = {
+        supported: true,
+        requestedTiles: 0,
+        preparedTiles: 0,
+        reusedTiles: 0,
+        discardedTiles: 0,
+        activeTiles: 0,
+        cachedTiles: 0,
+        samplingDistance: null,
+        neighborMatches: 0,
+        neighborFallbacks: 0,
+        neighborCount: GRADIENT_NEIGHBOR_OFFSETS.length,
+        maxNeighborOffset: GRADIENT_MAX_NEIGHBOR_OFFSET,
+        unsupportedReason: null,
+        timestamp: null
+      };
     }
 
     createShader(gl, type, source) {
@@ -142,20 +161,24 @@ const TerrainGradientPreparer = (function() {
       }
       this.dispose(gl);
       this.gl = gl;
+      this.unsupportedReason = null;
 
       const isWebGL2 = typeof WebGL2RenderingContext !== 'undefined' && gl instanceof WebGL2RenderingContext;
       if (!isWebGL2) {
         console.warn('TerrainGradientPreparer requires WebGL2 for float framebuffers. Falling back to runtime gradients.');
         this.supported = false;
+        this.unsupportedReason = 'WebGL2 context required';
         return;
       }
       const ext = gl.getExtension('EXT_color_buffer_float');
       if (!ext) {
         console.warn('TerrainGradientPreparer missing EXT_color_buffer_float; precomputed gradients disabled.');
         this.supported = false;
+        this.unsupportedReason = 'EXT_color_buffer_float missing';
         return;
       }
       this.supported = true;
+      this.unsupportedReason = null;
 
       const vertexSource = `#version 300 es\n`
         + `precision highp float;\n`
@@ -394,10 +417,65 @@ void main() {
         samplingDistance
       } = options;
 
-      if (!gl || !renderableTiles || renderableTiles.length === 0) return;
+      const requestedTiles = Array.isArray(renderableTiles) ? renderableTiles.length : 0;
+
+      if (!gl || !renderableTiles || requestedTiles === 0) {
+        this.lastFrameInfo = {
+          supported: this.supported,
+          requestedTiles,
+          preparedTiles: 0,
+          reusedTiles: 0,
+          discardedTiles: 0,
+          activeTiles: 0,
+          cachedTiles: this.tileStates.size,
+          samplingDistance: samplingDistance || null,
+          neighborMatches: 0,
+          neighborFallbacks: 0,
+          neighborCount: this.neighborCount,
+          maxNeighborOffset: this.maxNeighborOffset,
+          unsupportedReason: this.unsupportedReason,
+          timestamp: Date.now()
+        };
+        return;
+      }
 
       this.initialize(gl);
-      if (!this.supported || !this.program) return;
+      if (!this.supported || !this.program) {
+        this.lastFrameInfo = {
+          supported: false,
+          requestedTiles,
+          preparedTiles: 0,
+          reusedTiles: 0,
+          discardedTiles: 0,
+          activeTiles: 0,
+          cachedTiles: this.tileStates.size,
+          samplingDistance: samplingDistance || null,
+          neighborMatches: 0,
+          neighborFallbacks: 0,
+          neighborCount: this.neighborCount,
+          maxNeighborOffset: this.maxNeighborOffset,
+          unsupportedReason: this.unsupportedReason,
+          timestamp: Date.now()
+        };
+        return;
+      }
+
+      const frameInfo = {
+        supported: true,
+        requestedTiles,
+        preparedTiles: 0,
+        reusedTiles: 0,
+        discardedTiles: 0,
+        activeTiles: 0,
+        cachedTiles: this.tileStates.size,
+        samplingDistance: samplingDistance || null,
+        neighborMatches: 0,
+        neighborFallbacks: 0,
+        neighborCount: this.neighborCount,
+        maxNeighborOffset: this.maxNeighborOffset,
+        unsupportedReason: null,
+        timestamp: Date.now()
+      };
 
       const activeKeys = new Set();
       const rgbaFactors = { r: 256.0, g: 1.0, b: 1.0 / 256.0, base: 32768.0 };
@@ -447,8 +525,12 @@ void main() {
           needsUpdate = true;
         }
 
-        if (!needsUpdate) continue;
+        if (!needsUpdate) {
+          frameInfo.reusedTiles++;
+          continue;
+        }
 
+        frameInfo.preparedTiles++;
         this.ensureTileResources(gl, state, tileSize);
         gl.viewport(0, 0, tileSize, tileSize);
 
@@ -457,12 +539,15 @@ void main() {
         const neighborTextures = neighborOffsets.map(offset => {
           const neighborKey = this.getNeighborCacheKey(tile.tileID, offset);
           if (!neighborKey) {
+            frameInfo.neighborFallbacks++;
             return terrainData.texture;
           }
           const texture = textureCache.get(neighborKey);
           if (!texture) {
+            frameInfo.neighborFallbacks++;
             return terrainData.texture;
           }
+          frameInfo.neighborMatches++;
           return texture;
         });
 
@@ -509,13 +594,32 @@ void main() {
         gl.viewport(prevViewport[0], prevViewport[1], prevViewport[2], prevViewport[3]);
       }
 
+      let discardedTiles = 0;
       for (const [key, state] of this.tileStates.entries()) {
         if (!activeKeys.has(key)) {
           if (state.texture) gl.deleteTexture(state.texture);
           if (state.framebuffer) gl.deleteFramebuffer(state.framebuffer);
           this.tileStates.delete(key);
+          discardedTiles++;
         }
       }
+      frameInfo.discardedTiles = discardedTiles;
+      frameInfo.activeTiles = activeKeys.size;
+      frameInfo.cachedTiles = this.tileStates.size;
+      frameInfo.unsupportedReason = this.unsupportedReason;
+      this.lastFrameInfo = frameInfo;
+    }
+
+    getDebugInfo() {
+      return {
+        supported: this.supported,
+        unsupportedReason: this.unsupportedReason,
+        tileStateCount: this.tileStates.size,
+        invalidateVersion: this.invalidateVersion,
+        neighborCount: this.neighborCount,
+        maxNeighborOffset: this.maxNeighborOffset,
+        lastFrameInfo: this.lastFrameInfo
+      };
     }
   }
 
