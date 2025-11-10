@@ -207,7 +207,8 @@ ${SHADER_NEIGHBOR_FETCH_BLOCK_LOD}      return getElevationFromTextureLod(u_imag
     vec2 computeSobelGradient(vec2 pos) {
       if (u_usePrecomputedGradient == 1) {
         vec2 safePos = clampTexCoord(pos);
-        vec2 precomputed = texture(u_gradient, safePos).rg;
+        vec2 encoded = texture(u_gradient, safePos).rg;
+        vec2 precomputed = encoded * 2.0 - 1.0;
         return precomputed;
       }
       vec2 safePos = pos;
