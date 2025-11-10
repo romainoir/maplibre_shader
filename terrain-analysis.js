@@ -137,10 +137,27 @@
   const SHADOW_BUFFER_MINUTES = 30;
   const DEFAULT_DAYLIGHT_BOUNDS = { min: 360, max: 1080 };
   let shadowTimeBounds = { min: 0, max: 1439 };
-  let samplingDistance = 0.35;
+  const GRADIENT_ZOOM_PIVOT = 14;
+  const gradientParameters = {
+    baseDistance: 0.35,
+    minDistance: 0.2,
+    maxDistance: 3.0
+  };
+  let samplingDistance = gradientParameters.baseDistance;
+  let isSamplingDistanceManual = false;
   let shadowDateValue = null;
   let shadowTimeValue = null;
   let map;
+
+  let gradientSamplingSlider = null;
+  let gradientSamplingValueEl = null;
+  let gradientBaseSlider = null;
+  let gradientBaseValueEl = null;
+  let gradientMinSlider = null;
+  let gradientMinValueEl = null;
+  let gradientMaxSlider = null;
+  let gradientMaxValueEl = null;
+  let gradientAutoButton = null;
 
   const gradientPreparer = TerrainGradientPreparer.create();
   const EARTH_CIRCUMFERENCE_METERS = 40075016.68557849;
@@ -178,6 +195,23 @@
 
   function clamp(value, min, max) {
     return Math.max(min, Math.min(max, value));
+  }
+
+  function sanitizeGradientParameters() {
+    const minDistance = Math.max(0.05, Math.min(gradientParameters.minDistance, gradientParameters.maxDistance));
+    const maxDistance = Math.max(minDistance, Math.max(gradientParameters.minDistance, gradientParameters.maxDistance));
+    gradientParameters.minDistance = minDistance;
+    gradientParameters.maxDistance = maxDistance;
+    gradientParameters.baseDistance = clamp(gradientParameters.baseDistance, minDistance, maxDistance);
+  }
+
+  function clampSamplingDistanceToRange() {
+    const clamped = clamp(samplingDistance, gradientParameters.minDistance, gradientParameters.maxDistance);
+    if (Math.abs(clamped - samplingDistance) > 1e-4) {
+      samplingDistance = clamped;
+      return true;
+    }
+    return false;
   }
 
   function clamp01(value) {
@@ -352,23 +386,38 @@
   }
 
   function computeSamplingDistanceForZoom(zoom) {
+    sanitizeGradientParameters();
+    const minDistance = gradientParameters.minDistance;
+    const maxDistance = gradientParameters.maxDistance;
+    const baseDistance = clamp(gradientParameters.baseDistance, minDistance, maxDistance);
     if (!Number.isFinite(zoom)) {
-      return samplingDistance;
+      return baseDistance;
     }
-    const base = 0.35;
     const effectiveZoom = Math.min(Math.max(zoom, 0), DEM_MAX_ZOOM);
-    const scaled = base * Math.pow(2, 14 - effectiveZoom);
-    return clamp(scaled, 0.2, 3.0);
+    const scaled = baseDistance * Math.pow(2, GRADIENT_ZOOM_PIVOT - effectiveZoom);
+    return clamp(scaled, minDistance, maxDistance);
   }
 
-  function updateSamplingDistanceForZoom() {
+  function updateSamplingDistanceForZoom(forceInvalidate = false) {
     if (!map) return;
+    if (isSamplingDistanceManual) {
+      if (forceInvalidate) {
+        gradientPreparer.invalidateAll();
+        refreshGradientUI();
+      }
+      return;
+    }
+    const previousDistance = samplingDistance;
     const zoom = map.getZoom();
     const newDistance = computeSamplingDistanceForZoom(zoom);
     if (!Number.isFinite(newDistance)) return;
-    if (Math.abs(newDistance - samplingDistance) > 0.01) {
-      samplingDistance = newDistance;
+    samplingDistance = newDistance;
+    const changed = Math.abs(newDistance - previousDistance) > 0.01;
+    if (forceInvalidate || changed) {
       gradientPreparer.invalidateAll();
+    }
+    if (changed || forceInvalidate) {
+      refreshGradientUI();
     }
   }
 
@@ -980,6 +1029,161 @@
         snowBlurValueEl.textContent = snowBlurAmount.toFixed(2);
       }
       if (map && currentMode === "snow") map.triggerRepaint();
+    });
+  }
+
+  gradientSamplingSlider = document.getElementById('gradientSamplingSlider');
+  gradientSamplingValueEl = document.getElementById('gradientSamplingValue');
+  gradientBaseSlider = document.getElementById('gradientBaseSlider');
+  gradientBaseValueEl = document.getElementById('gradientBaseValue');
+  gradientMinSlider = document.getElementById('gradientMinSlider');
+  gradientMinValueEl = document.getElementById('gradientMinValue');
+  gradientMaxSlider = document.getElementById('gradientMaxSlider');
+  gradientMaxValueEl = document.getElementById('gradientMaxValue');
+  gradientAutoButton = document.getElementById('gradientAutoButton');
+
+  function refreshGradientUI() {
+    sanitizeGradientParameters();
+    if (gradientSamplingSlider) {
+      gradientSamplingSlider.min = gradientParameters.minDistance.toFixed(2);
+      gradientSamplingSlider.max = gradientParameters.maxDistance.toFixed(2);
+      if (document.activeElement !== gradientSamplingSlider) {
+        gradientSamplingSlider.value = samplingDistance.toFixed(2);
+      }
+    }
+    if (gradientSamplingValueEl) {
+      const modeLabel = isSamplingDistanceManual ? 'manual' : 'auto';
+      gradientSamplingValueEl.textContent = `${samplingDistance.toFixed(2)} m (${modeLabel})`;
+    }
+    if (gradientBaseSlider) {
+      gradientBaseSlider.min = gradientParameters.minDistance.toFixed(2);
+      gradientBaseSlider.max = gradientParameters.maxDistance.toFixed(2);
+      if (document.activeElement !== gradientBaseSlider) {
+        gradientBaseSlider.value = gradientParameters.baseDistance.toFixed(2);
+      }
+    }
+    if (gradientBaseValueEl) {
+      gradientBaseValueEl.textContent = `${gradientParameters.baseDistance.toFixed(2)} m`;
+    }
+    if (gradientMinSlider) {
+      gradientMinSlider.max = gradientParameters.maxDistance.toFixed(2);
+      if (document.activeElement !== gradientMinSlider) {
+        gradientMinSlider.value = gradientParameters.minDistance.toFixed(2);
+      }
+    }
+    if (gradientMinValueEl) {
+      gradientMinValueEl.textContent = `${gradientParameters.minDistance.toFixed(2)} m`;
+    }
+    if (gradientMaxSlider) {
+      gradientMaxSlider.min = gradientParameters.minDistance.toFixed(2);
+      if (document.activeElement !== gradientMaxSlider) {
+        gradientMaxSlider.value = gradientParameters.maxDistance.toFixed(2);
+      }
+    }
+    if (gradientMaxValueEl) {
+      gradientMaxValueEl.textContent = `${gradientParameters.maxDistance.toFixed(2)} m`;
+    }
+    if (gradientAutoButton) {
+      gradientAutoButton.disabled = !isSamplingDistanceManual;
+    }
+  }
+
+  sanitizeGradientParameters();
+  clampSamplingDistanceToRange();
+  refreshGradientUI();
+
+  if (gradientSamplingSlider) {
+    gradientSamplingSlider.addEventListener('input', (e) => {
+      const value = parseFloat(e.target.value);
+      if (!Number.isFinite(value)) return;
+      sanitizeGradientParameters();
+      samplingDistance = clamp(value, gradientParameters.minDistance, gradientParameters.maxDistance);
+      isSamplingDistanceManual = true;
+      gradientPreparer.invalidateAll();
+      refreshGradientUI();
+      if (map) map.triggerRepaint();
+    });
+  }
+
+  if (gradientBaseSlider) {
+    gradientBaseSlider.addEventListener('input', (e) => {
+      const value = parseFloat(e.target.value);
+      if (!Number.isFinite(value)) return;
+      gradientParameters.baseDistance = value;
+      sanitizeGradientParameters();
+      if (isSamplingDistanceManual) {
+        clampSamplingDistanceToRange();
+      } else {
+        const zoom = map ? map.getZoom() : undefined;
+        const newDistance = computeSamplingDistanceForZoom(zoom);
+        if (Number.isFinite(newDistance)) {
+          samplingDistance = newDistance;
+        }
+      }
+      gradientPreparer.invalidateAll();
+      refreshGradientUI();
+      if (map) map.triggerRepaint();
+    });
+  }
+
+  if (gradientMinSlider) {
+    gradientMinSlider.addEventListener('input', (e) => {
+      const value = parseFloat(e.target.value);
+      if (!Number.isFinite(value)) return;
+      gradientParameters.minDistance = value;
+      sanitizeGradientParameters();
+      if (isSamplingDistanceManual) {
+        clampSamplingDistanceToRange();
+      } else {
+        const zoom = map ? map.getZoom() : undefined;
+        const newDistance = computeSamplingDistanceForZoom(zoom);
+        if (Number.isFinite(newDistance)) {
+          samplingDistance = newDistance;
+        }
+      }
+      gradientPreparer.invalidateAll();
+      refreshGradientUI();
+      if (map) map.triggerRepaint();
+    });
+  }
+
+  if (gradientMaxSlider) {
+    gradientMaxSlider.addEventListener('input', (e) => {
+      const value = parseFloat(e.target.value);
+      if (!Number.isFinite(value)) return;
+      gradientParameters.maxDistance = value;
+      sanitizeGradientParameters();
+      if (isSamplingDistanceManual) {
+        clampSamplingDistanceToRange();
+      } else {
+        const zoom = map ? map.getZoom() : undefined;
+        const newDistance = computeSamplingDistanceForZoom(zoom);
+        if (Number.isFinite(newDistance)) {
+          samplingDistance = newDistance;
+        }
+      }
+      gradientPreparer.invalidateAll();
+      refreshGradientUI();
+      if (map) map.triggerRepaint();
+    });
+  }
+
+  if (gradientAutoButton) {
+    gradientAutoButton.addEventListener('click', () => {
+      if (!isSamplingDistanceManual) return;
+      isSamplingDistanceManual = false;
+      clampSamplingDistanceToRange();
+      if (map) {
+        updateSamplingDistanceForZoom(true);
+      } else {
+        const newDistance = computeSamplingDistanceForZoom(undefined);
+        if (Number.isFinite(newDistance)) {
+          samplingDistance = newDistance;
+        }
+        gradientPreparer.invalidateAll();
+      }
+      refreshGradientUI();
+      if (map) map.triggerRepaint();
     });
   }
 

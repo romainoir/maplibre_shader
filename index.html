@@ -54,6 +54,67 @@
       gap: 6px;
     }
     input[type="range"] { vertical-align: middle; }
+    #gradientMenu {
+      position: absolute;
+      bottom: 10px;
+      left: 10px;
+      z-index: 11;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      width: 260px;
+      padding: 12px;
+      border-radius: 8px;
+      background: rgba(0, 0, 0, 0.65);
+      color: #fff;
+      font-family: sans-serif;
+      font-size: 12px;
+      box-shadow: 0 8px 16px rgba(0, 0, 0, 0.35);
+      backdrop-filter: blur(4px);
+    }
+    #gradientMenu h3 {
+      margin: 0;
+      font-size: 13px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: #f2f2f2;
+    }
+    #gradientMenu .gradient-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    #gradientMenu label {
+      flex: 0 0 110px;
+      font-weight: 500;
+    }
+    #gradientMenu input[type="range"] {
+      flex: 1 1 auto;
+    }
+    #gradientMenu span {
+      flex: 0 0 70px;
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+    }
+    #gradientMenu button {
+      margin-top: 4px;
+      padding: 6px 10px;
+      font-size: 12px;
+      border: none;
+      border-radius: 4px;
+      background: #ee8a65;
+      color: #fff;
+      cursor: pointer;
+      transition: background 0.2s, opacity 0.2s;
+    }
+    #gradientMenu button:hover:not(:disabled) {
+      background: #e67e54;
+    }
+    #gradientMenu button:disabled {
+      opacity: 0.55;
+      cursor: default;
+    }
   </style>
 </head>
 <body>
@@ -122,6 +183,30 @@
         <span id="shadowRayStepMultiplierValue">1.00</span>
       </div>
     </div>
+  </div>
+  <div id="gradientMenu">
+    <h3>Gradient Parameters</h3>
+    <div class="gradient-row">
+      <label for="gradientSamplingSlider">Sampling Distance</label>
+      <input type="range" id="gradientSamplingSlider" min="0.20" max="3.00" step="0.01" value="0.35">
+      <span id="gradientSamplingValue">0.35 m</span>
+    </div>
+    <div class="gradient-row">
+      <label for="gradientBaseSlider">Base Distance</label>
+      <input type="range" id="gradientBaseSlider" min="0.20" max="3.00" step="0.01" value="0.35">
+      <span id="gradientBaseValue">0.35 m</span>
+    </div>
+    <div class="gradient-row">
+      <label for="gradientMinSlider">Min Distance</label>
+      <input type="range" id="gradientMinSlider" min="0.05" max="2.00" step="0.01" value="0.20">
+      <span id="gradientMinValue">0.20 m</span>
+    </div>
+    <div class="gradient-row">
+      <label for="gradientMaxSlider">Max Distance</label>
+      <input type="range" id="gradientMaxSlider" min="0.20" max="6.00" step="0.01" value="3.00">
+      <span id="gradientMaxValue">3.00 m</span>
+    </div>
+    <button id="gradientAutoButton" type="button">Use Auto Sampling</button>
   </div>
   <div id="map"></div>
   <!-- Include shader definitions, gradient preparer and debugging helpers -->
