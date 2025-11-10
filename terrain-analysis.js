@@ -3,15 +3,29 @@
   const DEBUG = false;
   const HillshadeDebug = window.__MapLibreHillshadeDebug || null;
   const hillshadeDebugEnabled = (() => {
+    const NEGATIVE_FLAGS = ['0', 'false', 'off', 'disable', 'disabled', 'no'];
+    const isDisabledValue = (value) => {
+      if (typeof value !== 'string') return false;
+      return NEGATIVE_FLAGS.includes(value.trim().toLowerCase());
+    };
     try {
       const searchParams = new URLSearchParams(window.location.search || '');
       if (searchParams.has('hillshadeDebug')) {
+        const value = searchParams.get('hillshadeDebug');
+        return !isDisabledValue(value);
+      }
+      if (typeof window.location.hash === 'string' && window.location.hash.includes('hillshadeDebug')) {
+        const hash = window.location.hash;
+        const match = hash.match(/hillshadeDebug=([^&]+)/i);
+        if (match) {
+          return !isDisabledValue(match[1]);
+        }
         return true;
       }
-      return typeof window.location.hash === 'string' && window.location.hash.includes('hillshadeDebug');
+      return true;
     } catch (error) {
       if (DEBUG) console.warn('Failed to evaluate hillshade debug flag', error);
-      return false;
+      return true;
     }
   })();
 
