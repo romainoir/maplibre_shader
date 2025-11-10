@@ -1,5 +1,6 @@
 /* terrain-shaders.js */
-const SHADER_MAX_NEIGHBOR_OFFSET = 2;
+// Use only the current tile data by disabling neighbor offsets.
+const SHADER_MAX_NEIGHBOR_OFFSET = 0;
 const DAYLIGHT_SHADER_SAMPLE_CAP = 16;
 const SHADER_NEIGHBOR_NAME_OVERRIDES = {
   '-1,0': 'u_image_left',
