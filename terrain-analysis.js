@@ -111,10 +111,37 @@
   }
 
   function collectNativeHillshadeTextures(mapInstance) {
-    const tiles = getHillshadeDebugTiles(mapInstance, { onlyPrepared: true });
+    if (!mapInstance) {
+      return null;
+    }
+
+    let tiles = getHillshadeDebugTiles(mapInstance, { onlyPrepared: true });
+
+    if (!tiles.length) {
+      const mapStyle = mapInstance && mapInstance.style;
+      if (mapStyle) {
+        let sourceCache = null;
+        try {
+          const sourceCaches = mapStyle.sourceCaches || mapStyle._sourceCaches || {};
+          sourceCache = sourceCaches[TERRAIN_SOURCE_ID] || (typeof mapStyle.getSourceCache === 'function'
+            ? mapStyle.getSourceCache(TERRAIN_SOURCE_ID)
+            : null);
+        } catch (error) {
+          sourceCache = null;
+        }
+        if (sourceCache) {
+          const tileEntries = sourceCache._tiles || sourceCache.tiles || {};
+          tiles = Array.isArray(tileEntries)
+            ? tileEntries.filter(Boolean)
+            : Object.keys(tileEntries).map(key => tileEntries[key]).filter(Boolean);
+        }
+      }
+    }
+
     if (!tiles.length) {
       return null;
     }
+
     const cache = new Map();
     for (const tile of tiles) {
       const key = tile && tile.tileID ? tile.tileID.key : null;
