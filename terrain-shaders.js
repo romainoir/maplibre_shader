@@ -462,13 +462,38 @@ ${SHADER_NEIGHBOR_FETCH_BLOCK_LOD}      return getElevationFromTextureLod(u_imag
             return coverage;
         }
         vec3 evaluateSnowHillshade(vec2 grad) {
-            vec3 normal = normalize(vec3(-grad, 1.0));
+            vec3 normal = normalize(vec3(-grad * 1.5, 1.0));
             vec3 lightDir = normalize(vec3(0.45, 0.35, 0.82));
             float diffuse = clamp(dot(normal, lightDir), -1.0, 1.0);
-            float shade = clamp(0.55 + 0.45 * diffuse, 0.0, 1.0);
-            vec3 shadowColor = vec3(0.78, 0.82, 0.86);
+            float lambert = clamp(0.5 + 0.5 * diffuse, 0.0, 1.0);
+            float contrast = pow(lambert, 0.75);
+            float shadowBoost = pow(1.0 - lambert, 2.0);
+            vec3 shadowColor = vec3(0.68, 0.73, 0.82);
             vec3 highlightColor = vec3(1.0);
-            return mix(shadowColor, highlightColor, shade);
+            vec3 color = mix(shadowColor, highlightColor, contrast);
+            color *= (1.0 - 0.25 * shadowBoost);
+            float specular = pow(max(diffuse, 0.0), 8.0) * 0.1;
+            color = min(color + specular, vec3(1.0));
+            return color;
+        }
+        float computeSnowMask(vec2 pos) {
+            float slopeSoftness = 1.5;
+            float elevation = getElevationExtended(pos);
+            vec2 grad = computeSobelGradient(pos);
+            float slope = degrees(atan(length(grad)));
+            float aspect = getAspect(grad);
+            float altitudeMask = smoothstep(
+                u_snow_altitude + 100.0,
+                u_snow_altitude + 200.0,
+                elevation
+            );
+            float slopeMask = 1.0 - smoothstep(
+                u_snow_maxSlope - slopeSoftness,
+                u_snow_maxSlope + slopeSoftness,
+                slope
+            );
+            float snowCoverage = getSnowCoverageForElevation(elevation, aspect);
+            return clamp(altitudeMask * slopeMask * snowCoverage, 0.0, 1.0);
         }
         void main() {
             vec2 grad = computeSobelGradient(v_texCoord);
@@ -479,10 +504,32 @@ ${SHADER_NEIGHBOR_FETCH_BLOCK_LOD}      return getElevationFromTextureLod(u_imag
                 u_snow_altitude + 200.0,
                 v_elevation
             );
-            float slopeMask = step(slope, u_snow_maxSlope);
+            float slopeSoftness = 1.5;
+            float slopeMask = 1.0 - smoothstep(
+                u_snow_maxSlope - slopeSoftness,
+                u_snow_maxSlope + slopeSoftness,
+                slope
+            );
             float snowCoverage = getSnowCoverageForElevation(v_elevation, aspect);
+            float baseMask = clamp(altitudeMask * slopeMask * snowCoverage, 0.0, 1.0);
+            vec2 texel = 1.0 / u_dimension;
+            float accum = baseMask * 4.0;
+            float weight = 4.0;
+            const vec2 kernelOffsets[8] = vec2[](
+                vec2(1.0, 0.0), vec2(-1.0, 0.0),
+                vec2(0.0, 1.0), vec2(0.0, -1.0),
+                vec2(1.0, 1.0), vec2(1.0, -1.0),
+                vec2(-1.0, 1.0), vec2(-1.0, -1.0)
+            );
+            const float kernelWeights[8] = float[](2.0, 2.0, 2.0, 2.0, 1.0, 1.0, 1.0, 1.0);
+            for (int i = 0; i < 8; i++) {
+                vec2 offset = kernelOffsets[i] * texel;
+                float neighborMask = computeSnowMask(v_texCoord + offset);
+                accum += neighborMask * kernelWeights[i];
+                weight += kernelWeights[i];
+            }
+            float finalMask = clamp(accum / weight, 0.0, 1.0);
             vec3 snowColor = evaluateSnowHillshade(grad);
-            float finalMask = clamp(altitudeMask * slopeMask * snowCoverage, 0.0, 1.0);
             fragColor = vec4(snowColor, finalMask * 0.95);
         }`;
 
