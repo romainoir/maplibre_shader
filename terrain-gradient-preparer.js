@@ -571,9 +571,9 @@ void main() {
         state.demUid = demUid;
         state.size = tileSize;
 
-        if (sourceTile) {
-          sourceTile.needsHillshadePrepare = false;
-        }
+        // Do not override the native hillshade preparation flag here. When
+        // MapLibre's own hillshade layer is present it will manage this state
+        // and produce the gradients that our custom pipeline can reuse.
       }
 
       gl.disableVertexAttribArray(this.attributes.a_pos);
