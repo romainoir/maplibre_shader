@@ -136,10 +136,19 @@
   const SHADOW_BUFFER_MINUTES = 30;
   const DEFAULT_DAYLIGHT_BOUNDS = { min: 360, max: 1080 };
   let shadowTimeBounds = { min: 0, max: 1439 };
-  let samplingDistance = 0.35;
+  let samplingDistanceBase = 0.35;
+  let samplingDistance = samplingDistanceBase;
+  let usePrecomputedGradients = true;
   let shadowDateValue = null;
   let shadowTimeValue = null;
   let map;
+  let debugControlsVisible = false;
+  let debugButtonElement = null;
+  let debugControlsElement = null;
+  let neighborOffsetSliderElement = null;
+  let neighborOffsetValueElement = null;
+  let samplingDistanceSliderElement = null;
+  let samplingDistanceValueElement = null;
 
   const gradientPreparer = TerrainGradientPreparer.create();
   const EARTH_CIRCUMFERENCE_METERS = 40075016.68557849;
@@ -354,10 +363,10 @@
     if (!Number.isFinite(zoom)) {
       return samplingDistance;
     }
-    const base = 0.35;
+    const base = Math.max(0.05, samplingDistanceBase);
     const effectiveZoom = Math.min(Math.max(zoom, 0), DEM_MAX_ZOOM);
     const scaled = base * Math.pow(2, 14 - effectiveZoom);
-    return clamp(scaled, 0.2, 3.0);
+    return clamp(scaled, 0.1, 3.0);
   }
 
   function updateSamplingDistanceForZoom() {
@@ -474,8 +483,10 @@
     patchPrototype(window.maplibregl?.Transform?.prototype);
     patchPrototype(window.maplibregl?.MercatorTransform?.prototype);
   })();
-  // Disable neighbor tile sampling so only the primary tile is used.
-  const MAX_NEIGHBOR_OFFSET = 0;
+  // Runtime-configurable neighbor tile sampling parameters.
+  let maxNeighborOffset = (typeof TerrainShaders !== 'undefined' && typeof TerrainShaders.getMaxNeighborOffset === 'function')
+    ? TerrainShaders.getMaxNeighborOffset()
+    : 0;
   const NEIGHBOR_NAME_OVERRIDES = {
     '-1,0': 'u_image_left',
     '1,0': 'u_image_right',
@@ -519,7 +530,39 @@
     return offsets;
   }
 
-  const NEIGHBOR_OFFSETS = generateNeighborOffsets(MAX_NEIGHBOR_OFFSET);
+  let NEIGHBOR_OFFSETS = generateNeighborOffsets(maxNeighborOffset);
+
+  function applyNeighborOffsetConfiguration(offset) {
+    maxNeighborOffset = offset;
+    NEIGHBOR_OFFSETS = generateNeighborOffsets(maxNeighborOffset);
+    if (TerrainShaders && typeof TerrainShaders.configure === 'function') {
+      TerrainShaders.configure({ maxNeighborOffset });
+    }
+    if (TerrainGradientPreparer && typeof TerrainGradientPreparer.configure === 'function') {
+      TerrainGradientPreparer.configure({ maxNeighborOffset });
+    }
+  }
+
+  function setNeighborSamplingRadius(offset) {
+    const target = Math.max(0, Math.min(3, Math.round(Number(offset) || 0)));
+    if (target === maxNeighborOffset) {
+      return false;
+    }
+    applyNeighborOffsetConfiguration(target);
+    if (neighborOffsetSliderElement) {
+      neighborOffsetSliderElement.value = String(target);
+    }
+    if (neighborOffsetValueElement) {
+      neighborOffsetValueElement.textContent = String(target);
+    }
+    if (terrainNormalLayer && terrainNormalLayer.shaderMap) {
+      terrainNormalLayer.shaderMap.clear();
+    }
+    gradientPreparer.invalidateAll();
+    return true;
+  }
+
+  applyNeighborOffsetConfiguration(maxNeighborOffset);
 
   function getTileCacheKey(tileID) {
     if (!tileID || !tileID.canonical) return '';
@@ -954,8 +997,74 @@
     if (shadowControls) {
       shadowControls.style.display = (isCustomActive && (currentMode === "shadow" || currentMode === "daylight")) ? "flex" : "none";
     }
+    if (debugButtonElement) {
+      debugButtonElement.classList.toggle('active', debugControlsVisible);
+    }
+    if (debugControlsElement) {
+      debugControlsElement.style.display = debugControlsVisible ? 'flex' : 'none';
+    }
+  }
+
+  function setDebugControlsVisible(visible) {
+    debugControlsVisible = !!visible;
+    updateButtons();
   }
   
+  debugButtonElement = document.getElementById('debugBtn');
+  debugControlsElement = document.getElementById('debugControls');
+  if (debugControlsElement) {
+    debugControlsElement.style.display = 'none';
+  }
+  if (debugButtonElement) {
+    debugButtonElement.addEventListener('click', () => {
+      setDebugControlsVisible(!debugControlsVisible);
+    });
+  }
+
+  neighborOffsetSliderElement = document.getElementById('neighborOffsetSlider');
+  neighborOffsetValueElement = document.getElementById('neighborOffsetValue');
+  if (neighborOffsetSliderElement && neighborOffsetValueElement) {
+    neighborOffsetSliderElement.value = String(maxNeighborOffset);
+    neighborOffsetValueElement.textContent = String(maxNeighborOffset);
+    neighborOffsetSliderElement.addEventListener('input', (e) => {
+      const value = Math.max(0, Math.round(Number(e.target.value) || 0));
+      neighborOffsetValueElement.textContent = String(value);
+      const changed = setNeighborSamplingRadius(value);
+      if (changed && map) {
+        map.triggerRepaint();
+      }
+    });
+  }
+
+  samplingDistanceSliderElement = document.getElementById('samplingDistanceSlider');
+  samplingDistanceValueElement = document.getElementById('samplingDistanceValue');
+  if (samplingDistanceSliderElement && samplingDistanceValueElement) {
+    samplingDistanceSliderElement.value = samplingDistanceBase.toFixed(2);
+    samplingDistanceValueElement.textContent = samplingDistanceBase.toFixed(2);
+    samplingDistanceSliderElement.addEventListener('input', (e) => {
+      const next = Math.max(0.05, parseFloat(e.target.value));
+      if (!Number.isFinite(next)) {
+        return;
+      }
+      samplingDistanceBase = next;
+      samplingDistanceValueElement.textContent = samplingDistanceBase.toFixed(2);
+      updateSamplingDistanceForZoom();
+      gradientPreparer.invalidateAll();
+      if (map) map.triggerRepaint();
+    });
+  }
+
+  const precomputedGradientToggle = document.getElementById('precomputedGradientToggle');
+  if (precomputedGradientToggle) {
+    precomputedGradientToggle.checked = usePrecomputedGradients;
+    precomputedGradientToggle.addEventListener('change', (e) => {
+      usePrecomputedGradients = !!e.target.checked;
+      if (map) map.triggerRepaint();
+    });
+  }
+
+  setDebugControlsVisible(false);
+
   // Slider event listeners
   document.getElementById('snowAltitudeSlider').addEventListener('input', (e) => {
     snowAltitude = parseFloat(e.target.value);
@@ -1378,7 +1487,7 @@
 
         if (terrainData.texture && shader.locations.u_image != null) {
           bindTexture(terrainData.texture, 0, 'u_image');
-          if (currentMode === "shadow" || currentMode === "daylight") {
+          if (NEIGHBOR_OFFSETS.length > 0) {
             NEIGHBOR_OFFSETS.forEach((neighbor, index) => {
               const texture = getNeighborTexture(
                 tile.tileID,
@@ -1399,11 +1508,11 @@
         if (!gradientTexture) {
           gradientTexture = gradientPreparer.getTexture(tile.tileID.key);
         }
-        const hasGradient = !!gradientTexture;
+        const gradientEnabled = usePrecomputedGradients && !!gradientTexture;
         if (shader.locations.u_usePrecomputedGradient != null) {
-          gl.uniform1i(shader.locations.u_usePrecomputedGradient, hasGradient ? 1 : 0);
+          gl.uniform1i(shader.locations.u_usePrecomputedGradient, gradientEnabled ? 1 : 0);
         }
-        if (hasGradient && gradientTexture) {
+        if (gradientEnabled && gradientTexture) {
           bindTexture(gradientTexture, gradientTextureUnit, 'u_gradient');
         } else if (shader.locations.u_gradient != null) {
           gl.activeTexture(gl.TEXTURE0 + gradientTextureUnit);

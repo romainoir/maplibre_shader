@@ -1,6 +1,6 @@
 /* terrain-shaders.js */
-// Use only the current tile data by disabling neighbor offsets.
-const SHADER_MAX_NEIGHBOR_OFFSET = 0;
+// Use only the current tile data by default and allow runtime configuration.
+let SHADER_MAX_NEIGHBOR_OFFSET = 0;
 const DAYLIGHT_SHADER_SAMPLE_CAP = 16;
 const SHADER_NEIGHBOR_NAME_OVERRIDES = {
   '-1,0': 'u_image_left',
@@ -41,29 +41,28 @@ function shaderBuildNeighborOffsets(maxOffset) {
   return offsets;
 }
 
-const SHADER_NEIGHBOR_OFFSETS = shaderBuildNeighborOffsets(SHADER_MAX_NEIGHBOR_OFFSET);
-const SHADER_NEIGHBOR_UNIFORM_DECLARATIONS = SHADER_NEIGHBOR_OFFSETS
+let SHADER_NEIGHBOR_OFFSETS = shaderBuildNeighborOffsets(SHADER_MAX_NEIGHBOR_OFFSET);
+let SHADER_NEIGHBOR_UNIFORM_DECLARATIONS = SHADER_NEIGHBOR_OFFSETS
   .map(({ uniform }) => `    uniform sampler2D ${uniform};`)
   .join('\n');
-const SHADER_NEIGHBOR_UNIFORM_BLOCK = SHADER_NEIGHBOR_UNIFORM_DECLARATIONS
+let SHADER_NEIGHBOR_UNIFORM_BLOCK = SHADER_NEIGHBOR_UNIFORM_DECLARATIONS
   ? `${SHADER_NEIGHBOR_UNIFORM_DECLARATIONS}\n`
   : '';
-const SHADER_NEIGHBOR_FETCH_CASES = SHADER_NEIGHBOR_OFFSETS
+let SHADER_NEIGHBOR_FETCH_CASES = SHADER_NEIGHBOR_OFFSETS
   .map(({ dx, dy, uniform }) => `      if (offset == ivec2(${dx}, ${dy})) {\n        return getElevationFromTexture(${uniform}, tilePos);\n      }`)
   .join('\n');
-const SHADER_NEIGHBOR_FETCH_BLOCK = SHADER_NEIGHBOR_FETCH_CASES
+let SHADER_NEIGHBOR_FETCH_BLOCK = SHADER_NEIGHBOR_FETCH_CASES
   ? `\n${SHADER_NEIGHBOR_FETCH_CASES}\n`
   : '';
-const SHADER_NEIGHBOR_FETCH_CASES_LOD = SHADER_NEIGHBOR_OFFSETS
+let SHADER_NEIGHBOR_FETCH_CASES_LOD = SHADER_NEIGHBOR_OFFSETS
   .map(({ dx, dy, uniform }) => `      if (offset == ivec2(${dx}, ${dy})) {\n        return getElevationFromTextureLod(${uniform}, tilePos, lod);\n      }`)
   .join('\n');
-const SHADER_NEIGHBOR_FETCH_BLOCK_LOD = SHADER_NEIGHBOR_FETCH_CASES_LOD
+let SHADER_NEIGHBOR_FETCH_BLOCK_LOD = SHADER_NEIGHBOR_FETCH_CASES_LOD
   ? `\n${SHADER_NEIGHBOR_FETCH_CASES_LOD}\n`
   : '';
 
-const TerrainShaders = {
-  // Common GLSL functions shared among the fragment shaders.
-  commonFunctions: `
+function buildCommonFunctions() {
+  return `
     precision highp float;
     precision highp int;
     uniform sampler2D u_image;
@@ -229,7 +228,62 @@ ${SHADER_NEIGHBOR_FETCH_BLOCK_LOD}      return getElevationFromTextureLod(u_imag
 
       return vec2(gx, gy);
     }
-  `,
+  `;
+}
+
+let shaderCommonFunctionsCache = null;
+
+function rebuildShaderNeighborConfiguration() {
+  SHADER_NEIGHBOR_OFFSETS = shaderBuildNeighborOffsets(SHADER_MAX_NEIGHBOR_OFFSET);
+  SHADER_NEIGHBOR_UNIFORM_DECLARATIONS = SHADER_NEIGHBOR_OFFSETS
+    .map(({ uniform }) => `    uniform sampler2D ${uniform};`)
+    .join('\n');
+  SHADER_NEIGHBOR_UNIFORM_BLOCK = SHADER_NEIGHBOR_UNIFORM_DECLARATIONS
+    ? `${SHADER_NEIGHBOR_UNIFORM_DECLARATIONS}\n`
+    : '';
+  SHADER_NEIGHBOR_FETCH_CASES = SHADER_NEIGHBOR_OFFSETS
+    .map(({ dx, dy, uniform }) => `      if (offset == ivec2(${dx}, ${dy})) {\n        return getElevationFromTexture(${uniform}, tilePos);\n      }`)
+    .join('\n');
+  SHADER_NEIGHBOR_FETCH_BLOCK = SHADER_NEIGHBOR_FETCH_CASES
+    ? `\n${SHADER_NEIGHBOR_FETCH_CASES}\n`
+    : '';
+  SHADER_NEIGHBOR_FETCH_CASES_LOD = SHADER_NEIGHBOR_OFFSETS
+    .map(({ dx, dy, uniform }) => `      if (offset == ivec2(${dx}, ${dy})) {\n        return getElevationFromTextureLod(${uniform}, tilePos, lod);\n      }`)
+    .join('\n');
+  SHADER_NEIGHBOR_FETCH_BLOCK_LOD = SHADER_NEIGHBOR_FETCH_CASES_LOD
+    ? `\n${SHADER_NEIGHBOR_FETCH_CASES_LOD}\n`
+    : '';
+  shaderCommonFunctionsCache = null;
+}
+
+const TerrainShaders = {
+  // Allow tests and debug tools to adjust the shader configuration at runtime.
+  configure(options = {}) {
+    let changed = false;
+    if (options && typeof options.maxNeighborOffset === 'number') {
+      const next = Math.max(0, Math.min(4, Math.round(options.maxNeighborOffset)));
+      if (next !== SHADER_MAX_NEIGHBOR_OFFSET) {
+        SHADER_MAX_NEIGHBOR_OFFSET = next;
+        changed = true;
+      }
+    }
+    if (changed) {
+      rebuildShaderNeighborConfiguration();
+    }
+    return changed;
+  },
+  getNeighborOffsets() {
+    return SHADER_NEIGHBOR_OFFSETS.slice();
+  },
+  getMaxNeighborOffset() {
+    return SHADER_MAX_NEIGHBOR_OFFSET;
+  },
+  get commonFunctions() {
+    if (shaderCommonFunctionsCache === null) {
+      shaderCommonFunctionsCache = buildCommonFunctions();
+    }
+    return shaderCommonFunctionsCache;
+  },
 
   // Vertex shader
   getVertexShader: function(shaderDescription, extent) {
