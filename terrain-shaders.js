@@ -235,25 +235,41 @@ ${SHADER_NEIGHBOR_FETCH_BLOCK_LOD}      return getElevationFromTextureLod(u_imag
         vec2 precomputed = texture(u_gradient, safePos).rg;
         return precomputed;
       }
-      vec2 safePos = pos;
-      float metersPerPixel = max(u_metersPerPixel, 0.0001);
-      float metersPerTile  = metersPerPixel * u_dimension.x;
-      float sampleDist = max(u_samplingDistance, 0.0001);
-      float delta = sampleDist / metersPerTile;
-      float denom = 2.0 * sampleDist;
 
-      vec2 dx = vec2(delta, 0.0);
-      vec2 dy = vec2(0.0, delta);
+      float dimX = max(u_dimension.x, 1.0);
+      float dimY = max(u_dimension.y, 1.0);
+      vec2 texel = vec2(1.0 / dimX, 1.0 / dimY);
+      vec2 dx = vec2(texel.x, 0.0);
+      vec2 dy = vec2(0.0, texel.y);
 
-      float left = getElevationExtended(safePos - dx);
-      float right = getElevationExtended(safePos + dx);
-      float top = getElevationExtended(safePos - dy);
-      float bottom = getElevationExtended(safePos + dy);
+      float a = getElevationExtended(pos - dx - dy);
+      float b = getElevationExtended(pos - dy);
+      float c = getElevationExtended(pos + dx - dy);
+      float d = getElevationExtended(pos - dx);
+      float f = getElevationExtended(pos + dx);
+      float g = getElevationExtended(pos - dx + dy);
+      float h = getElevationExtended(pos + dy);
+      float i = getElevationExtended(pos + dx + dy);
 
-      float gx = (right - left) / denom;
-      float gy = (bottom - top) / denom;
+      vec2 deriv = vec2(
+        (c + f + f + i) - (a + d + d + g),
+        (g + h + h + i) - (a + b + b + c)
+      );
 
-      return vec2(gx, gy);
+      float tileSize = max(u_dimension.x - 2.0, 1.0);
+      float exaggerationFactor = u_zoom < 2.0 ? 0.4 : (u_zoom < 4.5 ? 0.35 : 0.3);
+      float exaggeration = u_zoom < 15.0 ? (u_zoom - 15.0) * exaggerationFactor : 0.0;
+      float zoomScale = pow(2.0, (28.25619978527 - u_zoom) + exaggeration);
+      deriv *= tileSize / zoomScale;
+
+      float lat = (u_latrange.x - u_latrange.y) * (1.0 - pos.y) + u_latrange.y;
+      float scaleFactor = max(cos(radians(lat)), 0.000001);
+      deriv /= scaleFactor;
+
+      float samplingScale = 0.35 / max(u_samplingDistance, 0.0001);
+      deriv *= samplingScale;
+
+      return deriv;
     }
   `;
 }

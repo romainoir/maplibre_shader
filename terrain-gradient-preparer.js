@@ -166,6 +166,7 @@ uniform vec2 u_dimension;
 uniform float u_zoom;
 uniform float u_samplingDistance;
 uniform float u_metersPerPixel;
+uniform vec2 u_latrange;
 bool isNeighborFallback(uint maskBit) {
   return (u_neighborFallbackMask & maskBit) != uint(0);
 }
@@ -236,27 +237,40 @@ ${GRADIENT_NEIGHBOR_FETCH_BLOCK}  vec2 clampedPos = clampTexCoord(tilePos);
   return getElevationFromTexture(u_image, clampedPos);
 }
 void main() {
-  float sampleDist = max(u_samplingDistance, 0.0001);
-  float metersPerPixel = max(u_metersPerPixel, 0.0001);
-  float metersPerTile = metersPerPixel * u_dimension.x;
-  float delta = sampleDist / metersPerTile;
-  float delta2 = delta * 2.0;
-  float denom = 12.0 * sampleDist;
-  vec2 dx1 = vec2(delta, 0.0);
-  vec2 dx2 = vec2(delta2, 0.0);
-  vec2 dy1 = vec2(0.0, delta);
-  vec2 dy2 = vec2(0.0, delta2);
-  float leftFar = getElevationExtended(v_texCoord - dx2);
-  float leftNear = getElevationExtended(v_texCoord - dx1);
-  float rightNear = getElevationExtended(v_texCoord + dx1);
-  float rightFar = getElevationExtended(v_texCoord + dx2);
-  float topFar = getElevationExtended(v_texCoord - dy2);
-  float topNear = getElevationExtended(v_texCoord - dy1);
-  float bottomNear = getElevationExtended(v_texCoord + dy1);
-  float bottomFar = getElevationExtended(v_texCoord + dy2);
-  float gx = (leftFar - 8.0 * leftNear + 8.0 * rightNear - rightFar) / denom;
-  float gy = (topFar - 8.0 * topNear + 8.0 * bottomNear - bottomFar) / denom;
-  fragColor = vec4(gx, gy, 0.0, 1.0);
+  float dimX = max(u_dimension.x, 1.0);
+  float dimY = max(u_dimension.y, 1.0);
+  vec2 texel = vec2(1.0 / dimX, 1.0 / dimY);
+  vec2 dx = vec2(texel.x, 0.0);
+  vec2 dy = vec2(0.0, texel.y);
+
+  float a = getElevationExtended(v_texCoord - dx - dy);
+  float b = getElevationExtended(v_texCoord - dy);
+  float c = getElevationExtended(v_texCoord + dx - dy);
+  float d = getElevationExtended(v_texCoord - dx);
+  float f = getElevationExtended(v_texCoord + dx);
+  float g = getElevationExtended(v_texCoord - dx + dy);
+  float h = getElevationExtended(v_texCoord + dy);
+  float i = getElevationExtended(v_texCoord + dx + dy);
+
+  vec2 deriv = vec2(
+    (c + f + f + i) - (a + d + d + g),
+    (g + h + h + i) - (a + b + b + c)
+  );
+
+  float tileSize = max(u_dimension.x - 2.0, 1.0);
+  float exaggerationFactor = u_zoom < 2.0 ? 0.4 : (u_zoom < 4.5 ? 0.35 : 0.3);
+  float exaggeration = u_zoom < 15.0 ? (u_zoom - 15.0) * exaggerationFactor : 0.0;
+  float zoomScale = pow(2.0, (28.25619978527 - u_zoom) + exaggeration);
+  deriv *= tileSize / zoomScale;
+
+  float lat = (u_latrange.x - u_latrange.y) * (1.0 - v_texCoord.y) + u_latrange.y;
+  float scaleFactor = max(cos(radians(lat)), 0.000001);
+  deriv /= scaleFactor;
+
+  float samplingScale = 0.35 / max(u_samplingDistance, 0.0001);
+  deriv *= samplingScale;
+
+  fragColor = vec4(deriv, 0.0, 1.0);
 }`;
   }
 
@@ -279,6 +293,21 @@ void main() {
     const mercatorY = canonical.y + 0.5;
     const n = Math.PI - (2 * Math.PI * mercatorY) / scale;
     return (180 / Math.PI) * Math.atan(Math.sinh(n));
+  }
+
+  function mercatorYToLatitude(y, scale) {
+    const n = Math.PI - (2 * Math.PI * y) / scale;
+    return (180 / Math.PI) * Math.atan(Math.sinh(n));
+  }
+
+  function getTileLatRange(y, z) {
+    const scale = Math.pow(2, Math.max(0, z || 0));
+    if (!Number.isFinite(scale) || scale <= 0) {
+      return { lat1: 0, lat2: 0 };
+    }
+    const lat1 = mercatorYToLatitude(y, scale);
+    const lat2 = mercatorYToLatitude(y + 1, scale);
+    return { lat1, lat2 };
   }
 
   function computeMetersPerPixelForTile(canonical, tileSize) {
@@ -410,7 +439,8 @@ void main() {
         u_dimension: gl.getUniformLocation(this.program, 'u_dimension'),
         u_zoom: gl.getUniformLocation(this.program, 'u_zoom'),
         u_samplingDistance: gl.getUniformLocation(this.program, 'u_samplingDistance'),
-        u_metersPerPixel: gl.getUniformLocation(this.program, 'u_metersPerPixel')
+        u_metersPerPixel: gl.getUniformLocation(this.program, 'u_metersPerPixel'),
+        u_latrange: gl.getUniformLocation(this.program, 'u_latrange')
       };
       GRADIENT_NEIGHBOR_OFFSETS.forEach(({ uniform }) => {
         this.uniforms[uniform] = gl.getUniformLocation(this.program, uniform);
@@ -631,6 +661,10 @@ void main() {
         if (this.uniforms.u_metersPerPixel !== null) {
           const metersPerPixel = computeMetersPerPixelForTile(canonical, tileSize);
           gl.uniform1f(this.uniforms.u_metersPerPixel, metersPerPixel);
+        }
+        if (this.uniforms.u_latrange !== null) {
+          const { lat1, lat2 } = getTileLatRange(canonical.y, canonical.z);
+          gl.uniform2f(this.uniforms.u_latrange, lat1, lat2);
         }
         gl.uniform1f(this.uniforms.u_samplingDistance, samplingDistance);
 
