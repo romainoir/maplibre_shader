@@ -50,7 +50,17 @@ const TerrainGradientPreparer = (function() {
     ? `${GRADIENT_NEIGHBOR_UNIFORM_DECLARATIONS}\n`
     : '';
   const GRADIENT_NEIGHBOR_FETCH_CASES = GRADIENT_NEIGHBOR_OFFSETS
-    .map(({ dx, dy, uniform }) => `  if (offset == ivec2(${dx}, ${dy})) return getElevationFromTexture(${uniform}, tilePos);`)
+    .map(({ dx, dy, uniform }, index) => {
+      const maskBit = `uint(1) << uint(${index})`;
+      return `  if (offset == ivec2(${dx}, ${dy})) {\n`
+        + `    vec2 neighborPos = tilePos;\n`
+        + `    if (isNeighborFallback(${maskBit})) {\n`
+        + `      neighborPos = reflectTilePos(neighborPos, ivec2(${dx}, ${dy}));\n`
+        + `    }\n`
+        + `    neighborPos = clampTexCoord(neighborPos);\n`
+        + `    return getElevationFromTexture(${uniform}, neighborPos);\n`
+        + `  }`;
+    })
     .join('\n');
   const GRADIENT_NEIGHBOR_FETCH_BLOCK = GRADIENT_NEIGHBOR_FETCH_CASES
     ? `\n${GRADIENT_NEIGHBOR_FETCH_CASES}\n`
@@ -172,17 +182,31 @@ precision highp int;
 in vec2 v_texCoord;
 out vec4 fragColor;
 uniform sampler2D u_image;
-${GRADIENT_NEIGHBOR_UNIFORM_BLOCK}uniform vec4 u_terrain_unpack;
+${GRADIENT_NEIGHBOR_UNIFORM_BLOCK}uniform uint u_neighborFallbackMask;
+uniform vec4 u_terrain_unpack;
 uniform vec2 u_dimension;
 uniform float u_zoom;
 uniform float u_samplingDistance;
 uniform float u_metersPerPixel;
+bool isNeighborFallback(uint maskBit) {
+  return (u_neighborFallbackMask & maskBit) != uint(0);
+}
 float getElevationFromTexture(sampler2D tex, vec2 pos) {
   vec4 data = texture(tex, pos) * 255.0;
   return (data.r * u_terrain_unpack[0]
         + data.g * u_terrain_unpack[1]
         + data.b * u_terrain_unpack[2])
         - u_terrain_unpack[3];
+}
+vec2 reflectTilePos(vec2 pos, ivec2 offset) {
+  vec2 reflected = pos;
+  if (offset.x != 0) {
+    reflected.x = 1.0 - reflected.x;
+  }
+  if (offset.y != 0) {
+    reflected.y = 1.0 - reflected.y;
+  }
+  return reflected;
 }
 vec2 clampTexCoord(vec2 pos) {
   float border = 0.5 / u_dimension.x;
@@ -230,8 +254,8 @@ float getElevationExtended(vec2 pos) {
   }
   offset.x = clamp(offset.x, -MAX_OFFSET, MAX_OFFSET);
   offset.y = clamp(offset.y, -MAX_OFFSET, MAX_OFFSET);
-  tilePos = clampTexCoord(tilePos);
-${GRADIENT_NEIGHBOR_FETCH_BLOCK}  return getElevationFromTexture(u_image, tilePos);
+${GRADIENT_NEIGHBOR_FETCH_BLOCK}  vec2 clampedPos = clampTexCoord(tilePos);
+  return getElevationFromTexture(u_image, clampedPos);
 }
 void main() {
   float sampleDist = max(u_samplingDistance, 0.0001);
@@ -268,6 +292,7 @@ void main() {
       };
       this.uniforms = {
         u_image: gl.getUniformLocation(this.program, 'u_image'),
+        u_neighborFallbackMask: gl.getUniformLocation(this.program, 'u_neighborFallbackMask'),
         u_terrain_unpack: gl.getUniformLocation(this.program, 'u_terrain_unpack'),
         u_dimension: gl.getUniformLocation(this.program, 'u_dimension'),
         u_zoom: gl.getUniformLocation(this.program, 'u_zoom'),
@@ -461,13 +486,16 @@ void main() {
 
         const canonical = tile.tileID.canonical;
 
-        const neighborTextures = neighborOffsets.map(offset => {
+        let neighborFallbackMask = 0;
+        const neighborTextures = neighborOffsets.map((offset, index) => {
           const neighborKey = this.getNeighborCacheKey(tile.tileID, offset);
           if (!neighborKey) {
+            neighborFallbackMask |= (1 << index);
             return terrainData.texture;
           }
           const texture = textureCache.get(neighborKey);
           if (!texture) {
+            neighborFallbackMask |= (1 << index);
             return terrainData.texture;
           }
           return texture;
@@ -479,6 +507,10 @@ void main() {
           const location = this.uniforms[offset.uniform] || null;
           this.bindInputTexture(gl, index + 1, neighborTextures[index], location);
         });
+
+        if (this.uniforms.u_neighborFallbackMask !== null) {
+          gl.uniform1ui(this.uniforms.u_neighborFallbackMask, neighborFallbackMask >>> 0);
+        }
 
         gl.uniform4f(this.uniforms.u_terrain_unpack, rgbaFactors.r, rgbaFactors.g, rgbaFactors.b, rgbaFactors.base);
         gl.uniform2f(this.uniforms.u_dimension, tileSize, tileSize);
