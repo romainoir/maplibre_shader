@@ -1356,7 +1356,10 @@
         if (opacitySet) {
           map.setLayoutProperty(HILLSHADE_NATIVE_LAYER_ID, 'visibility', 'visible');
         } else {
-          map.setLayoutProperty(HILLSHADE_NATIVE_LAYER_ID, 'visibility', 'none');
+          map.setLayoutProperty(HILLSHADE_NATIVE_LAYER_ID, 'visibility', 'visible');
+          if (DEBUG) {
+            console.warn('Native hillshade opacity not supported; leaving layer visible to retain gradient textures.');
+          }
         }
       }
       ensureCustomTerrainLayer({ force: true });
@@ -1556,13 +1559,22 @@
     },
   
     getShader(gl, shaderDescription) {
+      if (!currentMode) {
+        return null;
+      }
       const variantName = shaderDescription.variantName + "_" + currentMode;
       if (this.shaderMap.has(variantName)) return this.shaderMap.get(variantName);
-      
+
       // Build the shader sources using our TerrainShaders helper.
       const vertexSource = TerrainShaders.getVertexShader(shaderDescription, EXTENT);
       const fragmentSource = TerrainShaders.getFragmentShader(currentMode);
-      
+      if (typeof fragmentSource !== 'string' || fragmentSource.length === 0) {
+        if (DEBUG) {
+          console.warn('Skipping shader compilation; no fragment shader for mode:', currentMode);
+        }
+        return null;
+      }
+
       const program = gl.createProgram();
       const vertexShader = gl.createShader(gl.VERTEX_SHADER);
       const fragmentShader = gl.createShader(gl.FRAGMENT_SHADER);
@@ -1570,12 +1582,18 @@
       gl.compileShader(vertexShader);
       if (!gl.getShaderParameter(vertexShader, gl.COMPILE_STATUS)) {
         console.error("Vertex shader error:", gl.getShaderInfoLog(vertexShader));
+        gl.deleteShader(fragmentShader);
+        gl.deleteShader(vertexShader);
+        gl.deleteProgram(program);
         return null;
       }
       gl.shaderSource(fragmentShader, fragmentSource);
       gl.compileShader(fragmentShader);
       if (!gl.getShaderParameter(fragmentShader, gl.COMPILE_STATUS)) {
         console.error("Fragment shader error:", gl.getShaderInfoLog(fragmentShader));
+        gl.deleteShader(vertexShader);
+        gl.deleteShader(fragmentShader);
+        gl.deleteProgram(program);
         return null;
       }
       gl.attachShader(program, vertexShader);
@@ -1583,8 +1601,15 @@
       gl.linkProgram(program);
       if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
         console.error("Program link error:", gl.getProgramInfoLog(program));
+        gl.deleteShader(vertexShader);
+        gl.deleteShader(fragmentShader);
+        gl.deleteProgram(program);
         return null;
       }
+      gl.detachShader(program, vertexShader);
+      gl.detachShader(program, fragmentShader);
+      gl.deleteShader(vertexShader);
+      gl.deleteShader(fragmentShader);
       const neighborUniforms = NEIGHBOR_OFFSETS.map(offset => offset.uniform);
 
       const uniforms = [

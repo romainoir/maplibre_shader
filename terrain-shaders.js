@@ -772,7 +772,7 @@ ${SHADER_NEIGHBOR_FETCH_BLOCK_LOD}      return getElevationFromTextureLod(u_imag
         }`;
 
       default:
-        return '';
+        return null;
     }
   }
 };
