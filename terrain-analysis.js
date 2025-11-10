@@ -170,6 +170,21 @@
     return (180 / Math.PI) * Math.atan(Math.sinh(n));
   }
 
+  function mercatorYToLatitude(y, scale) {
+    const n = Math.PI - (2 * Math.PI * y) / scale;
+    return (180 / Math.PI) * Math.atan(Math.sinh(n));
+  }
+
+  function getTileLatRange(y, z) {
+    const scale = Math.pow(2, Math.max(0, z || 0));
+    if (!Number.isFinite(scale) || scale <= 0) {
+      return { lat1: 0, lat2: 0 };
+    }
+    const lat1 = mercatorYToLatitude(y, scale);
+    const lat2 = mercatorYToLatitude(y + 1, scale);
+    return { lat1, lat2 };
+  }
+
   function computeMetersPerPixelForTile(canonical, tileSize) {
     if (!canonical || !Number.isFinite(tileSize) || tileSize <= 0) {
       return MIN_METERS_PER_PIXEL;
