@@ -9,14 +9,26 @@ uniform bool u_is_globe_mode;
 in vec2 v_texture_pos;
 in float v_fog_depth;
 
-const float gamma = 2.2;
-
-vec4 gammaToLinear(vec4 color) {
-    return pow(color, vec4(gamma));
+vec3 srgbToLinear(vec3 color) {
+    vec3 srgb = clamp(color, 0.0, 1.0);
+    vec3 lo = srgb / 12.92;
+    vec3 hi = pow((srgb + 0.055) / 1.055, vec3(2.4));
+    return mix(lo, hi, step(vec3(0.04045), srgb));
 }
 
-vec4 linearToGamma(vec4 color) {
-    return pow(color, vec4(1.0 / gamma));
+vec4 srgbToLinear(vec4 color) {
+    return vec4(srgbToLinear(color.rgb), color.a);
+}
+
+vec3 linearToSrgb(vec3 color) {
+    vec3 linear = max(color, vec3(0.0));
+    vec3 lo = linear * 12.92;
+    vec3 hi = 1.055 * pow(linear, vec3(1.0 / 2.4)) - 0.055;
+    return mix(lo, hi, step(vec3(0.0031308), linear));
+}
+
+vec4 linearToSrgb(vec4 color) {
+    return vec4(linearToSrgb(color.rgb), color.a);
 }
 
 void main() {
@@ -24,11 +36,11 @@ void main() {
 
     // Skip fog blending in globe mode
     if (!u_is_globe_mode && v_fog_depth > u_fog_ground_blend) {
-        vec4 surface_color_linear = gammaToLinear(surface_color);
+        vec4 surface_color_linear = srgbToLinear(surface_color);
         float blend_color = smoothstep(0.0, 1.0, max((v_fog_depth - u_horizon_fog_blend) / (1.0 - u_horizon_fog_blend), 0.0));
-        vec4 fog_horizon_color_linear = mix(gammaToLinear(u_fog_color), gammaToLinear(u_horizon_color), blend_color);
+        vec4 fog_horizon_color_linear = mix(srgbToLinear(u_fog_color), srgbToLinear(u_horizon_color), blend_color);
         float factor_fog = max(v_fog_depth - u_fog_ground_blend, 0.0) / (1.0 - u_fog_ground_blend);
-        fragColor = linearToGamma(mix(surface_color_linear, fog_horizon_color_linear, pow(factor_fog, 2.0) * u_fog_ground_blend_opacity));
+        fragColor = linearToSrgb(mix(surface_color_linear, fog_horizon_color_linear, pow(factor_fog, 2.0) * u_fog_ground_blend_opacity));
     } else {
         fragColor = surface_color;
     }
