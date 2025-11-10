@@ -1,6 +1,7 @@
 /* terrain-gradient-preparer.js */
 const TerrainGradientPreparer = (function() {
-  const GRADIENT_MAX_NEIGHBOR_OFFSET = 2;
+  // Only sample within the tile itself by disabling neighbor offsets.
+  const GRADIENT_MAX_NEIGHBOR_OFFSET = 0;
   const EARTH_CIRCUMFERENCE_METERS = 40075016.68557849;
   const MIN_METERS_PER_PIXEL = 1e-6;
   const GRADIENT_NEIGHBOR_NAME_OVERRIDES = {

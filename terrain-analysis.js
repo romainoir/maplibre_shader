@@ -474,7 +474,8 @@
     patchPrototype(window.maplibregl?.Transform?.prototype);
     patchPrototype(window.maplibregl?.MercatorTransform?.prototype);
   })();
-  const MAX_NEIGHBOR_OFFSET = 2;
+  // Disable neighbor tile sampling so only the primary tile is used.
+  const MAX_NEIGHBOR_OFFSET = 0;
   const NEIGHBOR_NAME_OVERRIDES = {
     '-1,0': 'u_image_left',
     '1,0': 'u_image_right',
