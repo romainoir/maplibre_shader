@@ -782,14 +782,22 @@ ${SHADER_NEIGHBOR_FETCH_BLOCK_LOD}      return getElevationFromTextureLod(u_imag
             weightedLevels += float(levelIndex) * minutesAbove;
           }
           float hours = minutes * u_h4MinutesToHours;
-          float durationRatio = (u_h4MaxHours > 0.0) ? clamp(hours / u_h4MaxHours, 0.0, 1.0) : 0.0;
+          float normalizedDuration = (u_h4MaxHours > 0.0)
+            ? clamp(hours / u_h4MaxHours, 0.0, 1.0)
+            : 0.0;
           int maxLevelIndex = max(quantLevels - 1, 1);
           float maxLevel = float(maxLevelIndex);
           float averageLevel = minutes > 0.0 ? weightedLevels / max(minutes, 1e-4) : maxLevel;
           float horizonRatio = clamp(averageLevel / maxLevel, 0.0, 1.0);
-          vec3 base = sunDurationGradient(durationRatio);
-          float brightness = mix(0.45, 1.0, clamp(1.0 - horizonRatio, 0.0, 1.0));
-          vec3 finalColor = clamp(base * brightness, 0.0, 1.0);
+          float easedDuration = smoothstep(0.10, 0.95, normalizedDuration);
+          float contrastDuration = smoothstep(0.35, 0.85, normalizedDuration);
+          float durationRatio = clamp(mix(easedDuration, contrastDuration, 0.5), 0.0, 1.0);
+          float openness = clamp(1.0 - horizonRatio, 0.0, 1.0);
+          float exposureMix = mix(durationRatio, durationRatio * (0.85 + 0.15 * openness), 0.35);
+          vec3 base = sunDurationGradient(clamp(exposureMix, 0.0, 1.0));
+          float brightness = mix(0.45, 1.05, pow(openness, 0.85));
+          float warmthLift = mix(0.92, 1.0, durationRatio);
+          vec3 finalColor = clamp(base * brightness * warmthLift, 0.0, 1.0);
           fragColor = vec4(finalColor, 1.0);
         }`;
 
