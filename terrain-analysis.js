@@ -1735,9 +1735,15 @@
         if (shader.locations.u_projection_fallback_matrix != null) {
           gl.uniformMatrix4fv(shader.locations.u_projection_fallback_matrix, false, projectionData.fallbackMatrix);
         }
-        gl.uniform2f(shader.locations.u_dimension, tileSize, tileSize);
-        gl.uniform1i(shader.locations.u_original_vertex_count, mesh.originalVertexCount);
-        gl.uniform1f(shader.locations.u_terrain_exaggeration, 1.0);
+        if (shader.locations.u_dimension != null) {
+          gl.uniform2f(shader.locations.u_dimension, tileSize, tileSize);
+        }
+        if (shader.locations.u_original_vertex_count != null) {
+          gl.uniform1i(shader.locations.u_original_vertex_count, mesh.originalVertexCount);
+        }
+        if (shader.locations.u_terrain_exaggeration != null) {
+          gl.uniform1f(shader.locations.u_terrain_exaggeration, 1.0);
+        }
         const rgbaFactors = {
             r: 256.0,
             g: 1.0,
