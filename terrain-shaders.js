@@ -751,11 +751,12 @@ ${SHADER_NEIGHBOR_FETCH_BLOCK_LOD}      return getElevationFromTextureLod(u_imag
             minutes += minutesAbove;
           }
           float hours = minutes * u_h4MinutesToHours;
+          float hoursPerAzimuth = hours / float(azCount);
           float maxHours = max(u_h4MaxHours, 0.0);
           float durationRatio = maxHours > 0.0
-            ? clamp(hours / maxHours, 0.0, 1.0)
+            ? clamp(hoursPerAzimuth / maxHours, 0.0, 1.0)
             : 0.0;
-          float sunriseRatio = clamp(0.5 - hours / 48.0, 0.0, 1.0);
+          float sunriseRatio = clamp(0.5 - hoursPerAzimuth / 48.0, 0.0, 1.0);
           vec3 cold = vec3(0.1, 0.2, 0.7);
           vec3 warm = vec3(0.94, 0.35, 0.2);
           vec3 base = mix(cold, warm, durationRatio);
