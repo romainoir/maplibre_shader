@@ -738,40 +738,10 @@ ${SHADER_NEIGHBOR_FETCH_BLOCK_LOD}      return getElevationFromTextureLod(u_imag
           return int(clamped);
         }
 
-        float segmentFactor(float value, float start, float end) {
-          if (value <= start) return 0.0;
-          if (value >= end) return 1.0;
-          return (value - start) / (end - start);
-        }
-
-        vec3 sunDurationGradient(float t) {
-          const vec3 c0 = vec3(0.08, 0.16, 0.47); // short duration - deep blue
-          const vec3 c1 = vec3(0.10, 0.38, 0.70); // cool blue
-          const vec3 c2 = vec3(0.18, 0.62, 0.62); // teal transition
-          const vec3 c3 = vec3(0.56, 0.80, 0.38); // soft green
-          const vec3 c4 = vec3(0.97, 0.76, 0.20); // warm yellow
-          const vec3 c5 = vec3(0.94, 0.35, 0.20); // long duration - warm orange
-
-          if (t <= 0.2) {
-            return mix(c0, c1, segmentFactor(t, 0.0, 0.2));
-          }
-          if (t <= 0.4) {
-            return mix(c1, c2, segmentFactor(t, 0.2, 0.4));
-          }
-          if (t <= 0.6) {
-            return mix(c2, c3, segmentFactor(t, 0.4, 0.6));
-          }
-          if (t <= 0.8) {
-            return mix(c3, c4, segmentFactor(t, 0.6, 0.8));
-          }
-          return mix(c4, c5, segmentFactor(t, 0.8, 1.0));
-        }
-
         void main(){
           int azCount = clamp(u_h4AzimuthCount, 1, MAX_H4_AZIMUTS);
           int quantLevels = max(u_h4QuantizationLevels, 2);
           float minutes = 0.0;
-          float weightedLevels = 0.0;
           for (int i = 0; i < MAX_H4_AZIMUTS; ++i) {
             if (i >= azCount) {
               break;
@@ -779,26 +749,19 @@ ${SHADER_NEIGHBOR_FETCH_BLOCK_LOD}      return getElevationFromTextureLod(u_imag
             int levelIndex = readHorizonIndex(v_texCoord, i, quantLevels);
             float minutesAbove = max(texelFetch(u_h4Lut, ivec2(levelIndex, i), 0).r, 0.0);
             minutes += minutesAbove;
-            weightedLevels += float(levelIndex) * minutesAbove;
           }
           float hours = minutes * u_h4MinutesToHours;
-          float normalizedDuration = (u_h4MaxHours > 0.0)
-            ? clamp(hours / u_h4MaxHours, 0.0, 1.0)
+          float maxHours = max(u_h4MaxHours, 0.0);
+          float durationRatio = maxHours > 0.0
+            ? clamp(hours / maxHours, 0.0, 1.0)
             : 0.0;
-          int maxLevelIndex = max(quantLevels - 1, 1);
-          float maxLevel = float(maxLevelIndex);
-          float averageLevel = minutes > 0.0 ? weightedLevels / max(minutes, 1e-4) : maxLevel;
-          float horizonRatio = clamp(averageLevel / maxLevel, 0.0, 1.0);
-          float easedDuration = smoothstep(0.10, 0.95, normalizedDuration);
-          float contrastDuration = smoothstep(0.35, 0.85, normalizedDuration);
-          float durationRatio = clamp(mix(easedDuration, contrastDuration, 0.5), 0.0, 1.0);
-          float openness = clamp(1.0 - horizonRatio, 0.0, 1.0);
-          float exposureMix = mix(durationRatio, durationRatio * (0.85 + 0.15 * openness), 0.35);
-          vec3 base = sunDurationGradient(clamp(exposureMix, 0.0, 1.0));
-          float brightness = mix(0.45, 1.05, pow(openness, 0.85));
-          float warmthLift = mix(0.92, 1.0, durationRatio);
-          vec3 finalColor = clamp(base * brightness * warmthLift, 0.0, 1.0);
-          fragColor = vec4(finalColor, 1.0);
+          float sunriseRatio = clamp(0.5 - hours / 48.0, 0.0, 1.0);
+          vec3 cold = vec3(0.1, 0.2, 0.7);
+          vec3 warm = vec3(0.94, 0.35, 0.2);
+          vec3 base = mix(cold, warm, durationRatio);
+          float brightness = mix(0.45, 1.0, clamp(1.0 - sunriseRatio, 0.0, 1.0));
+          vec3 finalColor = clamp(base * brightness, 0.0, 1.0);
+          fragColor = vec4(finalColor, 0.85);
         }`;
 
       default:
