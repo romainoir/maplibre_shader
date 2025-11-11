@@ -742,21 +742,27 @@ ${SHADER_NEIGHBOR_FETCH_BLOCK_LOD}      return getElevationFromTextureLod(u_imag
           int azCount = clamp(u_h4AzimuthCount, 1, MAX_H4_AZIMUTS);
           int quantLevels = max(u_h4QuantizationLevels, 2);
           float minutes = 0.0;
+          float weightedLevels = 0.0;
           for (int i = 0; i < MAX_H4_AZIMUTS; ++i) {
             if (i >= azCount) {
               break;
             }
             int levelIndex = readHorizonIndex(v_texCoord, i, quantLevels);
-            minutes += texelFetch(u_h4Lut, ivec2(levelIndex, i), 0).r;
+            float minutesAbove = max(texelFetch(u_h4Lut, ivec2(levelIndex, i), 0).r, 0.0);
+            minutes += minutesAbove;
+            weightedLevels += float(levelIndex) * minutesAbove;
           }
           float hours = minutes * u_h4MinutesToHours;
-          float normalized = (u_h4MaxHours > 0.0) ? clamp(hours / u_h4MaxHours, 0.0, 1.0) : 0.0;
-          float highlight = smoothstep(0.55, 1.0, normalized);
-          vec3 lowColor = vec3(0.05, 0.11, 0.22);
-          vec3 midColor = vec3(0.70, 0.78, 0.48);
-          vec3 highColor = vec3(0.98, 0.93, 0.79);
-          vec3 base = mix(lowColor, midColor, smoothstep(0.0, 0.6, normalized));
-          vec3 finalColor = mix(base, highColor, highlight);
+          float durationRatio = (u_h4MaxHours > 0.0) ? clamp(hours / u_h4MaxHours, 0.0, 1.0) : 0.0;
+          int maxLevelIndex = max(quantLevels - 1, 1);
+          float maxLevel = float(maxLevelIndex);
+          float averageLevel = minutes > 0.0 ? weightedLevels / max(minutes, 1e-4) : maxLevel;
+          float horizonRatio = clamp(averageLevel / maxLevel, 0.0, 1.0);
+          vec3 cold = vec3(0.1, 0.2, 0.7);
+          vec3 warm = vec3(0.94, 0.35, 0.2);
+          vec3 base = mix(cold, warm, durationRatio);
+          float brightness = mix(0.45, 1.0, clamp(1.0 - horizonRatio, 0.0, 1.0));
+          vec3 finalColor = clamp(base * brightness, 0.0, 1.0);
           fragColor = vec4(finalColor, 1.0);
         }`;
 
