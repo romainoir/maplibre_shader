@@ -712,7 +712,7 @@ ${SHADER_NEIGHBOR_FETCH_BLOCK_LOD}      return getElevationFromTextureLod(u_imag
         precision highp float;
         precision highp int;
         ${this.commonFunctions}
-        uniform sampler2DArray u_h4Horizon;
+        uniform highp sampler2DArray u_h4Horizon;
         uniform sampler2D      u_h4Lut;
         uniform int   u_h4AzimuthCount;
         uniform int   u_h4QuantizationLevels;
