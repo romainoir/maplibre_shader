@@ -738,6 +738,35 @@ ${SHADER_NEIGHBOR_FETCH_BLOCK_LOD}      return getElevationFromTextureLod(u_imag
           return int(clamped);
         }
 
+        float segmentFactor(float value, float start, float end) {
+          if (value <= start) return 0.0;
+          if (value >= end) return 1.0;
+          return (value - start) / (end - start);
+        }
+
+        vec3 sunDurationGradient(float t) {
+          const vec3 c0 = vec3(0.08, 0.16, 0.47); // short duration - deep blue
+          const vec3 c1 = vec3(0.10, 0.38, 0.70); // cool blue
+          const vec3 c2 = vec3(0.18, 0.62, 0.62); // teal transition
+          const vec3 c3 = vec3(0.56, 0.80, 0.38); // soft green
+          const vec3 c4 = vec3(0.97, 0.76, 0.20); // warm yellow
+          const vec3 c5 = vec3(0.94, 0.35, 0.20); // long duration - warm orange
+
+          if (t <= 0.2) {
+            return mix(c0, c1, segmentFactor(t, 0.0, 0.2));
+          }
+          if (t <= 0.4) {
+            return mix(c1, c2, segmentFactor(t, 0.2, 0.4));
+          }
+          if (t <= 0.6) {
+            return mix(c2, c3, segmentFactor(t, 0.4, 0.6));
+          }
+          if (t <= 0.8) {
+            return mix(c3, c4, segmentFactor(t, 0.6, 0.8));
+          }
+          return mix(c4, c5, segmentFactor(t, 0.8, 1.0));
+        }
+
         void main(){
           int azCount = clamp(u_h4AzimuthCount, 1, MAX_H4_AZIMUTS);
           int quantLevels = max(u_h4QuantizationLevels, 2);
@@ -758,9 +787,7 @@ ${SHADER_NEIGHBOR_FETCH_BLOCK_LOD}      return getElevationFromTextureLod(u_imag
           float maxLevel = float(maxLevelIndex);
           float averageLevel = minutes > 0.0 ? weightedLevels / max(minutes, 1e-4) : maxLevel;
           float horizonRatio = clamp(averageLevel / maxLevel, 0.0, 1.0);
-          vec3 cold = vec3(0.1, 0.2, 0.7);
-          vec3 warm = vec3(0.94, 0.35, 0.2);
-          vec3 base = mix(cold, warm, durationRatio);
+          vec3 base = sunDurationGradient(durationRatio);
           float brightness = mix(0.45, 1.0, clamp(1.0 - horizonRatio, 0.0, 1.0));
           vec3 finalColor = clamp(base * brightness, 0.0, 1.0);
           fragColor = vec4(finalColor, 1.0);
