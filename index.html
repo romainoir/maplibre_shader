@@ -195,6 +195,7 @@
     <button id="shadowBtn" class="control-button">Shadow</button>
     <button id="daylightBtn" class="control-button">Sunlight</button>
     <button id="terrainMeshBtn" class="control-button">Three.js Mesh</button>
+    <button id="terrainDebugBtn" class="control-button">Terrain Debug</button>
     <!-- Snow sliders -->
     <div id="snowSliderContainer">
 
@@ -291,9 +292,9 @@
   <script src="terrain-shaders.js"></script>
   <script src="terrain-gradient-preparer.js"></script>
   <script src="h4-sunlight-engine.js"></script>
-  <script src="https://unpkg.com/three@0.150.0/build/three.min.js"></script>
+  <script type="module" src="three-global-shim.js"></script>
   <!-- Main application script -->
-  <script src="terrain-analysis.js"></script>
+  <script defer src="terrain-analysis.js"></script>
 </body>
 </html>
 
