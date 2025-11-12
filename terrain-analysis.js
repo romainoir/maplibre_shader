@@ -1837,6 +1837,166 @@
   const FOG_HIGH_COLOR_NIGHT = [0.04, 0.07, 0.16];
   const FOG_SPACE_COLOR_DAY = [0.08, 0.14, 0.26];
   const FOG_SPACE_COLOR_NIGHT = [0.00, 0.01, 0.04];
+  const DEFAULT_SKY_PRESET_KEY = 'solarNoon';
+  const SKY_PRESETS = {
+    sunrise: {
+      type: 'gradient',
+      color: '#f7dc6f',
+      'horizon-blend': 0.8,
+      'horizon-color': '#f5b041',
+      'horizon-fog-blend': 0.8,
+      'fog-color': '#f7dc6f',
+      'fog-ground-blend': 0.5
+    },
+    sunriseEnd: {
+      type: 'gradient',
+      color: '#88C6FC',
+      'horizon-blend': 0.8,
+      'horizon-color': '#ffa700',
+      'horizon-fog-blend': 0.8,
+      'fog-color': '#ffffff',
+      'fog-ground-blend': 0.5
+    },
+    solarNoon: {
+      type: 'gradient',
+      color: '#199EF3',
+      'horizon-blend': 0.7,
+      'horizon-color': '#f0f8ff',
+      'horizon-fog-blend': 0.8,
+      'fog-color': '#2c7fb8',
+      'fog-ground-blend': 0.9,
+      'atmosphere-blend': [
+        'interpolate',
+        ['linear'],
+        ['zoom'],
+        0,
+        1,
+        12,
+        0
+      ]
+    },
+    sunsetStart: {
+      type: 'gradient',
+      color: '#88C6FC',
+      'horizon-blend': 0.8,
+      'horizon-color': '#ffe90e',
+      'horizon-fog-blend': 0.8,
+      'fog-color': '#ffb400',
+      'fog-ground-blend': 0.5
+    },
+    sunset: {
+      type: 'gradient',
+      color: '#ffe90e',
+      'horizon-blend': 0.8,
+      'horizon-color': '#ff6700',
+      'horizon-fog-blend': 0.8,
+      'fog-color': '#ffb400',
+      'fog-ground-blend': 0.5
+    },
+    night: {
+      type: 'gradient',
+      color: '#1e2b58',
+      'horizon-blend': 0.8,
+      'horizon-color': '#614cbf',
+      'horizon-fog-blend': 0.8,
+      'fog-color': '#D4D6D8',
+      'fog-ground-blend': 0.5
+    },
+    dawn: {
+      type: 'gradient',
+      color: '#311f62',
+      'horizon-blend': 0.8,
+      'horizon-color': '#e8817f',
+      'horizon-fog-blend': 0.8,
+      'fog-color': '#8d5273',
+      'fog-ground-blend': 0.5
+    }
+  };
+  const SKY_EVENT_SEQUENCE = [
+    ['dawn', 'dawn'],
+    ['sunrise', 'sunrise'],
+    ['sunriseEnd', 'sunriseEnd'],
+    ['solarNoon', 'solarNoon'],
+    ['sunsetStart', 'sunsetStart'],
+    ['sunset', 'sunset'],
+    ['night', 'night']
+  ];
+  const DAY_IN_MILLISECONDS = 24 * 60 * 60 * 1000;
+
+  function mergeSkyPreset(preset, baseOptions) {
+    const merged = { ...baseOptions };
+    if (preset && typeof preset === 'object') {
+      for (const [key, value] of Object.entries(preset)) {
+        if (value !== undefined && value !== null) {
+          merged[key] = value;
+        }
+      }
+    }
+    return merged;
+  }
+
+  function filterDefined(object) {
+    const result = {};
+    for (const [key, value] of Object.entries(object)) {
+      if (value !== undefined && value !== null) {
+        result[key] = value;
+      }
+    }
+    return result;
+  }
+
+  function getSkyPresetKey(sunDate, times, altitudeDeg) {
+    const nowMs = sunDate instanceof Date ? sunDate.getTime() : Number.NaN;
+    const events = [];
+
+    if (times && typeof times === 'object') {
+      for (const [presetKey, timeKey] of SKY_EVENT_SEQUENCE) {
+        const time = times[timeKey];
+        if (time instanceof Date) {
+          const timeMs = time.getTime();
+          if (Number.isFinite(timeMs)) {
+            events.push({ key: presetKey, time: timeMs });
+          }
+        }
+      }
+    }
+
+    events.sort((a, b) => a.time - b.time);
+
+    if (events.length > 0 && Number.isFinite(nowMs)) {
+      const extended = [];
+      const last = events[events.length - 1];
+      extended.push({ key: last.key, time: last.time - DAY_IN_MILLISECONDS });
+      for (const event of events) {
+        extended.push(event);
+      }
+      const first = events[0];
+      extended.push({ key: first.key, time: first.time + DAY_IN_MILLISECONDS });
+
+      for (let i = 0; i < extended.length - 1; i += 1) {
+        const current = extended[i];
+        const next = extended[i + 1];
+        if (nowMs >= current.time && nowMs < next.time) {
+          return current.key;
+        }
+      }
+    }
+
+    if (!Number.isFinite(altitudeDeg)) {
+      return DEFAULT_SKY_PRESET_KEY;
+    }
+    if (altitudeDeg <= -6) {
+      return 'night';
+    }
+    if (altitudeDeg <= 0) {
+      return 'dawn';
+    }
+    if (altitudeDeg <= 15) {
+      return 'sunrise';
+    }
+    return DEFAULT_SKY_PRESET_KEY;
+  }
+
   const SKY_LAYER_DEFINITION = {
     id: SKY_LAYER_ID,
     type: 'sky',
@@ -1871,6 +2031,7 @@
 
     const sunDate = getShadowDateTime();
     const sunPos = SunCalc.getPosition(sunDate, center.lat, center.lng);
+    const times = SunCalc.getTimes(sunDate, center.lat, center.lng);
     const altitudeDeg = sunPos.altitude * (180 / Math.PI);
     const azimuthDeg = ((sunPos.azimuth * (180 / Math.PI)) + 180 + 360) % 360;
     const sunParams = computeSunParameters(map);
@@ -1898,44 +2059,53 @@
     const fogGroundBlend = clamp(0.45 + warmIntensity * 0.15 - dayFactor * 0.2, 0, 1);
     const starIntensity = clamp((1 - dayFactor) * 0.6, 0, 1);
 
+    const fallbackSkyOptions = {
+      type: 'gradient',
+      color: colorArrayToRgbaString(zenithColor),
+      'horizon-blend': horizonBlend,
+      'horizon-color': colorArrayToRgbaString(horizonColor),
+      'horizon-fog-blend': horizonFogBlend,
+      'fog-color': colorArrayToRgbaString(fogNearColor),
+      'fog-ground-blend': fogGroundBlend
+    };
+    const presetKey = getSkyPresetKey(sunDate, times, altitudeDeg);
+    const preset = SKY_PRESETS[presetKey] || SKY_PRESETS[DEFAULT_SKY_PRESET_KEY] || null;
+    const resolvedSky = mergeSkyPreset(preset, fallbackSkyOptions);
+    resolvedSky.type = resolvedSky.type || 'gradient';
+    const skyOptions = filterDefined(resolvedSky);
+
     if (skyImplementation === 'setSky') {
-      map.setSky({
-        'sky-type': 'gradient',
-        'sky-color': colorArrayToRgbaString(zenithColor),
-        'sky-horizon-blend': horizonBlend,
-        'horizon-color': colorArrayToRgbaString(horizonColor),
-        'horizon-fog-blend': horizonFogBlend,
-        'fog-color': colorArrayToRgbaString(fogNearColor),
-        'fog-ground-blend': fogGroundBlend
-      });
+      map.setSky(skyOptions);
 
       if (typeof map.setFog === 'function') {
-        map.setFog({
-          color: colorArrayToRgbaString(fogNearColor),
-          'high-color': colorArrayToRgbaString(fogHighColor),
-          'space-color': colorArrayToRgbaString(fogSpaceColor),
-          'horizon-blend': horizonFogBlend,
+        const fogOptions = filterDefined({
+          color: resolvedSky['fog-color'],
+          'high-color': resolvedSky['horizon-color'],
+          'space-color': resolvedSky.color,
+          'horizon-blend': resolvedSky['horizon-fog-blend'],
           range: [0.5, 8.5],
           'star-intensity': starIntensity
         });
+        map.setFog(fogOptions);
       }
       return;
     }
 
     map.setPaintProperty(SKY_LAYER_ID, 'sky-atmosphere-sun', [azimuthDeg, clamp(altitudeDeg, -90, 90)]);
     map.setPaintProperty(SKY_LAYER_ID, 'sky-atmosphere-sun-intensity', Math.max(0.1, sunIntensity));
-    map.setPaintProperty(SKY_LAYER_ID, 'sky-atmosphere-color', colorArrayToRgbaString(zenithColor));
-    map.setPaintProperty(SKY_LAYER_ID, 'sky-atmosphere-halo-color', colorArrayToRgbaString(horizonColor));
+    map.setPaintProperty(SKY_LAYER_ID, 'sky-atmosphere-color', resolvedSky.color);
+    map.setPaintProperty(SKY_LAYER_ID, 'sky-atmosphere-halo-color', resolvedSky['horizon-color']);
 
     if (typeof map.setFog === 'function') {
-      map.setFog({
-        color: colorArrayToRgbaString(fogNearColor),
-        'high-color': colorArrayToRgbaString(fogHighColor),
-        'space-color': colorArrayToRgbaString(fogSpaceColor),
-        'horizon-blend': horizonFogBlend,
+      const fogOptions = filterDefined({
+        color: resolvedSky['fog-color'],
+        'high-color': resolvedSky['horizon-color'] || colorArrayToRgbaString(fogHighColor),
+        'space-color': resolvedSky.color || colorArrayToRgbaString(fogSpaceColor),
+        'horizon-blend': resolvedSky['horizon-fog-blend'],
         range: [0.5, 8.5],
         'star-intensity': starIntensity
       });
+      map.setFog(fogOptions);
     }
   }
 
@@ -1959,24 +2129,30 @@
 
     if (typeof map.setSky === 'function') {
       try {
-        map.setSky({
-          'sky-type': 'gradient',
-          'sky-color': colorArrayToRgbaString(SKY_ZENITH_DAY),
-          'sky-horizon-blend': 0.35,
+        const fallbackSkyOptions = {
+          type: 'gradient',
+          color: colorArrayToRgbaString(SKY_ZENITH_DAY),
+          'horizon-blend': 0.35,
           'horizon-color': colorArrayToRgbaString(SKY_HORIZON_DAY),
           'horizon-fog-blend': 0.45,
           'fog-color': colorArrayToRgbaString(FOG_NEAR_COLOR_DAY),
           'fog-ground-blend': 0.55
-        });
+        };
+        const initialPreset = SKY_PRESETS[DEFAULT_SKY_PRESET_KEY] || null;
+        const resolvedSky = mergeSkyPreset(initialPreset, fallbackSkyOptions);
+        resolvedSky.type = resolvedSky.type || 'gradient';
+        const skyOptions = filterDefined(resolvedSky);
+        map.setSky(skyOptions);
         if (typeof map.setFog === 'function') {
-          map.setFog({
-            color: colorArrayToRgbaString(FOG_NEAR_COLOR_DAY),
-            'high-color': colorArrayToRgbaString(FOG_HIGH_COLOR_DAY),
-            'space-color': colorArrayToRgbaString(FOG_SPACE_COLOR_DAY),
-            'horizon-blend': 0.45,
+          const fogOptions = filterDefined({
+            color: resolvedSky['fog-color'],
+            'high-color': resolvedSky['horizon-color'] || colorArrayToRgbaString(FOG_HIGH_COLOR_DAY),
+            'space-color': resolvedSky.color || colorArrayToRgbaString(FOG_SPACE_COLOR_DAY),
+            'horizon-blend': resolvedSky['horizon-fog-blend'],
             range: [0.5, 8.5],
             'star-intensity': 0
           });
+          map.setFog(fogOptions);
         }
         skyImplementation = 'setSky';
         requestSkyUpdate();
