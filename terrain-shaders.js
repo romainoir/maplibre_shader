@@ -757,12 +757,12 @@ ${SHADER_NEIGHBOR_FETCH_BLOCK_LOD}      return getElevationFromTextureLod(u_imag
             ? clamp(hoursPerAzimuth / maxHours, 0.0, 1.0)
             : 0.0;
           float sunriseRatio = clamp(0.5 - hoursPerAzimuth / 48.0, 0.0, 1.0);
-          vec3 cold = vec3(0.1, 0.2, 0.7);
-          vec3 warm = vec3(0.94, 0.35, 0.2);
+          vec3 cold = vec3(0.2, 0.45, 0.9);
+          vec3 warm = vec3(0.98, 0.45, 0.25);
           vec3 base = mix(cold, warm, durationRatio);
-          float brightness = mix(0.45, 1.0, clamp(1.0 - sunriseRatio, 0.0, 1.0));
+          float brightness = mix(0.6, 1.15, clamp(1.0 - sunriseRatio, 0.0, 1.0));
           vec3 finalColor = clamp(base * brightness, 0.0, 1.0);
-          float contrast = 1.25;
+          float contrast = 1.15;
           vec3 contrastedColor = clamp((finalColor - 0.5) * contrast + 0.5, 0.0, 1.0);
           fragColor = vec4(contrastedColor, 0.95);
         }`;
