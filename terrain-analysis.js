@@ -1898,11 +1898,11 @@
 
     if (skyImplementation === 'setSky') {
       map.setSky({
-        'sky-type': 'atmosphere',
-        'sky-atmosphere-sun': [azimuthDeg, clamp(altitudeDeg, -90, 90)],
-        'sky-atmosphere-sun-intensity': Math.max(0.1, sunIntensity),
-        'sky-atmosphere-color': colorArrayToRgbaString(zenithColor),
-        'sky-atmosphere-halo-color': colorArrayToRgbaString(horizonColor)
+        type: 'atmosphere',
+        'atmosphere-sun': [azimuthDeg, clamp(altitudeDeg, -90, 90)],
+        'atmosphere-sun-intensity': Math.max(0.1, sunIntensity),
+        'atmosphere-color': colorArrayToRgbaString(zenithColor),
+        'atmosphere-halo-color': colorArrayToRgbaString(horizonColor)
       });
 
       if (typeof map.setFog === 'function') {
@@ -1956,11 +1956,11 @@
     if (typeof map.setSky === 'function') {
       try {
         map.setSky({
-          'sky-type': 'atmosphere',
-          'sky-atmosphere-sun': [0, 0],
-          'sky-atmosphere-sun-intensity': 0.5,
-          'sky-atmosphere-color': colorArrayToRgbaString(SKY_ZENITH_DAY),
-          'sky-atmosphere-halo-color': colorArrayToRgbaString(SKY_HORIZON_DAY)
+          type: 'atmosphere',
+          'atmosphere-sun': [0, 0],
+          'atmosphere-sun-intensity': 0.5,
+          'atmosphere-color': colorArrayToRgbaString(SKY_ZENITH_DAY),
+          'atmosphere-halo-color': colorArrayToRgbaString(SKY_HORIZON_DAY)
         });
         if (typeof map.setFog === 'function') {
           map.setFog({
