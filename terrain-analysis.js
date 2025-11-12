@@ -216,6 +216,7 @@
   let terrainDirectionalLightTarget = null;
   let terrainWireframeLoading = false;
   let terrainWireframeModelTransform = null;
+  let supportsUint32IndexBuffer = false;
 
   if (typeof window !== 'undefined' && window.maplibregl && !window.mapboxgl) {
     window.mapboxgl = window.maplibregl;
@@ -504,7 +505,7 @@
     }
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    geometry.setIndex(new THREE.BufferAttribute(new Uint32Array(indices), 1));
+    geometry.setIndex(new THREE.BufferAttribute(new Uint16Array(indices), 1));
     return geometry;
   }
 
@@ -515,8 +516,14 @@
       vertexCount += geometry.getAttribute('position').count;
       indexCount += geometry.getIndex().count;
     });
+    if (vertexCount > 65535 && !supportsUint32IndexBuffer) {
+      const error = new Error('WebGL context does not support 32-bit index buffers required for merged terrain geometry.');
+      error.code = 'UINT32_INDEX_UNSUPPORTED';
+      throw error;
+    }
+    const IndexArray = vertexCount > 65535 ? Uint32Array : Uint16Array;
     const mergedPositions = new Float32Array(vertexCount * 3);
-    const mergedIndices = new Uint32Array(indexCount);
+    const mergedIndices = new IndexArray(indexCount);
     let vertexOffset = 0;
     let indexOffset = 0;
     geometries.forEach((geometry) => {
@@ -782,6 +789,16 @@
       if (map) {
         map.triggerRepaint();
       }
+    } catch (error) {
+      if (error?.code === 'UINT32_INDEX_UNSUPPORTED') {
+        logTerrainDebug('Terrain mesh rebuild aborted: 32-bit index buffers unavailable.');
+        setTerrainStatus('Three.js mesh requires 32-bit index buffer support from WebGL.');
+      } else {
+        if (terrainDebugEnabled) {
+          console.error('Failed to rebuild terrain Three.js mesh', error);
+        }
+        setTerrainStatus('Failed to build Three.js mesh.');
+      }
     } finally {
       terrainWireframeLoading = false;
       logTerrainDebug('Terrain mesh rebuild finished', { loading: terrainWireframeLoading });
@@ -824,6 +841,18 @@
         this.renderer.autoClear = false;
         this.renderer.shadowMap.enabled = true;
         this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        const isWebGL2 = typeof WebGL2RenderingContext !== 'undefined' && gl instanceof WebGL2RenderingContext;
+        supportsUint32IndexBuffer = isWebGL2;
+        if (!supportsUint32IndexBuffer && gl && typeof gl.getExtension === 'function') {
+          supportsUint32IndexBuffer = !!gl.getExtension('OES_element_index_uint');
+        }
+        logTerrainDebug('Terrain wireframe WebGL capabilities detected', {
+          isWebGL2,
+          supportsUint32IndexBuffer
+        });
+        if (!supportsUint32IndexBuffer && terrainDebugEnabled) {
+          console.warn('32-bit index buffers are not supported by the active WebGL context. Terrain meshes may not render.');
+        }
         terrainWireframeScene = new THREE.Scene();
         terrainAmbientLight = new THREE.AmbientLight(0xffffff, 0.4);
         terrainDirectionalLight = new THREE.DirectionalLight(0xffffff, 0.9);
@@ -925,6 +954,7 @@
         this.renderer = null;
         this.camera = null;
         this.map = null;
+        supportsUint32IndexBuffer = false;
       }
     };
     logTerrainDebug('Created new terrain wireframe layer instance.');
