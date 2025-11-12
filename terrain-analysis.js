@@ -151,7 +151,7 @@
   let shadowMaxDistance = 14000; // meters
   let shadowVisibilityThreshold = 0.02;
   let shadowEdgeSoftness = 0.01;
-  let shadowMaxOpacity = 0.6;
+  let shadowMaxOpacity = 0.85;
   let shadowRayStepMultiplier = 1.0;
   let shadowSlopeBias = 0.03;
   let shadowPixelBias = 0.15;
@@ -200,7 +200,7 @@
   };
   let samplingDistance = gradientParameters.baseDistance;
   let isSamplingDistanceManual = false;
-  let gradientAutoScaleKey = '0.25';
+  let gradientAutoScaleKey = '0.1';
   let gradientAutoScale = parseFloat(gradientAutoScaleKey);
   let shadowDateValue = null;
   let shadowTimeValue = null;
@@ -1894,15 +1894,19 @@
     const fogSpaceColor = mixColors(FOG_SPACE_COLOR_DAY, FOG_SPACE_COLOR_NIGHT, 1 - dayFactor);
     const sunIntensity = 0.35 + dayFactor * (5.5 + warmIntensity * 2.5);
     const horizonBlend = clamp(0.25 + (1 - dayFactor) * 0.35 + warmIntensity * 0.1, 0, 1);
+    const horizonFogBlend = clamp(0.4 + (1 - dayFactor) * 0.4 + warmIntensity * 0.1, 0, 1);
+    const fogGroundBlend = clamp(0.45 + warmIntensity * 0.15 - dayFactor * 0.2, 0, 1);
     const starIntensity = clamp((1 - dayFactor) * 0.6, 0, 1);
 
     if (skyImplementation === 'setSky') {
       map.setSky({
-        type: 'atmosphere',
-        'atmosphere-sun': [azimuthDeg, clamp(altitudeDeg, -90, 90)],
-        'atmosphere-sun-intensity': Math.max(0.1, sunIntensity),
-        'atmosphere-color': colorArrayToRgbaString(zenithColor),
-        'atmosphere-halo-color': colorArrayToRgbaString(horizonColor)
+        type: 'gradient',
+        'sky-color': colorArrayToRgbaString(zenithColor),
+        'sky-horizon-blend': horizonBlend,
+        'horizon-color': colorArrayToRgbaString(horizonColor),
+        'horizon-fog-blend': horizonFogBlend,
+        'fog-color': colorArrayToRgbaString(fogNearColor),
+        'fog-ground-blend': fogGroundBlend
       });
 
       if (typeof map.setFog === 'function') {
@@ -1910,7 +1914,7 @@
           color: colorArrayToRgbaString(fogNearColor),
           'high-color': colorArrayToRgbaString(fogHighColor),
           'space-color': colorArrayToRgbaString(fogSpaceColor),
-          'horizon-blend': horizonBlend,
+          'horizon-blend': horizonFogBlend,
           range: [0.5, 8.5],
           'star-intensity': starIntensity
         });
@@ -1928,7 +1932,7 @@
         color: colorArrayToRgbaString(fogNearColor),
         'high-color': colorArrayToRgbaString(fogHighColor),
         'space-color': colorArrayToRgbaString(fogSpaceColor),
-        'horizon-blend': horizonBlend,
+        'horizon-blend': horizonFogBlend,
         range: [0.5, 8.5],
         'star-intensity': starIntensity
       });
@@ -1956,18 +1960,20 @@
     if (typeof map.setSky === 'function') {
       try {
         map.setSky({
-          type: 'atmosphere',
-          'atmosphere-sun': [0, 0],
-          'atmosphere-sun-intensity': 0.5,
-          'atmosphere-color': colorArrayToRgbaString(SKY_ZENITH_DAY),
-          'atmosphere-halo-color': colorArrayToRgbaString(SKY_HORIZON_DAY)
+          type: 'gradient',
+          'sky-color': colorArrayToRgbaString(SKY_ZENITH_DAY),
+          'sky-horizon-blend': 0.35,
+          'horizon-color': colorArrayToRgbaString(SKY_HORIZON_DAY),
+          'horizon-fog-blend': 0.45,
+          'fog-color': colorArrayToRgbaString(FOG_NEAR_COLOR_DAY),
+          'fog-ground-blend': 0.55
         });
         if (typeof map.setFog === 'function') {
           map.setFog({
             color: colorArrayToRgbaString(FOG_NEAR_COLOR_DAY),
             'high-color': colorArrayToRgbaString(FOG_HIGH_COLOR_DAY),
             'space-color': colorArrayToRgbaString(FOG_SPACE_COLOR_DAY),
-            'horizon-blend': 0.35,
+            'horizon-blend': 0.45,
             range: [0.5, 8.5],
             'star-intensity': 0
           });
