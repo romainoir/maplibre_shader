@@ -137,6 +137,7 @@
   const CUSTOM_LAYER_ORDER = Object.freeze(['hillshade', 'normal', 'avalanche', 'slope', 'aspect', 'snow', 'shadow', 'daylight']);
   const SKY_LAYER_ID = 'dynamic-sky';
   let skyLayerUnsupported = false;
+  let skyImplementation = null;
   const activeCustomModes = new Set();
   let currentMode = '';
   let hillshadeMode = 'none'; // "none", "native", or "custom"
@@ -1830,6 +1831,12 @@
   const SKY_ZENITH_NIGHT = [0.02, 0.05, 0.10];
   const SKY_HORIZON_DAY = [0.76, 0.80, 0.92];
   const SKY_HORIZON_NIGHT = [0.12, 0.16, 0.24];
+  const FOG_NEAR_COLOR_DAY = [0.78, 0.83, 0.88];
+  const FOG_NEAR_COLOR_NIGHT = [0.06, 0.08, 0.14];
+  const FOG_HIGH_COLOR_DAY = [0.52, 0.64, 0.82];
+  const FOG_HIGH_COLOR_NIGHT = [0.04, 0.07, 0.16];
+  const FOG_SPACE_COLOR_DAY = [0.08, 0.14, 0.26];
+  const FOG_SPACE_COLOR_NIGHT = [0.00, 0.01, 0.04];
   const SKY_LAYER_DEFINITION = {
     id: SKY_LAYER_ID,
     type: 'sky',
@@ -1843,7 +1850,15 @@
   };
 
   function updateSkyLayer() {
-    if (!map || !map.getLayer(SKY_LAYER_ID)) {
+    if (!map) {
+      return;
+    }
+
+    if (skyImplementation === 'layer' && !map.getLayer(SKY_LAYER_ID)) {
+      return;
+    }
+
+    if (skyImplementation !== 'layer' && skyImplementation !== 'setSky') {
       return;
     }
 
@@ -1866,16 +1881,71 @@
     const zenithWarm = mixColors(SKY_ZENITH_DAY, warmColor, warmIntensity * 0.5);
     const horizonColor = mixColors(horizonWarm, SKY_HORIZON_NIGHT, 1 - dayFactor);
     const zenithColor = mixColors(zenithWarm, SKY_ZENITH_NIGHT, 1 - dayFactor);
+    const fogNearColor = mixColors(
+      mixColors(FOG_NEAR_COLOR_DAY, warmColor, warmIntensity * 0.35),
+      FOG_NEAR_COLOR_NIGHT,
+      1 - dayFactor
+    );
+    const fogHighColor = mixColors(
+      mixColors(FOG_HIGH_COLOR_DAY, warmColor, warmIntensity * 0.25),
+      FOG_HIGH_COLOR_NIGHT,
+      1 - dayFactor
+    );
+    const fogSpaceColor = mixColors(FOG_SPACE_COLOR_DAY, FOG_SPACE_COLOR_NIGHT, 1 - dayFactor);
     const sunIntensity = 0.35 + dayFactor * (5.5 + warmIntensity * 2.5);
+    const horizonBlend = clamp(0.25 + (1 - dayFactor) * 0.35 + warmIntensity * 0.1, 0, 1);
+    const starIntensity = clamp((1 - dayFactor) * 0.6, 0, 1);
+
+    if (skyImplementation === 'setSky') {
+      map.setSky({
+        'sky-type': 'atmosphere',
+        'sky-atmosphere-sun': [azimuthDeg, clamp(altitudeDeg, -90, 90)],
+        'sky-atmosphere-sun-intensity': Math.max(0.1, sunIntensity),
+        'sky-atmosphere-color': colorArrayToRgbaString(zenithColor),
+        'sky-atmosphere-halo-color': colorArrayToRgbaString(horizonColor)
+      });
+
+      if (typeof map.setFog === 'function') {
+        map.setFog({
+          color: colorArrayToRgbaString(fogNearColor),
+          'high-color': colorArrayToRgbaString(fogHighColor),
+          'space-color': colorArrayToRgbaString(fogSpaceColor),
+          'horizon-blend': horizonBlend,
+          range: [0.5, 8.5],
+          'star-intensity': starIntensity
+        });
+      }
+      return;
+    }
 
     map.setPaintProperty(SKY_LAYER_ID, 'sky-atmosphere-sun', [azimuthDeg, clamp(altitudeDeg, -90, 90)]);
     map.setPaintProperty(SKY_LAYER_ID, 'sky-atmosphere-sun-intensity', Math.max(0.1, sunIntensity));
     map.setPaintProperty(SKY_LAYER_ID, 'sky-atmosphere-color', colorArrayToRgbaString(zenithColor));
     map.setPaintProperty(SKY_LAYER_ID, 'sky-atmosphere-halo-color', colorArrayToRgbaString(horizonColor));
+
+    if (typeof map.setFog === 'function') {
+      map.setFog({
+        color: colorArrayToRgbaString(fogNearColor),
+        'high-color': colorArrayToRgbaString(fogHighColor),
+        'space-color': colorArrayToRgbaString(fogSpaceColor),
+        'horizon-blend': horizonBlend,
+        range: [0.5, 8.5],
+        'star-intensity': starIntensity
+      });
+    }
   }
 
   function ensureSkyLayer() {
-    if (!map || map.getLayer(SKY_LAYER_ID)) {
+    if (!map) {
+      return false;
+    }
+
+    if (map.getLayer && map.getLayer(SKY_LAYER_ID)) {
+      skyImplementation = 'layer';
+      return true;
+    }
+
+    if (skyImplementation === 'setSky') {
       return true;
     }
 
@@ -1883,8 +1953,39 @@
       return false;
     }
 
+    if (typeof map.setSky === 'function') {
+      try {
+        map.setSky({
+          'sky-type': 'atmosphere',
+          'sky-atmosphere-sun': [0, 0],
+          'sky-atmosphere-sun-intensity': 0.5,
+          'sky-atmosphere-color': colorArrayToRgbaString(SKY_ZENITH_DAY),
+          'sky-atmosphere-halo-color': colorArrayToRgbaString(SKY_HORIZON_DAY)
+        });
+        if (typeof map.setFog === 'function') {
+          map.setFog({
+            color: colorArrayToRgbaString(FOG_NEAR_COLOR_DAY),
+            'high-color': colorArrayToRgbaString(FOG_HIGH_COLOR_DAY),
+            'space-color': colorArrayToRgbaString(FOG_SPACE_COLOR_DAY),
+            'horizon-blend': 0.35,
+            range: [0.5, 8.5],
+            'star-intensity': 0
+          });
+        }
+        skyImplementation = 'setSky';
+        requestSkyUpdate();
+        return true;
+      } catch (error) {
+        if (terrainDebugEnabled) {
+          console.warn('Failed to configure sky using setSky(). Falling back to layer API.', error);
+        }
+      }
+    }
+
     try {
       map.addLayer(SKY_LAYER_DEFINITION, 'swisstopo');
+      skyImplementation = 'layer';
+      requestSkyUpdate();
       return true;
     } catch (error) {
       const message = error && typeof error.message === 'string' ? error.message : '';
