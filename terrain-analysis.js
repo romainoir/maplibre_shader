@@ -199,6 +199,10 @@
   let deckTerrainWireframe = true;
   let deckTerrainShowImagery = false;
 
+  if (typeof window !== 'undefined' && window.maplibregl && !window.mapboxgl) {
+    window.mapboxgl = window.maplibregl;
+  }
+
   function ensureSunlightEngine(gl) {
     if (sunlightEngine && sunlightEngine.supported) {
       return sunlightEngine;
@@ -286,7 +290,29 @@
     if (typeof window === 'undefined') {
       return null;
     }
-    return window.deck || null;
+    const deckGlobal = window.deck || null;
+    if (!deckGlobal) {
+      return null;
+    }
+
+    const mapboxOverlay = deckGlobal.MapboxOverlay
+      || deckGlobal.mapbox?.MapboxOverlay
+      || deckGlobal.mapbox?.MapboxOverlay2
+      || null;
+
+    const terrainLayer = deckGlobal.TerrainLayer
+      || deckGlobal.layers?.TerrainLayer
+      || null;
+
+    if (!mapboxOverlay && !terrainLayer) {
+      return deckGlobal;
+    }
+
+    return {
+      ...deckGlobal,
+      MapboxOverlay: mapboxOverlay || deckGlobal.MapboxOverlay,
+      TerrainLayer: terrainLayer || deckGlobal.TerrainLayer
+    };
   }
 
   function bringDeckOverlayToFront() {
@@ -391,7 +417,7 @@
         deckOverlay.setProps({ layers: [] });
       }
       if (terrainStatusEl) {
-        terrainStatusEl.textContent = 'deck.gl TerrainLayer not supported in this browser.';
+        terrainStatusEl.textContent = 'deck.gl TerrainLayer unavailable (missing MapboxOverlay or TerrainLayer exports).';
       }
       return;
     }
