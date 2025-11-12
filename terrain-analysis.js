@@ -1900,7 +1900,7 @@
 
     if (skyImplementation === 'setSky') {
       map.setSky({
-        type: 'gradient',
+        'sky-type': 'gradient',
         'sky-color': colorArrayToRgbaString(zenithColor),
         'sky-horizon-blend': horizonBlend,
         'horizon-color': colorArrayToRgbaString(horizonColor),
@@ -1960,7 +1960,7 @@
     if (typeof map.setSky === 'function') {
       try {
         map.setSky({
-          type: 'gradient',
+          'sky-type': 'gradient',
           'sky-color': colorArrayToRgbaString(SKY_ZENITH_DAY),
           'sky-horizon-blend': 0.35,
           'horizon-color': colorArrayToRgbaString(SKY_HORIZON_DAY),
