@@ -11,48 +11,151 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/suncalc/1.8.0/suncalc.min.js"></script>
   <style>
     html, body, #map { margin: 0; padding: 0; height: 100%; }
-    #controls {
-      position: absolute;
-      top: 10px;
-      left: 50%;
-      transform: translateX(-50%);
-      z-index: 10;
-      display: flex;
-      flex-wrap: wrap;
-      gap: 10px;
-      align-items: center;
+
+    body {
       font-family: sans-serif;
     }
+
+    #topControls {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      z-index: 10;
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
     .control-button {
       padding: 8px 16px;
       font-size: 13px;
       background: #ee8a65;
       color: #fff;
       border: none;
-      border-radius: 4px;
+      border-radius: 6px;
       cursor: pointer;
-      transition: background 0.2s;
+      transition: background 0.2s, box-shadow 0.2s;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
     }
-    .control-button.active { background: #d35f34; }
+
     .control-button:hover { background: #e67e54; }
-    /* Slider containers */
-    #snowSliderContainer,
-    #shadowControls {
-      margin-left: 10px;
-      color: #fff;
-      font-family: sans-serif;
+
+    .control-button.active { background: #d35f34; }
+
+    .control-checkbox {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 10px;
+      background: rgba(255, 255, 255, 0.92);
+      border-radius: 6px;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
       font-size: 13px;
+      color: #333;
     }
-    #snowSliderContainer, #shadowControls { display: none; }
-    #shadowControls {
+
+    .control-checkbox input[type="checkbox"] {
+      width: 16px;
+      height: 16px;
+    }
+
+    .control-checkbox label {
+      cursor: pointer;
+      font-weight: 600;
+    }
+
+    #layersPanel {
+      position: absolute;
+      top: 60px;
+      left: 10px;
+      width: 320px;
+      z-index: 11;
+      display: none;
+      flex-direction: column;
+      gap: 12px;
+      padding: 16px;
+      border-radius: 12px;
+      background: rgba(0, 0, 0, 0.7);
+      color: #fff;
+      box-shadow: 0 12px 30px rgba(0, 0, 0, 0.35);
+      backdrop-filter: blur(6px);
+    }
+
+    #layersPanel.open {
+      display: flex;
+    }
+
+    #layersPanel h3 {
+      margin: 0;
+      font-size: 15px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    #layersPanel .panel-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+    }
+
+    #layersPanel .panel-close {
+      background: transparent;
+      border: none;
+      color: #fff;
+      font-size: 20px;
+      line-height: 1;
+      cursor: pointer;
+      padding: 4px;
+    }
+
+    #layersPanel .button-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    #layersPanel .button-grid .control-button {
+      width: 100%;
+      box-shadow: none;
+    }
+
+    #layersPanel .panel-section {
+      display: none;
       flex-direction: column;
       gap: 6px;
+      background: rgba(255, 255, 255, 0.08);
+      padding: 10px;
+      border-radius: 8px;
     }
+
+    #layersPanel label {
+      font-size: 13px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    #layersPanel input[type="range"] {
+      width: 100%;
+    }
+
+    #layersPanel span {
+      font-variant-numeric: tabular-nums;
+    }
+
+    #shadowControls {
+      gap: 8px;
+    }
+
     #shadowControls > div {
       display: flex;
       align-items: center;
       gap: 6px;
     }
+
     input[type="range"] { vertical-align: middle; }
     #gradientMenu {
       position: absolute;
@@ -61,17 +164,17 @@
       z-index: 11;
       display: flex;
       flex-direction: column;
-      gap: 8px;
-      width: 260px;
-      padding: 12px;
-      border-radius: 8px;
-      background: rgba(0, 0, 0, 0.65);
+      gap: 10px;
+      width: 280px;
+      padding: 14px;
+      border-radius: 10px;
+      background: rgba(0, 0, 0, 0.7);
       color: #fff;
-      font-family: sans-serif;
       font-size: 12px;
       box-shadow: 0 8px 16px rgba(0, 0, 0, 0.35);
-      backdrop-filter: blur(4px);
+      backdrop-filter: blur(6px);
     }
+
     #gradientMenu h3 {
       margin: 0;
       font-size: 13px;
@@ -80,23 +183,43 @@
       letter-spacing: 0.04em;
       color: #f2f2f2;
     }
+
     #gradientMenu .gradient-row {
       display: flex;
       align-items: center;
       gap: 8px;
     }
+
     #gradientMenu label {
-      flex: 0 0 110px;
+      flex: 0 0 120px;
       font-weight: 500;
     }
+
     #gradientMenu input[type="range"] {
       flex: 1 1 auto;
     }
+
     #gradientMenu span {
       flex: 0 0 70px;
       text-align: right;
       font-variant-numeric: tabular-nums;
     }
+
+    #gradientMenu select {
+      flex: 1 1 auto;
+      padding: 5px 6px;
+      border-radius: 6px;
+      border: none;
+      font-size: 12px;
+      background: rgba(255, 255, 255, 0.15);
+      color: #fff;
+    }
+
+    #gradientMenu select:focus {
+      outline: 2px solid rgba(255, 255, 255, 0.3);
+      outline-offset: 1px;
+    }
+
     #gradientMenu button,
     #terrainMenu button {
       margin-top: 4px;
@@ -153,32 +276,35 @@
       color: #bcbcbc;
       line-height: 1.3;
     }
-    #debugPanel {
-      position: absolute;
-      top: 10px;
-      right: 10px;
-      z-index: 12;
-      max-width: 320px;
-      padding: 12px;
-      border-radius: 8px;
-      background: rgba(0, 0, 0, 0.7);
-      color: #f5f5f5;
-      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
-      font-size: 12px;
-      line-height: 1.5;
-      box-shadow: 0 8px 16px rgba(0, 0, 0, 0.35);
-      backdrop-filter: blur(4px);
-      pointer-events: auto;
-      user-select: text;
+    #gradientMenu .panel-divider {
+      height: 1px;
+      background: rgba(255, 255, 255, 0.15);
+      border: none;
+      margin: 4px 0;
     }
+
+    #debugPanel {
+      display: none;
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+      font-size: 11px;
+      line-height: 1.5;
+      color: #f5f5f5;
+      background: rgba(255, 255, 255, 0.06);
+      padding: 10px;
+      border-radius: 8px;
+      max-height: 220px;
+      overflow-y: auto;
+    }
+
     #debugPanel h3 {
-      margin: 0 0 8px;
-      font-size: 12px;
+      margin: 0 0 6px;
+      font-size: 11px;
       font-weight: 600;
       letter-spacing: 0.08em;
       text-transform: uppercase;
       color: #ffd7b5;
     }
+
     #debugContent {
       margin: 0;
       white-space: pre-wrap;
@@ -187,70 +313,81 @@
   </style>
 </head>
 <body>
-  <div id="controls">
-    <button id="hillShadeNativeBtn" class="control-button">HillShade Native</button>
-    <button id="hillShadeCustomBtn" class="control-button">HillShade Custom</button>
-    <button id="normalBtn" class="control-button">Normal</button>
-    <button id="avalancheBtn" class="control-button">Avalanche</button>
-    <button id="slopeBtn" class="control-button">Slope</button>
-    <button id="aspectBtn" class="control-button">Orientation</button>
-    <button id="snowBtn" class="control-button">Snow</button>
-    <button id="shadowBtn" class="control-button">Shadow</button>
-    <button id="daylightBtn" class="control-button">Sunlight</button>
-    <button id="terrainMeshBtn" class="control-button">Three.js Mesh</button>
-    <button id="terrainDebugBtn" class="control-button">Terrain Debug</button>
-    <!-- Snow sliders -->
-    <div id="snowSliderContainer">
-
-      <label for="snowAltitudeSlider">Snow Altitude:</label>
+  <div id="topControls">
+    <div class="control-checkbox">
+      <input id="hqMode" type="checkbox" checked>
+      <label for="hqMode">HQ (LOD 3/9)</label>
+    </div>
+    <button id="toggle3D" class="control-button">Revenir en 2D</button>
+    <button id="layersToggle" class="control-button" aria-expanded="false" aria-controls="layersPanel">Layers</button>
+  </div>
+  <div id="layersPanel" aria-hidden="true">
+    <div class="panel-header">
+      <h3>Layers</h3>
+      <button id="layersClose" class="panel-close" type="button" aria-label="Close layers panel">×</button>
+    </div>
+    <div class="button-grid">
+      <button id="hillShadeNativeBtn" class="control-button">HillShade Native</button>
+      <button id="hillShadeCustomBtn" class="control-button">HillShade Custom</button>
+      <button id="normalBtn" class="control-button">Normal</button>
+      <button id="avalancheBtn" class="control-button">Avalanche</button>
+      <button id="slopeBtn" class="control-button">Slope</button>
+      <button id="aspectBtn" class="control-button">Orientation</button>
+      <button id="snowBtn" class="control-button">Snow</button>
+      <button id="shadowBtn" class="control-button">Shadow</button>
+      <button id="daylightBtn" class="control-button">Sunlight</button>
+      <button id="terrainMeshBtn" class="control-button">Three.js Mesh</button>
+      <button id="terrainDebugBtn" class="control-button">Terrain Debug</button>
+    </div>
+    <div id="snowSliderContainer" class="panel-section">
+      <label for="snowAltitudeSlider">Snow Altitude</label>
       <input type="range" id="snowAltitudeSlider" min="0" max="5000" step="50" value="3000">
       <span id="snowAltitudeValue">3000</span>
-      <label for="snowSlopeSlider">Max Slope (°):</label>
+      <label for="snowSlopeSlider">Max Slope (°)</label>
       <input type="range" id="snowSlopeSlider" min="0" max="90" step="1" value="55">
       <span id="snowSlopeValue">55</span>
-      <label for="snowBlurSlider">Snow Blur:</label>
+      <label for="snowBlurSlider">Snow Blur</label>
       <input type="range" id="snowBlurSlider" min="0" max="2" step="0.05" value="1">
       <span id="snowBlurValue">1.00</span>
     </div>
-    <!-- Shadow controls -->
-    <div id="shadowControls">
+    <div id="shadowControls" class="panel-section">
       <div>
-        <label for="shadowDateSlider">Date:</label>
+        <label for="shadowDateSlider">Date</label>
         <input type="range" id="shadowDateSlider" min="0" max="364" step="1">
         <span id="shadowDateValue"></span>
       </div>
       <div>
-        <label for="shadowTimeSlider">Time:</label>
+        <label for="shadowTimeSlider">Time</label>
         <input type="range" id="shadowTimeSlider" min="0" max="1439" step="1">
         <span id="shadowTimeValue"></span>
       </div>
       <div>
-        <label for="shadowSampleCountSlider">Samples:</label>
+        <label for="shadowSampleCountSlider">Samples</label>
         <input type="range" id="shadowSampleCountSlider" min="1" max="64" step="1" value="1">
         <span id="shadowSampleCountValue">1</span>
       </div>
       <div>
-        <label for="shadowBlurRadiusSlider">Blur Radius:</label>
+        <label for="shadowBlurRadiusSlider">Blur Radius</label>
         <input type="range" id="shadowBlurRadiusSlider" min="0" max="10" step="0.05" value="1.0">
         <span id="shadowBlurRadiusValue">1.00</span>
       </div>
       <div>
-        <label for="shadowEdgeSoftnessSlider">Edge Softness:</label>
+        <label for="shadowEdgeSoftnessSlider">Edge Softness</label>
         <input type="range" id="shadowEdgeSoftnessSlider" min="0" max="0.3" step="0.01" value="0.01">
         <span id="shadowEdgeSoftnessValue">0.01</span>
       </div>
       <div>
-        <label for="shadowRayLengthSlider">Ray Length (m):</label>
+        <label for="shadowRayLengthSlider">Ray Length (m)</label>
         <input type="range" id="shadowRayLengthSlider" min="50" max="40000" step="50" value="14000">
         <span id="shadowRayLengthValue">14000</span>
       </div>
       <div>
-        <label for="shadowMaxOpacitySlider">Max Opacity:</label>
+        <label for="shadowMaxOpacitySlider">Max Opacity</label>
         <input type="range" id="shadowMaxOpacitySlider" min="0.2" max="1" step="0.01" value="0.6">
         <span id="shadowMaxOpacityValue">0.60</span>
       </div>
       <div>
-        <label for="shadowRayStepMultiplierSlider">Ray Substeps:</label>
+        <label for="shadowRayStepMultiplierSlider">Ray Substeps</label>
         <input type="range" id="shadowRayStepMultiplierSlider" min="0.25" max="4" step="0.05" value="1">
         <span id="shadowRayStepMultiplierValue">1.00</span>
       </div>
@@ -278,17 +415,26 @@
       <input type="range" id="gradientMaxSlider" min="0.050" max="6.000" step="0.001" value="3.000">
       <span id="gradientMaxValue">3.000 m</span>
     </div>
+    <div class="gradient-row">
+      <label for="gradientAutoScaleSelect">Auto Scale</label>
+      <select id="gradientAutoScaleSelect">
+        <option value="0.5">½×</option>
+        <option value="0.3333333333">⅓×</option>
+        <option value="1">1×</option>
+      </select>
+    </div>
     <button id="gradientAutoButton" type="button">Use Auto Sampling</button>
+    <div class="panel-divider"></div>
+    <div id="debugPanel">
+      <h3>Debug Info</h3>
+      <pre id="debugContent">Initializing…</pre>
+    </div>
   </div>
   <div id="terrainMenu">
     <h3>Three.js Mesh</h3>
     <p id="terrainStatus">Mesh hidden.</p>
     <small>Displays a Three.js mesh generated from the current terrain tiles.</small>
     <button id="terrainExportBtn" type="button" disabled>Export Mesh (.obj)</button>
-  </div>
-  <div id="debugPanel">
-    <h3>Debug Info</h3>
-    <pre id="debugContent">Initializing…</pre>
   </div>
   <div id="map"></div>
   <!-- Include shader definitions, gradient preparer and debugging helpers -->
