@@ -830,6 +830,7 @@
       if (!existing) {
         try {
           map.addLayer(layer);
+          pushTerrainWireframeLayerToFront();
         } catch (error) {
           if (DEBUG) {
             console.warn('Failed to add terrain Three.js mesh layer', error);
@@ -842,6 +843,7 @@
         }
       }
       await rebuildTerrainWireframe();
+      pushTerrainWireframeLayerToFront();
     } else {
       if (typeof map.getLayer === 'function' && map.getLayer(TERRAIN_WIREFRAME_LAYER_ID)) {
         try {
@@ -863,6 +865,22 @@
       setTerrainStatus('Mesh hidden.');
     }
     updateButtons();
+  }
+
+  function pushTerrainWireframeLayerToFront() {
+    if (!map || typeof map.moveLayer !== 'function' || typeof map.getLayer !== 'function') {
+      return;
+    }
+    if (!map.getLayer(TERRAIN_WIREFRAME_LAYER_ID)) {
+      return;
+    }
+    try {
+      map.moveLayer(TERRAIN_WIREFRAME_LAYER_ID);
+    } catch (error) {
+      if (DEBUG) {
+        console.warn('Failed to move terrain Three.js mesh layer to the front', error);
+      }
+    }
   }
 
   function degreesToRadians(value) {
