@@ -195,6 +195,10 @@
   let terrainWireframeLayer = null;
   let terrainWireframeScene = null;
   let terrainWireframeMesh = null;
+  let terrainSolidMesh = null;
+  let terrainAmbientLight = null;
+  let terrainDirectionalLight = null;
+  let terrainDirectionalLightTarget = null;
   let terrainWireframeLoading = false;
   let terrainWireframeModelTransform = null;
 
@@ -539,6 +543,14 @@
           }
           terrainWireframeMesh = null;
         }
+        if (terrainSolidMesh && terrainWireframeScene) {
+          terrainWireframeScene.remove(terrainSolidMesh);
+          terrainSolidMesh.geometry.dispose();
+          if (terrainSolidMesh.material) {
+            terrainSolidMesh.material.dispose();
+          }
+          terrainSolidMesh = null;
+        }
         terrainWireframeModelTransform = null;
         setTerrainStatus('No geometry could be generated.');
         if (map) {
@@ -551,24 +563,53 @@
       geometries.forEach((geometry) => geometry.dispose());
       mergedGeometry.computeBoundingBox();
       mergedGeometry.computeBoundingSphere();
+      mergedGeometry.computeVertexNormals();
       const vertexCount = mergedGeometry.getAttribute('position').count;
 
-      if (terrainWireframeMesh && terrainWireframeScene) {
-        terrainWireframeScene.remove(terrainWireframeMesh);
-        terrainWireframeMesh.geometry.dispose();
-        if (terrainWireframeMesh.material) {
-          terrainWireframeMesh.material.dispose();
+      if (terrainWireframeScene) {
+        if (terrainWireframeMesh) {
+          terrainWireframeScene.remove(terrainWireframeMesh);
+          terrainWireframeMesh.geometry.dispose();
+          if (terrainWireframeMesh.material) {
+            terrainWireframeMesh.material.dispose();
+          }
+          terrainWireframeMesh = null;
         }
-        terrainWireframeMesh = null;
+        if (terrainSolidMesh) {
+          terrainWireframeScene.remove(terrainSolidMesh);
+          terrainSolidMesh.geometry.dispose();
+          if (terrainSolidMesh.material) {
+            terrainSolidMesh.material.dispose();
+          }
+          terrainSolidMesh = null;
+        }
       }
 
       const wireframeGeometry = new THREE.WireframeGeometry(mergedGeometry);
-      mergedGeometry.dispose();
-      const material = new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.65 });
+      const material = new THREE.LineBasicMaterial({
+        color: 0xffffff,
+        transparent: true,
+        opacity: 0.5,
+        depthWrite: false
+      });
       terrainWireframeMesh = new THREE.LineSegments(wireframeGeometry, material);
       terrainWireframeMesh.frustumCulled = false;
       if (terrainWireframeScene) {
         terrainWireframeScene.add(terrainWireframeMesh);
+      }
+
+      const meshMaterial = new THREE.MeshStandardMaterial({
+        color: 0x777777,
+        metalness: 0.05,
+        roughness: 0.85,
+        flatShading: false
+      });
+      terrainSolidMesh = new THREE.Mesh(mergedGeometry, meshMaterial);
+      terrainSolidMesh.frustumCulled = false;
+      terrainSolidMesh.castShadow = true;
+      terrainSolidMesh.receiveShadow = true;
+      if (terrainWireframeScene) {
+        terrainWireframeScene.add(terrainSolidMesh);
       }
 
       const originLngLat = mercatorToLngLat(globalMinX, globalMaxY);
@@ -580,6 +621,30 @@
         translateZ: originCoord.z,
         scale: metersInUnits
       };
+
+      if (terrainDirectionalLight && terrainDirectionalLightTarget && mergedGeometry.boundingSphere) {
+        const { center, radius } = mergedGeometry.boundingSphere;
+        terrainDirectionalLightTarget.position.copy(center);
+        const lightOffset = radius * 1.5;
+        terrainDirectionalLight.position.set(
+          center.x + lightOffset,
+          center.y - lightOffset * 0.6,
+          center.z + lightOffset
+        );
+        terrainDirectionalLight.updateMatrixWorld();
+        terrainDirectionalLight.target.updateMatrixWorld();
+        const shadowCamera = terrainDirectionalLight.shadow && terrainDirectionalLight.shadow.camera;
+        if (shadowCamera && typeof shadowCamera.updateProjectionMatrix === 'function') {
+          const range = Math.max(radius * 2.0, 100);
+          shadowCamera.left = -range;
+          shadowCamera.right = range;
+          shadowCamera.top = range;
+          shadowCamera.bottom = -range;
+          shadowCamera.near = Math.max(0.1, radius * 0.01);
+          shadowCamera.far = Math.max(range * 3, radius * 4);
+          shadowCamera.updateProjectionMatrix();
+        }
+      }
 
       setTerrainStatus(`Wireframe mesh ready (${vertexCount} vertices).`);
       if (map) {
@@ -613,7 +678,21 @@
           context: gl
         });
         this.renderer.autoClear = false;
+        this.renderer.shadowMap.enabled = true;
+        this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
         terrainWireframeScene = new THREE.Scene();
+        terrainAmbientLight = new THREE.AmbientLight(0xffffff, 0.4);
+        terrainDirectionalLight = new THREE.DirectionalLight(0xffffff, 0.9);
+        terrainDirectionalLight.castShadow = true;
+        terrainDirectionalLight.shadow.bias = -0.0001;
+        terrainDirectionalLight.shadow.mapSize.set(2048, 2048);
+        terrainDirectionalLight.shadow.camera.near = 0.1;
+        terrainDirectionalLight.shadow.camera.far = 10000;
+        terrainDirectionalLightTarget = new THREE.Object3D();
+        terrainWireframeScene.add(terrainAmbientLight);
+        terrainWireframeScene.add(terrainDirectionalLight);
+        terrainWireframeScene.add(terrainDirectionalLightTarget);
+        terrainDirectionalLight.target = terrainDirectionalLightTarget;
         rebuildTerrainWireframe();
       },
       render(gl, matrix) {
@@ -654,8 +733,28 @@
             terrainWireframeMesh.material.dispose();
           }
         }
+        if (terrainWireframeScene && terrainSolidMesh) {
+          terrainWireframeScene.remove(terrainSolidMesh);
+          terrainSolidMesh.geometry.dispose();
+          if (terrainSolidMesh.material) {
+            terrainSolidMesh.material.dispose();
+          }
+        }
+        if (terrainWireframeScene && terrainAmbientLight) {
+          terrainWireframeScene.remove(terrainAmbientLight);
+        }
+        if (terrainWireframeScene && terrainDirectionalLight) {
+          terrainWireframeScene.remove(terrainDirectionalLight);
+        }
+        if (terrainWireframeScene && terrainDirectionalLightTarget) {
+          terrainWireframeScene.remove(terrainDirectionalLightTarget);
+        }
         terrainWireframeScene = null;
         terrainWireframeMesh = null;
+        terrainSolidMesh = null;
+        terrainAmbientLight = null;
+        terrainDirectionalLight = null;
+        terrainDirectionalLightTarget = null;
         terrainWireframeModelTransform = null;
         terrainWireframeLayer = null;
         if (this.renderer && typeof this.renderer.resetState === 'function') {
@@ -715,6 +814,10 @@
       terrainWireframeLayer = null;
       terrainWireframeScene = null;
       terrainWireframeMesh = null;
+      terrainSolidMesh = null;
+      terrainAmbientLight = null;
+      terrainDirectionalLight = null;
+      terrainDirectionalLightTarget = null;
       terrainWireframeModelTransform = null;
       setTerrainStatus('Mesh hidden.');
     }
