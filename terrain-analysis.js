@@ -3589,7 +3589,7 @@
       'horizon-color': '#f0f8ff',
       'horizon-fog-blend': 0.8,
       'fog-color': '#2c7fb8',
-      'fog-ground-blend': 0.9,
+      'fog-ground-blend': 0.2,
       'atmosphere-blend': blend
     });
   };
