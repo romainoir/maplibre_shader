@@ -2175,7 +2175,7 @@
     }
     const minLod = hqModeCheckbox && hqModeCheckbox.checked ? 3 : 4;
     const maxLod = hqModeCheckbox && hqModeCheckbox.checked ? 9 : 6;
-    const sourceIds = ['swisstopo', TERRAIN_SOURCE_ID];
+    const sourceIds = [TERRAIN_SOURCE_ID];
     for (const sourceId of sourceIds) {
       if (!map.getSource(sourceId)) {
         continue;
@@ -3570,13 +3570,6 @@
       version: 8,
       glyphs: "https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf",
       sources: {
-        swisstopo: {
-          type: 'raster',
-          tileSize: 256,
-          tiles: ['https://wmts.geo.admin.ch/1.0.0/ch.swisstopo.swissimage/default/current/3857/{z}/{x}/{y}.jpeg'],
-          attribution: '© Swisstopo',
-          maxzoom: 19
-        },
         [TERRAIN_SOURCE_ID]: {
           type: 'raster-dem',
           tiles: ['https://tiles.mapterhorn.com/{z}/{x}/{y}.webp'],
@@ -3586,8 +3579,7 @@
         }
       },
       layers: [
-        { id: 'background', type: 'background', paint: { 'background-color': '#000000' } },
-        { id: 'swisstopo', type: 'raster', source: 'swisstopo', paint: {'raster-opacity': 1.0} }
+        { id: 'background', type: 'background', paint: { 'background-color': '#000000' } }
       ],
       sky: getSkyPaintProperties(),
       terrain: { source: TERRAIN_SOURCE_ID, exaggeration: 1.0 }
