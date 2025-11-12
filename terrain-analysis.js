@@ -3724,7 +3724,15 @@
           gl.depthFunc(gl.LEQUAL);
           gl.clear(gl.DEPTH_BUFFER_BIT);
           gl.enable(gl.BLEND);
-          if (mode === "shadow" || mode === "daylight") {
+          gl.blendEquation(gl.FUNC_ADD);
+          if (mode === "shadow") {
+            gl.blendFuncSeparate(
+              gl.ZERO,
+              gl.SRC_COLOR,
+              gl.ZERO,
+              gl.ONE
+            );
+          } else if (mode === "daylight") {
             gl.blendFuncSeparate(
               gl.SRC_ALPHA,
               gl.ONE_MINUS_SRC_ALPHA,
