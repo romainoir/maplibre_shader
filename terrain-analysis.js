@@ -134,7 +134,9 @@
   }
 
   // Global state variables
-  let currentMode = ""; // "hillshade", "normal", "avalanche", "slope", "aspect", "snow", "shadow", or "daylight"
+  const CUSTOM_LAYER_ORDER = Object.freeze(['hillshade', 'normal', 'avalanche', 'slope', 'aspect', 'snow', 'shadow', 'daylight']);
+  const activeCustomModes = new Set();
+  let currentMode = '';
   let hillshadeMode = 'none'; // "none", "native", or "custom"
   let lastCustomMode = 'hillshade';
   const meshCache = new Map();
@@ -150,6 +152,12 @@
   let shadowRayStepMultiplier = 1.0;
   let shadowSlopeBias = 0.03;
   let shadowPixelBias = 0.15;
+  function isModeActive(mode) {
+    return activeCustomModes.has(mode);
+  }
+  function getActiveModesInOrder() {
+    return CUSTOM_LAYER_ORDER.filter((mode) => activeCustomModes.has(mode));
+  }
   const H4_SUNLIGHT_CONFIG = Object.freeze({
     azimuthCount: 48,
     quantizationLevels: 64,
@@ -1701,7 +1709,7 @@
         timeSlider.value = minutes;
       }
       if (timeValue) timeValue.textContent = isoTime;
-      if (map && (currentMode === "shadow" || currentMode === "daylight")) map.triggerRepaint();
+      if (map && (isModeActive('shadow') || isModeActive('daylight'))) map.triggerRepaint();
     };
 
     const updateShadowTimeBounds = (preferredMinutes = null) => {
@@ -1758,7 +1766,7 @@
       shadowDateValue = isoDate;
       if (dateValue) dateValue.textContent = isoDate;
       updateShadowTimeBounds();
-      if (map && (currentMode === "shadow" || currentMode === "daylight")) map.triggerRepaint();
+      if (map && (isModeActive('shadow') || isModeActive('daylight'))) map.triggerRepaint();
     };
 
     if (dateSlider) {
@@ -1943,35 +1951,35 @@
     }
     const hillShadeCustomBtn = document.getElementById('hillShadeCustomBtn');
     if (hillShadeCustomBtn) {
-      hillShadeCustomBtn.classList.toggle('active', isCustomActive && currentMode === "hillshade");
+      hillShadeCustomBtn.classList.toggle('active', isCustomActive && isModeActive('hillshade'));
     }
     const normalBtn = document.getElementById('normalBtn');
     if (normalBtn) {
-      normalBtn.classList.toggle('active', isCustomActive && currentMode === "normal");
+      normalBtn.classList.toggle('active', isCustomActive && isModeActive('normal'));
     }
     const avalancheBtn = document.getElementById('avalancheBtn');
     if (avalancheBtn) {
-      avalancheBtn.classList.toggle('active', isCustomActive && currentMode === "avalanche");
+      avalancheBtn.classList.toggle('active', isCustomActive && isModeActive('avalanche'));
     }
     const slopeBtn = document.getElementById('slopeBtn');
     if (slopeBtn) {
-      slopeBtn.classList.toggle('active', isCustomActive && currentMode === "slope");
+      slopeBtn.classList.toggle('active', isCustomActive && isModeActive('slope'));
     }
     const aspectBtn = document.getElementById('aspectBtn');
     if (aspectBtn) {
-      aspectBtn.classList.toggle('active', isCustomActive && currentMode === "aspect");
+      aspectBtn.classList.toggle('active', isCustomActive && isModeActive('aspect'));
     }
     const snowBtn = document.getElementById('snowBtn');
     if (snowBtn) {
-      snowBtn.classList.toggle('active', isCustomActive && currentMode === "snow");
+      snowBtn.classList.toggle('active', isCustomActive && isModeActive('snow'));
     }
     const shadowBtn = document.getElementById('shadowBtn');
     if (shadowBtn) {
-      shadowBtn.classList.toggle('active', isCustomActive && currentMode === "shadow");
+      shadowBtn.classList.toggle('active', isCustomActive && isModeActive('shadow'));
     }
     const daylightBtn = document.getElementById('daylightBtn');
     if (daylightBtn) {
-      daylightBtn.classList.toggle('active', isCustomActive && currentMode === "daylight");
+      daylightBtn.classList.toggle('active', isCustomActive && isModeActive('daylight'));
     }
     if (!terrainDebugBtn) {
       terrainDebugBtn = document.getElementById('terrainDebugBtn');
@@ -1997,11 +2005,11 @@
     }
     const snowSliderContainer = document.getElementById('snowSliderContainer');
     if (snowSliderContainer) {
-      snowSliderContainer.style.display = (isCustomActive && currentMode === "snow") ? "flex" : "none";
+      snowSliderContainer.style.display = (isCustomActive && isModeActive('snow')) ? "flex" : "none";
     }
     const shadowControls = document.getElementById('shadowControls');
     if (shadowControls) {
-      shadowControls.style.display = (isCustomActive && (currentMode === "shadow" || currentMode === "daylight")) ? "flex" : "none";
+      shadowControls.style.display = (isCustomActive && (isModeActive('shadow') || isModeActive('daylight'))) ? "flex" : "none";
     }
     refreshDebugPanel();
   }
@@ -2010,12 +2018,12 @@
   document.getElementById('snowAltitudeSlider').addEventListener('input', (e) => {
     snowAltitude = parseFloat(e.target.value);
     document.getElementById('snowAltitudeValue').textContent = e.target.value;
-    if (map && currentMode === "snow") map.triggerRepaint();
+    if (map && isModeActive('snow')) map.triggerRepaint();
   });
   document.getElementById('snowSlopeSlider').addEventListener('input', (e) => {
     snowMaxSlope = parseFloat(e.target.value);
     document.getElementById('snowSlopeValue').textContent = e.target.value;
-    if (map && currentMode === "snow") map.triggerRepaint();
+    if (map && isModeActive('snow')) map.triggerRepaint();
   });
   const snowBlurSlider = document.getElementById('snowBlurSlider');
   const snowBlurValueEl = document.getElementById('snowBlurValue');
@@ -2029,7 +2037,7 @@
       if (snowBlurValueEl) {
         snowBlurValueEl.textContent = snowBlurAmount.toFixed(2);
       }
-      if (map && currentMode === "snow") map.triggerRepaint();
+      if (map && isModeActive('snow')) map.triggerRepaint();
     });
   }
 
@@ -2228,7 +2236,9 @@
     const lines = [];
     const modeLabel = (() => {
       if (hillshadeMode === 'custom') {
-        return `custom/${currentMode || 'idle'}`;
+        const active = getActiveModesInOrder();
+        const label = active.length ? active.join('+') : (currentMode || 'idle');
+        return `custom/${label}`;
       }
       if (hillshadeMode === 'native') {
         return 'native hillshade';
@@ -2237,6 +2247,10 @@
     })();
 
     lines.push(`Mode: ${modeLabel}`);
+    if (hillshadeMode === 'custom') {
+      const activeModes = getActiveModesInOrder();
+      lines.push(`Active custom modes: ${activeModes.length ? activeModes.join(', ') : 'none'}`);
+    }
     lines.push(`Terrain debug logging: ${terrainDebugEnabled ? 'enabled' : 'disabled'}`);
 
     if (map) {
@@ -2510,7 +2524,7 @@
   }
 
   const triggerShadowRepaint = () => {
-    if (map && (currentMode === "shadow" || currentMode === "daylight")) {
+    if (map && (isModeActive('shadow') || isModeActive('daylight'))) {
       map.triggerRepaint();
     }
   };
@@ -2524,7 +2538,7 @@
   }
 
   function ensureCustomTerrainLayer() {
-    if (!canModifyStyle()) return;
+    if (!canModifyStyle() || !activeCustomModes.size) return;
     if (map.getLayer('terrain-normal')) return;
     terrainNormalLayer.frameCount = 0;
     map.addLayer(terrainNormalLayer);
@@ -2563,16 +2577,51 @@
     }
   }
 
-  function enableCustomHillshade(mode) {
+  function setCustomModeEnabled(mode, enabled) {
+    if (!mode) return;
     const styleReady = canModifyStyle();
-    const nextMode = mode || lastCustomMode || 'hillshade';
-    lastCustomMode = nextMode;
-    currentMode = nextMode;
-    hillshadeMode = 'custom';
-    if (styleReady) {
-      removeNativeHillshadeLayer();
-      ensureCustomTerrainLayer();
+    let stateChanged = false;
+
+    if (enabled) {
+      if (!activeCustomModes.has(mode)) {
+        activeCustomModes.add(mode);
+        stateChanged = true;
+      }
+      lastCustomMode = mode;
+      currentMode = mode;
+    } else {
+      if (activeCustomModes.delete(mode)) {
+        stateChanged = true;
+        if (!activeCustomModes.has(currentMode)) {
+          currentMode = activeCustomModes.size ? Array.from(activeCustomModes).slice(-1)[0] : '';
+        }
+      }
     }
+
+    if (!stateChanged && hillshadeMode === 'custom') {
+      if (styleReady && map && activeCustomModes.size) {
+        map.triggerRepaint();
+      }
+      updateButtons();
+      return;
+    }
+
+    if (activeCustomModes.size > 0) {
+      hillshadeMode = 'custom';
+      if (styleReady) {
+        removeNativeHillshadeLayer();
+        ensureCustomTerrainLayer();
+      }
+    } else {
+      if (styleReady) {
+        removeCustomTerrainLayer();
+      }
+      if (hillshadeMode === 'custom') {
+        hillshadeMode = 'none';
+      }
+      publishRenderDebugInfo(null);
+    }
+
     terrainNormalLayer.shaderMap.clear();
     updateButtons();
     if (styleReady && map) {
@@ -2580,7 +2629,11 @@
     }
   }
 
-  function disableCustomHillshade() {
+  function clearCustomModes() {
+    if (!activeCustomModes.size && hillshadeMode !== 'custom') {
+      return;
+    }
+    activeCustomModes.clear();
     const styleReady = canModifyStyle();
     if (styleReady) {
       removeCustomTerrainLayer();
@@ -2594,13 +2647,31 @@
     if (styleReady && map) {
       map.triggerRepaint();
     }
+    publishRenderDebugInfo(null);
+  }
+
+  function toggleCustomMode(mode) {
+    if (!mode) return;
+    const shouldEnable = !activeCustomModes.has(mode);
+    setCustomModeEnabled(mode, shouldEnable);
+  }
+
+  function enableCustomHillshade(mode) {
+    const nextMode = mode || lastCustomMode || 'hillshade';
+    setCustomModeEnabled(nextMode, true);
+  }
+
+  function disableCustomHillshade() {
+    clearCustomModes();
   }
 
   function setNativeHillshadeEnabled(enabled) {
     const styleReady = canModifyStyle();
     if (enabled) {
+      if (activeCustomModes.size) {
+        clearCustomModes();
+      }
       if (styleReady) {
-        removeCustomTerrainLayer();
         removeNativeHillshadeLayer();
         ensureNativeHillshadeLayer();
       }
@@ -3204,21 +3275,23 @@
     },
 
     render(gl, matrix) {
-      // Increment frame counter
+      if (!activeCustomModes.size) {
+        publishRenderDebugInfo(null);
+        return;
+      }
+
       this.frameCount++;
-      
-      // Skip the first few frames to ensure everything is initialized
       if (this.frameCount < 3) {
         this.map.triggerRepaint();
         return;
       }
-      
-      // Wait for tiles to stabilize after rapid movement
+
       const terrainInterface = getTerrainInterface(this.map);
       const tileManager = terrainInterface ? terrainInterface.tileManager : null;
       if (!tileManager) {
         if (terrainDebugEnabled) console.warn("Tile manager not available; skipping render");
         this.map.triggerRepaint();
+        publishRenderDebugInfo(null);
         return;
       }
 
@@ -3241,10 +3314,10 @@
       }
 
       const renderableTiles = tileManager.getRenderableTiles();
-
-      // Don't render if we have no tiles
       if (renderableTiles.length === 0) {
-        if (terrainDebugEnabled) console.log("No renderable tiles available");
+        const gradientDebug = typeof gradientPreparer.getDebugInfo === 'function'
+          ? gradientPreparer.getDebugInfo()
+          : null;
         publishRenderDebugInfo({
           debugMetrics: { totalTiles: 0, drawnTiles: 0, skippedTiles: 0, passes: 0 },
           renderableTileCount: 0,
@@ -3253,10 +3326,11 @@
           nativeGradientTiles: 0,
           samplingDistance,
           isSamplingDistanceManual,
-          neighborSamplingActive: currentMode === "shadow" || currentMode === "daylight",
+          neighborSamplingActive: false,
           hillshadeMode,
           currentMode,
-          gradientDebug: typeof gradientPreparer.getDebugInfo === 'function' ? gradientPreparer.getDebugInfo() : null
+          gradientDebug,
+          activeModes: getActiveModesInOrder()
         });
         this.map.triggerRepaint();
         return;
@@ -3297,72 +3371,110 @@
         samplingDistance
       });
 
-      const shader = this.getShader(gl, matrix.shaderData);
-      if (!shader) return;
-      gl.useProgram(shader.program);
-
-      const debugMetrics = {
-        totalTiles: renderableTiles.length,
-        drawnTiles: 0,
-        skippedTiles: 0,
-        passes: 0
-      };
-
       gl.enable(gl.CULL_FACE);
       gl.cullFace(gl.BACK);
       gl.enable(gl.DEPTH_TEST);
 
-      if (currentMode === "snow" || currentMode === "slope") {
-        gl.depthFunc(gl.LESS);
-        gl.colorMask(false, false, false, false);
-        gl.clear(gl.DEPTH_BUFFER_BIT);
-      this.renderTiles(gl, shader, renderableTiles, terrainInterface, tileManager, terrainDataCache, textureCache, metersPerPixelCache, nativeGradientCache, debugMetrics);
+      const gradientDebug = typeof gradientPreparer.getDebugInfo === 'function'
+        ? gradientPreparer.getDebugInfo()
+        : null;
 
-        gl.colorMask(true, true, true, true);
-        gl.depthFunc(gl.LEQUAL);
-        gl.enable(gl.BLEND);
-        gl.blendFuncSeparate(
-          gl.SRC_ALPHA,
-          gl.ONE_MINUS_SRC_ALPHA,
-          gl.ONE,
-          gl.ONE_MINUS_SRC_ALPHA
-        );
-        this.renderTiles(gl, shader, renderableTiles, terrainInterface, tileManager, terrainDataCache, textureCache, metersPerPixelCache, nativeGradientCache, debugMetrics);
+      const shared = {
+        renderableTiles,
+        terrainInterface,
+        tileManager,
+        terrainDataCache,
+        textureCache,
+        metersPerPixelCache,
+        nativeGradientCache,
+        gradientDebug
+      };
+
+      let lastDebug = null;
+      const modes = getActiveModesInOrder();
+      for (const mode of modes) {
+        const debugInfo = this.renderMode(gl, matrix, mode, shared);
+        if (debugInfo) {
+          lastDebug = debugInfo;
+        }
+      }
+
+      gl.disable(gl.BLEND);
+
+      if (lastDebug) {
+        lastDebug.activeModes = modes;
+        publishRenderDebugInfo(lastDebug);
       } else {
-        gl.depthFunc(gl.LEQUAL);
-        gl.clear(gl.DEPTH_BUFFER_BIT);
-        gl.enable(gl.BLEND);
-        if (currentMode === "shadow" || currentMode === "daylight") {
+        publishRenderDebugInfo(null);
+      }
+    },
+
+    renderMode(gl, matrix, mode, shared) {
+      const previousMode = currentMode;
+      currentMode = mode;
+      try {
+        const shader = this.getShader(gl, matrix.shaderData);
+        if (!shader) {
+          return null;
+        }
+        gl.useProgram(shader.program);
+
+        const debugMetrics = {
+          totalTiles: shared.renderableTiles.length,
+          drawnTiles: 0,
+          skippedTiles: 0,
+          passes: 0
+        };
+
+        if (mode === "snow" || mode === "slope") {
+          gl.depthFunc(gl.LESS);
+          gl.colorMask(false, false, false, false);
+          gl.clear(gl.DEPTH_BUFFER_BIT);
+          this.renderTiles(gl, shader, shared.renderableTiles, shared.terrainInterface, shared.tileManager, shared.terrainDataCache, shared.textureCache, shared.metersPerPixelCache, shared.nativeGradientCache, debugMetrics);
+
+          gl.colorMask(true, true, true, true);
+          gl.depthFunc(gl.LEQUAL);
+          gl.enable(gl.BLEND);
           gl.blendFuncSeparate(
             gl.SRC_ALPHA,
             gl.ONE_MINUS_SRC_ALPHA,
             gl.ONE,
             gl.ONE_MINUS_SRC_ALPHA
           );
+          this.renderTiles(gl, shader, shared.renderableTiles, shared.terrainInterface, shared.tileManager, shared.terrainDataCache, shared.textureCache, shared.metersPerPixelCache, shared.nativeGradientCache, debugMetrics);
         } else {
-          gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+          gl.depthFunc(gl.LEQUAL);
+          gl.clear(gl.DEPTH_BUFFER_BIT);
+          gl.enable(gl.BLEND);
+          if (mode === "shadow" || mode === "daylight") {
+            gl.blendFuncSeparate(
+              gl.SRC_ALPHA,
+              gl.ONE_MINUS_SRC_ALPHA,
+              gl.ONE,
+              gl.ONE_MINUS_SRC_ALPHA
+            );
+          } else {
+            gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+          }
+          this.renderTiles(gl, shader, shared.renderableTiles, shared.terrainInterface, shared.tileManager, shared.terrainDataCache, shared.textureCache, shared.metersPerPixelCache, shared.nativeGradientCache, debugMetrics);
         }
-        this.renderTiles(gl, shader, renderableTiles, terrainInterface, tileManager, terrainDataCache, textureCache, metersPerPixelCache, nativeGradientCache, debugMetrics);
+
+        return {
+          debugMetrics,
+          renderableTileCount: shared.renderableTiles.length,
+          terrainDataCount: shared.terrainDataCache.size,
+          textureCacheCount: shared.textureCache.size,
+          nativeGradientTiles: shared.nativeGradientCache ? shared.nativeGradientCache.size : 0,
+          samplingDistance,
+          isSamplingDistanceManual,
+          neighborSamplingActive: mode === "shadow" || mode === "daylight",
+          hillshadeMode,
+          currentMode: mode,
+          gradientDebug: shared.gradientDebug
+        };
+      } finally {
+        currentMode = previousMode;
       }
-
-      gl.disable(gl.BLEND);
-
-      const gradientDebug = typeof gradientPreparer.getDebugInfo === 'function'
-        ? gradientPreparer.getDebugInfo()
-        : null;
-      publishRenderDebugInfo({
-        debugMetrics,
-        renderableTileCount: renderableTiles.length,
-        terrainDataCount: terrainDataCache.size,
-        textureCacheCount: textureCache.size,
-        nativeGradientTiles: nativeGradientCache ? nativeGradientCache.size : 0,
-        samplingDistance,
-        isSamplingDistanceManual,
-        neighborSamplingActive: currentMode === "shadow" || currentMode === "daylight",
-        hillshadeMode,
-        currentMode,
-        gradientDebug
-      });
     }
   };
   
@@ -3482,7 +3594,7 @@
     }
     if (hillshadeMode === 'native') {
       ensureNativeHillshadeLayer();
-    } else if (hillshadeMode === 'custom' && currentMode) {
+    } else if (hillshadeMode === 'custom' && activeCustomModes.size) {
       ensureCustomTerrainLayer();
     }
     is3DViewEnabled = map.getPitch() > 5;
@@ -3500,7 +3612,7 @@
 
   map.on('zoomend', () => {
     updateSamplingDistanceForZoom();
-    if (currentMode === "shadow" || currentMode === "daylight") {
+    if (isModeActive('shadow') || isModeActive('daylight')) {
       map.triggerRepaint();
     }
   });
@@ -3524,7 +3636,7 @@
     if (sunlightEngine && typeof sunlightEngine.invalidateAll === 'function') {
       sunlightEngine.invalidateAll();
     }
-    if (hillshadeMode === 'custom') {
+    if (hillshadeMode === 'custom' && activeCustomModes.size) {
       ensureCustomTerrainLayer();
     }
     if (map.getLayer('terrain-normal')) {
@@ -3552,70 +3664,38 @@
   const hillShadeCustomBtn = document.getElementById('hillShadeCustomBtn');
   if (hillShadeCustomBtn) {
     hillShadeCustomBtn.addEventListener('click', () => {
-      if (hillshadeMode === 'custom' && currentMode === 'hillshade') {
-        disableCustomHillshade();
-      } else {
-        enableCustomHillshade('hillshade');
-      }
+      toggleCustomMode('hillshade');
     });
   }
 
   document.getElementById('normalBtn').addEventListener('click', () => {
-    if (hillshadeMode === 'custom' && currentMode === "normal") {
-      disableCustomHillshade();
-    } else {
-      enableCustomHillshade("normal");
-    }
+    toggleCustomMode('normal');
   });
 
   document.getElementById('avalancheBtn').addEventListener('click', () => {
-    if (hillshadeMode === 'custom' && currentMode === "avalanche") {
-      disableCustomHillshade();
-    } else {
-      enableCustomHillshade("avalanche");
-    }
+    toggleCustomMode('avalanche');
   });
 
   document.getElementById('slopeBtn').addEventListener('click', () => {
-    if (hillshadeMode === 'custom' && currentMode === "slope") {
-      disableCustomHillshade();
-    } else {
-      enableCustomHillshade("slope");
-    }
+    toggleCustomMode('slope');
   });
 
   document.getElementById('aspectBtn').addEventListener('click', () => {
-    if (hillshadeMode === 'custom' && currentMode === "aspect") {
-      disableCustomHillshade();
-    } else {
-      enableCustomHillshade("aspect");
-    }
+    toggleCustomMode('aspect');
   });
 
   document.getElementById('snowBtn').addEventListener('click', () => {
-    if (hillshadeMode === 'custom' && currentMode === "snow") {
-      disableCustomHillshade();
-    } else {
-      enableCustomHillshade("snow");
-    }
+    toggleCustomMode('snow');
   });
 
   document.getElementById('shadowBtn').addEventListener('click', () => {
-    if (hillshadeMode === 'custom' && currentMode === "shadow") {
-      disableCustomHillshade();
-    } else {
-      enableCustomHillshade("shadow");
-    }
+    toggleCustomMode('shadow');
   });
 
   const daylightBtnEl = document.getElementById('daylightBtn');
   if (daylightBtnEl) {
     daylightBtnEl.addEventListener('click', () => {
-      if (hillshadeMode === 'custom' && currentMode === "daylight") {
-        disableCustomHillshade();
-      } else {
-        enableCustomHillshade("daylight");
-      }
+      toggleCustomMode('daylight');
     });
   }
 
