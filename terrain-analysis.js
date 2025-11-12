@@ -288,11 +288,29 @@
     return window.deck || null;
   }
 
+  function bringDeckOverlayToFront() {
+    if (!map || !deckOverlay || typeof map.moveLayer !== 'function') {
+      return;
+    }
+    const mapboxLayer = deckOverlay._mapboxLayer;
+    if (!mapboxLayer || !mapboxLayer.id) {
+      return;
+    }
+    try {
+      map.moveLayer(mapboxLayer.id);
+    } catch (error) {
+      if (DEBUG) {
+        console.warn('Failed to move deck.gl overlay to top', error);
+      }
+    }
+  }
+
   function ensureDeckOverlay() {
     if (!map) {
       return null;
     }
     if (deckOverlay) {
+      bringDeckOverlayToFront();
       return deckOverlay;
     }
     const deckGlobal = getDeckGlobal();
@@ -302,6 +320,7 @@
     try {
       deckOverlay = new deckGlobal.MapboxOverlay({ interleaved: true, layers: [] });
       map.addControl(deckOverlay);
+      bringDeckOverlayToFront();
     } catch (error) {
       if (DEBUG) {
         console.warn('Failed to create deck.gl overlay', error);
@@ -399,6 +418,7 @@
       return;
     }
     overlay.setProps({ layers: [terrainLayer] });
+    bringDeckOverlayToFront();
     if (terrainStatusEl) {
       terrainStatusEl.textContent = `Streaming global terrain mesh (${describeDeckTerrainMode()}).`;
     }
