@@ -59,6 +59,25 @@
   const TERRAIN_SOURCE_ID = 'terrain';
   const HILLSHADE_NATIVE_LAYER_ID = 'terrain-hillshade-native';
   const SKY_LAYER_ID = 'terrain-sky';
+  const SKY_BASE_PROPERTIES = {
+    'sky-color': '#199EF3',
+    'sky-horizon-blend': 0.5,
+    'horizon-color': '#ffffff',
+    'horizon-fog-blend': 0.5,
+    'fog-color': '#0000ff',
+    'fog-ground-blend': 0.5,
+    'atmosphere-blend': [
+      'interpolate',
+      ['linear'],
+      ['zoom'],
+      0,
+      1,
+      10,
+      1,
+      12,
+      0
+    ]
+  };
   const DEFAULT_HILLSHADE_SETTINGS = {
     highlightColor: [1.0, 1.0, 1.0],
     shadowColor: [0.0, 0.0, 0.0],
@@ -3570,6 +3589,7 @@
         { id: 'background', type: 'background', paint: { 'background-color': '#000000' } },
         { id: 'swisstopo', type: 'raster', source: 'swisstopo', paint: {'raster-opacity': 1.0} }
       ],
+      sky: getSkyPaintProperties(),
       terrain: { source: TERRAIN_SOURCE_ID, exaggeration: 1.0 }
     },
     zoom: 14,
@@ -3582,16 +3602,14 @@
     fadeDuration: 500
   });
 
-  function getSkyPaintProperties(blend) {
-    return {
-      'sky-color': '#199EF3',
-      'sky-horizon-blend': 0.7,
-      'horizon-color': '#f0f8ff',
-      'horizon-fog-blend': 0.8,
-      'fog-color': '#2c7fb8',
-      'fog-ground-blend': 0.2,
-      'atmosphere-blend': blend
-    };
+  function getSkyPaintProperties() {
+    const clone = { ...SKY_BASE_PROPERTIES };
+    if (Array.isArray(SKY_BASE_PROPERTIES['atmosphere-blend'])) {
+      clone['atmosphere-blend'] = SKY_BASE_PROPERTIES['atmosphere-blend'].map((value) => {
+        return Array.isArray(value) ? value.slice() : value;
+      });
+    }
+    return clone;
   }
 
   const BACKGROUND_LAYER_ID = 'background';
@@ -3750,9 +3768,20 @@
     if (!canModifyStyle()) {
       return;
     }
-    const zoom = map.getZoom();
-    const blend = Math.max(0, Math.min(1, 1 - zoom / 12));
-    const paintProperties = getSkyPaintProperties(blend);
+    const paintProperties = getSkyPaintProperties();
+    if (typeof map.setSkyProperty === 'function') {
+      Object.entries(paintProperties).forEach(([property, value]) => {
+        try {
+          map.setSkyProperty(property, value);
+        } catch (error) {
+          if (terrainDebugEnabled) {
+            console.warn(`Failed to update sky property ${property}`, error);
+          }
+        }
+      });
+      applyBackgroundSkyFallback(paintProperties);
+      return;
+    }
     if (detectSkyLayerSupport()) {
       const addedSky = ensureSkyLayer(paintProperties);
       if (!addedSky) {
