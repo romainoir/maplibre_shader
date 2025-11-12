@@ -130,6 +130,8 @@
   let shadowEdgeSoftness = 0.01;
   let shadowMaxOpacity = 0.6;
   let shadowRayStepMultiplier = 1.0;
+  let shadowSlopeBias = 0.03;
+  let shadowPixelBias = 0.15;
   const H4_SUNLIGHT_CONFIG = Object.freeze({
     azimuthCount: 48,
     quantizationLevels: 64,
@@ -775,14 +777,55 @@
     }
   }
 
+  function smoothstep(edge0, edge1, x) {
+    if (edge0 === edge1) {
+      return x < edge0 ? 0 : 1;
+    }
+    const t = clamp((x - edge0) / (edge1 - edge0), 0, 1);
+    return t * t * (3 - 2 * t);
+  }
+
+  function colorTemperatureToRgb(cct) {
+    const temperature = cct / 100;
+    let red;
+    let green;
+    let blue;
+
+    const safeTemp = Math.max(temperature, 1e-3);
+    if (temperature <= 66) {
+      red = 255;
+      green = 99.4708025861 * Math.log(safeTemp) - 161.1195681661;
+    } else {
+      const t = temperature - 60;
+      const safeT = Math.max(t, 1e-3);
+      red = 329.698727446 * Math.pow(safeT, -0.1332047592);
+      green = 288.1221695283 * Math.pow(safeT, -0.0755148492);
+    }
+
+    if (temperature >= 66) {
+      blue = 255;
+    } else if (temperature <= 19) {
+      blue = 0;
+    } else {
+      const safeBlueT = Math.max(temperature - 10, 1e-3);
+      blue = 138.5177312231 * Math.log(safeBlueT) - 305.0447927307;
+    }
+
+    const clamp255 = (value) => clamp(Math.round(value), 0, 255) / 255;
+    return [clamp255(red), clamp255(green), clamp255(blue)];
+  }
+
   function computeSunParameters(mapInstance) {
     const center = mapInstance.getCenter();
     const sunDate = getShadowDateTime();
     const sunPos = SunCalc.getPosition(sunDate, center.lat, center.lng);
     const azimuth = sunPos.azimuth;
-    const altitude = Math.max(sunPos.altitude, -0.01);
+    const altitude = sunPos.altitude;
     const dirX = -Math.sin(azimuth);
-    const dirY = Math.cos(azimuth);
+    const dirY = -Math.cos(azimuth);
+    const minAltitude = -1 * (Math.PI / 180); // approximately -1 degree
+    const clampedAltitude = Math.max(altitude, minAltitude);
+    const sunSlope = Math.tan(clampedAltitude);
     const times = SunCalc.getTimes(sunDate, center.lat, center.lng);
     const toMillis = (date) => (date instanceof Date ? date.getTime() : null);
     const nowMs = sunDate.getTime();
@@ -796,22 +839,20 @@
       ? Math.max(0, 1 - Math.abs(nowMs - sunsetMs) / warmWindowMs)
       : 0;
     const altitudeDeg = altitude * (180 / Math.PI);
-    const lowAltitudeFactor = altitudeDeg > 0 ? Math.max(0, 1 - altitudeDeg / 20) : 0;
-    let warmIntensity = Math.max(sunriseIntensity, sunsetIntensity, lowAltitudeFactor);
-    warmIntensity = Math.min(1, Math.pow(warmIntensity, 0.85));
-    if (altitude <= 0) {
-      warmIntensity = 0;
+    const smoothFactor = smoothstep(-6, 15, altitudeDeg);
+    const cct = 2000 * (1 - smoothFactor) + 6500 * smoothFactor;
+    const warmColor = colorTemperatureToRgb(cct);
+
+    let warmIntensity = 0;
+    if (altitude > 0) {
+      const sinAltitude = Math.sin(altitude);
+      const opticalAirMass = 1 / Math.max(0.1, sinAltitude);
+      const transmittance = Math.exp(-0.25 * opticalAirMass);
+      const sunriseBoost = Math.max(sunriseIntensity, sunsetIntensity);
+      warmIntensity = clamp(1 - transmittance + sunriseBoost * 0.25, 0, 1);
     }
 
-    const isMorning = sunriseIntensity >= sunsetIntensity;
-    const deepOrange = isMorning ? [1.0, 0.68, 0.30] : [1.0, 0.60, 0.24];
-    const softYellow = [1.0, 0.82, 0.38];
-    const altitudeBlend = Math.min(1, Math.max(0, altitudeDeg / 18));
-    const warmColor = deepOrange.map((c, i) =>
-      c * (1 - altitudeBlend) + softYellow[i] * altitudeBlend
-    );
-
-    return { dirX, dirY, altitude, warmColor, warmIntensity };
+    return { dirX, dirY, altitude, sunSlope, warmColor, warmIntensity };
   }
 
   let cachedTerrainInterface = null;
@@ -1506,25 +1547,28 @@
       if (currentMode === "snow") {
         uniforms.push('u_snow_altitude', 'u_snow_maxSlope', 'u_snow_blur');
       }
-      if (currentMode === "shadow" || currentMode === "daylight") {
-        uniforms.push(
-          'u_shadowSampleCount',
-          'u_shadowBlurRadius',
-          'u_shadowMaxDistance',
-          'u_shadowVisibilityThreshold',
-          'u_shadowEdgeSoftness',
-          'u_shadowMaxOpacity',
-          'u_shadowRayStepMultiplier'
-        );
-        if (currentMode === "shadow") {
+        if (currentMode === "shadow" || currentMode === "daylight") {
           uniforms.push(
-            'u_sunDirection',
-            'u_sunAltitude',
-            'u_sunWarmColor',
-            'u_sunWarmIntensity'
+            'u_shadowSampleCount',
+            'u_shadowBlurRadius',
+            'u_shadowMaxDistance',
+            'u_shadowVisibilityThreshold',
+            'u_shadowEdgeSoftness',
+            'u_shadowMaxOpacity',
+            'u_shadowRayStepMultiplier',
+            'u_shadowSlopeBias',
+            'u_shadowPixelBias'
           );
-        } else {
-          uniforms.push(
+          if (currentMode === "shadow") {
+            uniforms.push(
+              'u_sunDirection',
+              'u_sunAltitude',
+              'u_sunSlope',
+              'u_sunWarmColor',
+              'u_sunWarmIntensity'
+            );
+          } else {
+            uniforms.push(
             'u_h4Horizon',
             'u_h4Lut',
             'u_h4AzimuthCount',
@@ -1831,6 +1875,9 @@
             if (shader.locations.u_sunAltitude != null) {
               gl.uniform1f(shader.locations.u_sunAltitude, sunParams.altitude);
             }
+            if (shader.locations.u_sunSlope != null && Number.isFinite(sunParams.sunSlope)) {
+              gl.uniform1f(shader.locations.u_sunSlope, sunParams.sunSlope);
+            }
             if (shader.locations.u_sunWarmColor != null && Array.isArray(sunParams.warmColor)) {
               gl.uniform3f(
                 shader.locations.u_sunWarmColor,
@@ -1885,6 +1932,12 @@
         }
         if ((currentMode === "shadow" || currentMode === "daylight") && shader.locations.u_shadowRayStepMultiplier != null) {
           gl.uniform1f(shader.locations.u_shadowRayStepMultiplier, shadowRayStepMultiplier);
+        }
+        if ((currentMode === "shadow" || currentMode === "daylight") && shader.locations.u_shadowSlopeBias != null) {
+          gl.uniform1f(shader.locations.u_shadowSlopeBias, shadowSlopeBias);
+        }
+        if ((currentMode === "shadow" || currentMode === "daylight") && shader.locations.u_shadowPixelBias != null) {
+          gl.uniform1f(shader.locations.u_shadowPixelBias, shadowPixelBias);
         }
 
         gl.drawElements(gl.TRIANGLES, mesh.indexCount, gl.UNSIGNED_SHORT, 0);

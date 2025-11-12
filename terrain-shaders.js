@@ -587,6 +587,7 @@ ${SHADER_NEIGHBOR_METERS_UNIFORM_BLOCK}    uniform vec2 u_latrange;
         ${this.commonFunctions}
         uniform vec2  u_sunDirection;
         uniform float u_sunAltitude;
+        uniform float u_sunSlope;
         uniform vec3  u_sunWarmColor;
         uniform float u_sunWarmIntensity;
         uniform int   u_shadowSampleCount;
@@ -596,6 +597,8 @@ ${SHADER_NEIGHBOR_METERS_UNIFORM_BLOCK}    uniform vec2 u_latrange;
         uniform float u_shadowEdgeSoftness;
         uniform float u_shadowMaxOpacity;
         uniform float u_shadowRayStepMultiplier;
+        uniform float u_shadowSlopeBias;
+        uniform float u_shadowPixelBias;
         in  highp vec2  v_texCoord;
         in  highp float v_elevation;
         out vec4 fragColor;
@@ -610,6 +613,8 @@ ${SHADER_NEIGHBOR_METERS_UNIFORM_BLOCK}    uniform vec2 u_latrange;
           float threshold = max(u_shadowVisibilityThreshold, 0.0);
           float softness = max(u_shadowEdgeSoftness, 0.0);
           float stepMultiplier = max(u_shadowRayStepMultiplier, 0.1);
+          float slopeBiasBase = max(u_shadowSlopeBias, 0.0);
+          float pixelBias = max(u_shadowPixelBias, 0.0);
           vec2 baseTexelStep = texelStep / stepMultiplier;
           float baseStepDistance = metersPerPixel / stepMultiplier;
           float maxSlope = -1e6;
@@ -618,6 +623,7 @@ ${SHADER_NEIGHBOR_METERS_UNIFORM_BLOCK}    uniform vec2 u_latrange;
           float maxBound = 1.0 + ${SHADER_MAX_NEIGHBOR_OFFSET}.0;
           float stepFactor = 1.0;
           float traveled = 0.0;
+          float lastBias = slopeBiasBase;
           for (int i = 0; i < MAX_SHADOW_STEPS; ++i) {
             float nextDistance = traveled + baseStepDistance * stepFactor;
             if (nextDistance > u_shadowMaxDistance) {
@@ -634,8 +640,11 @@ ${SHADER_NEIGHBOR_METERS_UNIFORM_BLOCK}    uniform vec2 u_latrange;
             float sampleElevation = sampleElevationAdaptive(samplePos, traveled, metersPerPixel);
             float slope = (sampleElevation - currentElevation) / traveled;
             maxSlope = max(maxSlope, slope);
-            if (maxSlope >= sunSlope - threshold) {
-              float visibilityNow = sunSlope - maxSlope;
+            float dynamicBias = slopeBiasBase + pixelBias * (metersPerPixel / max(traveled, metersPerPixel));
+            float targetSlope = sunSlope - dynamicBias;
+            lastBias = dynamicBias;
+            if (maxSlope >= targetSlope - threshold) {
+              float visibilityNow = targetSlope - maxSlope;
               if (softness <= 0.0001) {
                 return visibilityNow > threshold ? 1.0 : 0.0;
               }
@@ -644,7 +653,8 @@ ${SHADER_NEIGHBOR_METERS_UNIFORM_BLOCK}    uniform vec2 u_latrange;
             float growth = computeAdaptiveStepGrowth(traveled);
             stepFactor = min(stepFactor * growth, 64.0);
           }
-          float visibility = sunSlope - maxSlope;
+          float targetSlope = sunSlope - lastBias;
+          float visibility = targetSlope - maxSlope;
           if (softness <= 0.0001) {
             return visibility > threshold ? 1.0 : 0.0;
           }
@@ -664,8 +674,7 @@ ${SHADER_NEIGHBOR_METERS_UNIFORM_BLOCK}    uniform vec2 u_latrange;
           float tileResolution = u_dimension.x;
           vec2 texelStep = horizontalDir / tileResolution;
           float metersPerPixel = max(u_metersPerPixel, 0.0001);
-          float clampedAltitude = clamp(u_sunAltitude, -1.55334306, 1.55334306);
-          float sunSlope = tan(clampedAltitude);
+          float sunSlope = u_sunSlope;
 
           vec2 perpendicular = vec2(-horizontalDir.y, horizontalDir.x);
           int sampleCount = clamp(u_shadowSampleCount, 1, MAX_SHADOW_SAMPLES);
