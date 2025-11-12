@@ -187,7 +187,7 @@
   };
   let samplingDistance = gradientParameters.baseDistance;
   let isSamplingDistanceManual = false;
-  let gradientAutoScaleKey = '0.5';
+  let gradientAutoScaleKey = '0.25';
   let gradientAutoScale = parseFloat(gradientAutoScaleKey);
   let shadowDateValue = null;
   let shadowTimeValue = null;
