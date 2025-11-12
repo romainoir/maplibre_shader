@@ -351,6 +351,40 @@
     return { lng, lat };
   }
 
+  function isMatrixLike(value) {
+    return Array.isArray(value) || ArrayBuffer.isView(value);
+  }
+
+  function resolveProjectionMatrix(input, mapInstance) {
+    if (isMatrixLike(input)) {
+      return input;
+    }
+    if (input && typeof input === 'object') {
+      if (isMatrixLike(input.matrix)) {
+        return input.matrix;
+      }
+      if (isMatrixLike(input.projectionMatrix)) {
+        return input.projectionMatrix;
+      }
+      const defaultProjectionData = input.defaultProjectionData;
+      if (defaultProjectionData && typeof defaultProjectionData === 'object') {
+        if (isMatrixLike(defaultProjectionData.mainMatrix)) {
+          return defaultProjectionData.mainMatrix;
+        }
+        if (isMatrixLike(defaultProjectionData.fallbackMatrix)) {
+          return defaultProjectionData.fallbackMatrix;
+        }
+      }
+    }
+    if (mapInstance?.transform && typeof mapInstance.transform.customLayerMatrix === 'function') {
+      const matrix = mapInstance.transform.customLayerMatrix();
+      if (isMatrixLike(matrix)) {
+        return matrix;
+      }
+    }
+    return null;
+  }
+
   function getTerrainDemUrl(tile) {
     if (!map || typeof map.getStyle !== 'function') {
       return null;
@@ -695,7 +729,7 @@
         terrainDirectionalLight.target = terrainDirectionalLightTarget;
         rebuildTerrainWireframe();
       },
-      render(gl, matrix) {
+      render(gl, matrixOrArgs) {
         if (!terrainWireframeScene || !terrainWireframeModelTransform) {
           if (this.map) {
             this.map.triggerRepaint();
@@ -704,7 +738,14 @@
         }
         const camera = this.camera;
         const renderer = this.renderer;
-        const projectionMatrix = new THREE.Matrix4().fromArray(matrix);
+        const projectionArray = resolveProjectionMatrix(matrixOrArgs, this.map);
+        if (!projectionArray) {
+          if (this.map) {
+            this.map.triggerRepaint();
+          }
+          return;
+        }
+        const projectionMatrix = new THREE.Matrix4().fromArray(projectionArray);
         const transform = new THREE.Matrix4()
           .makeTranslation(
             terrainWireframeModelTransform.translateX,
