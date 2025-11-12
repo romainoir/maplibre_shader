@@ -135,9 +135,6 @@
 
   // Global state variables
   const CUSTOM_LAYER_ORDER = Object.freeze(['hillshade', 'normal', 'avalanche', 'slope', 'aspect', 'snow', 'shadow', 'daylight']);
-  const SKY_LAYER_ID = 'dynamic-sky';
-  let skyLayerUnsupported = false;
-  let skyImplementation = null;
   const activeCustomModes = new Set();
   let currentMode = '';
   let hillshadeMode = 'none'; // "none", "native", or "custom"
@@ -156,7 +153,6 @@
   let shadowSlopeBias = 0.03;
   let shadowPixelBias = 0.15;
   let pendingCustomLayerEnsure = false;
-  let skyNeedsUpdate = false;
   function isModeActive(mode) {
     return activeCustomModes.has(mode);
   }
@@ -1715,7 +1711,6 @@
       }
       if (timeValue) timeValue.textContent = isoTime;
       if (map && (isModeActive('shadow') || isModeActive('daylight'))) map.triggerRepaint();
-      requestSkyUpdate();
     };
 
     const updateShadowTimeBounds = (preferredMinutes = null) => {
@@ -1773,7 +1768,6 @@
       if (dateValue) dateValue.textContent = isoDate;
       updateShadowTimeBounds();
       if (map && (isModeActive('shadow') || isModeActive('daylight'))) map.triggerRepaint();
-      requestSkyUpdate();
     };
 
     if (dateSlider) {
@@ -1808,405 +1802,6 @@
     }
     const t = clamp((x - edge0) / (edge1 - edge0), 0, 1);
     return t * t * (3 - 2 * t);
-  }
-
-  function mixColors(colorA, colorB, factor) {
-    const t = clamp(Number.isFinite(factor) ? factor : 0, 0, 1);
-    return [
-      colorA[0] + (colorB[0] - colorA[0]) * t,
-      colorA[1] + (colorB[1] - colorA[1]) * t,
-      colorA[2] + (colorB[2] - colorA[2]) * t
-    ];
-  }
-
-  function colorArrayToRgbaString(color, alpha = 1) {
-    const r = clamp(Math.round(color[0] * 255), 0, 255);
-    const g = clamp(Math.round(color[1] * 255), 0, 255);
-    const b = clamp(Math.round(color[2] * 255), 0, 255);
-    const a = clamp(alpha, 0, 1);
-    return `rgba(${r}, ${g}, ${b}, ${a})`;
-  }
-
-  const SKY_ZENITH_DAY = [0.20, 0.45, 0.85];
-  const SKY_ZENITH_NIGHT = [0.02, 0.05, 0.10];
-  const SKY_HORIZON_DAY = [0.76, 0.80, 0.92];
-  const SKY_HORIZON_NIGHT = [0.12, 0.16, 0.24];
-  const FOG_NEAR_COLOR_DAY = [0.78, 0.83, 0.88];
-  const FOG_NEAR_COLOR_NIGHT = [0.06, 0.08, 0.14];
-  const FOG_HIGH_COLOR_DAY = [0.52, 0.64, 0.82];
-  const FOG_HIGH_COLOR_NIGHT = [0.04, 0.07, 0.16];
-  const FOG_SPACE_COLOR_DAY = [0.08, 0.14, 0.26];
-  const FOG_SPACE_COLOR_NIGHT = [0.00, 0.01, 0.04];
-  const DEFAULT_SKY_PRESET_KEY = 'solarNoon';
-  const SKY_PRESETS = {
-    sunrise: {
-      type: 'gradient',
-      color: '#f7dc6f',
-      'horizon-blend': 0.8,
-      'horizon-color': '#f5b041',
-      'horizon-fog-blend': 0.8,
-      'fog-color': '#f7dc6f',
-      'fog-ground-blend': 0.5
-    },
-    sunriseEnd: {
-      type: 'gradient',
-      color: '#88C6FC',
-      'horizon-blend': 0.8,
-      'horizon-color': '#ffa700',
-      'horizon-fog-blend': 0.8,
-      'fog-color': '#ffffff',
-      'fog-ground-blend': 0.5
-    },
-    solarNoon: {
-      type: 'gradient',
-      color: '#199EF3',
-      'horizon-blend': 0.7,
-      'horizon-color': '#f0f8ff',
-      'horizon-fog-blend': 0.8,
-      'fog-color': '#2c7fb8',
-      'fog-ground-blend': 0.9,
-      'atmosphere-blend': [
-        'interpolate',
-        ['linear'],
-        ['zoom'],
-        0,
-        1,
-        12,
-        0
-      ]
-    },
-    sunsetStart: {
-      type: 'gradient',
-      color: '#88C6FC',
-      'horizon-blend': 0.8,
-      'horizon-color': '#ffe90e',
-      'horizon-fog-blend': 0.8,
-      'fog-color': '#ffb400',
-      'fog-ground-blend': 0.5
-    },
-    sunset: {
-      type: 'gradient',
-      color: '#ffe90e',
-      'horizon-blend': 0.8,
-      'horizon-color': '#ff6700',
-      'horizon-fog-blend': 0.8,
-      'fog-color': '#ffb400',
-      'fog-ground-blend': 0.5
-    },
-    night: {
-      type: 'gradient',
-      color: '#1e2b58',
-      'horizon-blend': 0.8,
-      'horizon-color': '#614cbf',
-      'horizon-fog-blend': 0.8,
-      'fog-color': '#D4D6D8',
-      'fog-ground-blend': 0.5
-    },
-    dawn: {
-      type: 'gradient',
-      color: '#311f62',
-      'horizon-blend': 0.8,
-      'horizon-color': '#e8817f',
-      'horizon-fog-blend': 0.8,
-      'fog-color': '#8d5273',
-      'fog-ground-blend': 0.5
-    }
-  };
-  const SKY_EVENT_SEQUENCE = [
-    ['dawn', 'dawn'],
-    ['sunrise', 'sunrise'],
-    ['sunriseEnd', 'sunriseEnd'],
-    ['solarNoon', 'solarNoon'],
-    ['sunsetStart', 'sunsetStart'],
-    ['sunset', 'sunset'],
-    ['night', 'night']
-  ];
-  const DAY_IN_MILLISECONDS = 24 * 60 * 60 * 1000;
-
-  function mergeSkyPreset(preset, baseOptions) {
-    const merged = { ...baseOptions };
-    if (preset && typeof preset === 'object') {
-      for (const [key, value] of Object.entries(preset)) {
-        if (value !== undefined && value !== null) {
-          merged[key] = value;
-        }
-      }
-    }
-    return merged;
-  }
-
-  function filterDefined(object) {
-    const result = {};
-    for (const [key, value] of Object.entries(object)) {
-      if (value !== undefined && value !== null) {
-        result[key] = value;
-      }
-    }
-    return result;
-  }
-
-  function getSkyPresetKey(sunDate, times, altitudeDeg) {
-    const nowMs = sunDate instanceof Date ? sunDate.getTime() : Number.NaN;
-    const events = [];
-
-    if (times && typeof times === 'object') {
-      for (const [presetKey, timeKey] of SKY_EVENT_SEQUENCE) {
-        const time = times[timeKey];
-        if (time instanceof Date) {
-          const timeMs = time.getTime();
-          if (Number.isFinite(timeMs)) {
-            events.push({ key: presetKey, time: timeMs });
-          }
-        }
-      }
-    }
-
-    events.sort((a, b) => a.time - b.time);
-
-    if (events.length > 0 && Number.isFinite(nowMs)) {
-      const extended = [];
-      const last = events[events.length - 1];
-      extended.push({ key: last.key, time: last.time - DAY_IN_MILLISECONDS });
-      for (const event of events) {
-        extended.push(event);
-      }
-      const first = events[0];
-      extended.push({ key: first.key, time: first.time + DAY_IN_MILLISECONDS });
-
-      for (let i = 0; i < extended.length - 1; i += 1) {
-        const current = extended[i];
-        const next = extended[i + 1];
-        if (nowMs >= current.time && nowMs < next.time) {
-          return current.key;
-        }
-      }
-    }
-
-    if (!Number.isFinite(altitudeDeg)) {
-      return DEFAULT_SKY_PRESET_KEY;
-    }
-    if (altitudeDeg <= -6) {
-      return 'night';
-    }
-    if (altitudeDeg <= 0) {
-      return 'dawn';
-    }
-    if (altitudeDeg <= 15) {
-      return 'sunrise';
-    }
-    return DEFAULT_SKY_PRESET_KEY;
-  }
-
-  const SKY_LAYER_DEFINITION = {
-    id: SKY_LAYER_ID,
-    type: 'sky',
-    paint: {
-      'sky-type': 'atmosphere',
-      'sky-atmosphere-sun': [0, 0],
-      'sky-atmosphere-sun-intensity': 0.5,
-      'sky-atmosphere-color': colorArrayToRgbaString(SKY_ZENITH_DAY),
-      'sky-atmosphere-halo-color': colorArrayToRgbaString(SKY_HORIZON_DAY)
-    }
-  };
-
-  function updateSkyLayer() {
-    if (!map) {
-      return;
-    }
-
-    if (skyImplementation === 'layer' && !map.getLayer(SKY_LAYER_ID)) {
-      return;
-    }
-
-    if (skyImplementation !== 'layer' && skyImplementation !== 'setSky') {
-      return;
-    }
-
-    let center;
-    try {
-      center = map.getCenter();
-    } catch (error) {
-      center = { lat: 0, lng: 0 };
-    }
-
-    const sunDate = getShadowDateTime();
-    const sunPos = SunCalc.getPosition(sunDate, center.lat, center.lng);
-    const times = SunCalc.getTimes(sunDate, center.lat, center.lng);
-    const altitudeDeg = sunPos.altitude * (180 / Math.PI);
-    const azimuthDeg = ((sunPos.azimuth * (180 / Math.PI)) + 180 + 360) % 360;
-    const sunParams = computeSunParameters(map);
-    const warmColor = sunParams ? sunParams.warmColor : [1, 1, 1];
-    const warmIntensity = sunParams ? sunParams.warmIntensity : 0;
-    const dayFactor = smoothstep(-6, 12, altitudeDeg);
-    const horizonWarm = mixColors(SKY_HORIZON_DAY, warmColor, warmIntensity);
-    const zenithWarm = mixColors(SKY_ZENITH_DAY, warmColor, warmIntensity * 0.5);
-    const horizonColor = mixColors(horizonWarm, SKY_HORIZON_NIGHT, 1 - dayFactor);
-    const zenithColor = mixColors(zenithWarm, SKY_ZENITH_NIGHT, 1 - dayFactor);
-    const fogNearColor = mixColors(
-      mixColors(FOG_NEAR_COLOR_DAY, warmColor, warmIntensity * 0.35),
-      FOG_NEAR_COLOR_NIGHT,
-      1 - dayFactor
-    );
-    const fogHighColor = mixColors(
-      mixColors(FOG_HIGH_COLOR_DAY, warmColor, warmIntensity * 0.25),
-      FOG_HIGH_COLOR_NIGHT,
-      1 - dayFactor
-    );
-    const fogSpaceColor = mixColors(FOG_SPACE_COLOR_DAY, FOG_SPACE_COLOR_NIGHT, 1 - dayFactor);
-    const sunIntensity = 0.35 + dayFactor * (5.5 + warmIntensity * 2.5);
-    const horizonBlend = clamp(0.25 + (1 - dayFactor) * 0.35 + warmIntensity * 0.1, 0, 1);
-    const horizonFogBlend = clamp(0.4 + (1 - dayFactor) * 0.4 + warmIntensity * 0.1, 0, 1);
-    const fogGroundBlend = clamp(0.45 + warmIntensity * 0.15 - dayFactor * 0.2, 0, 1);
-    const starIntensity = clamp((1 - dayFactor) * 0.6, 0, 1);
-
-    const fallbackSkyOptions = {
-      type: 'gradient',
-      color: colorArrayToRgbaString(zenithColor),
-      'horizon-blend': horizonBlend,
-      'horizon-color': colorArrayToRgbaString(horizonColor),
-      'horizon-fog-blend': horizonFogBlend,
-      'fog-color': colorArrayToRgbaString(fogNearColor),
-      'fog-ground-blend': fogGroundBlend
-    };
-    const presetKey = getSkyPresetKey(sunDate, times, altitudeDeg);
-    const preset = SKY_PRESETS[presetKey] || SKY_PRESETS[DEFAULT_SKY_PRESET_KEY] || null;
-    const resolvedSky = mergeSkyPreset(preset, fallbackSkyOptions);
-    resolvedSky.type = resolvedSky.type || 'gradient';
-    const skyOptions = filterDefined(resolvedSky);
-
-    if (skyImplementation === 'setSky') {
-      map.setSky(skyOptions);
-
-      if (typeof map.setFog === 'function') {
-        const fogOptions = filterDefined({
-          color: resolvedSky['fog-color'],
-          'high-color': resolvedSky['horizon-color'],
-          'space-color': resolvedSky.color,
-          'horizon-blend': resolvedSky['horizon-fog-blend'],
-          range: [0.5, 8.5],
-          'star-intensity': starIntensity
-        });
-        map.setFog(fogOptions);
-      }
-      return;
-    }
-
-    map.setPaintProperty(SKY_LAYER_ID, 'sky-atmosphere-sun', [azimuthDeg, clamp(altitudeDeg, -90, 90)]);
-    map.setPaintProperty(SKY_LAYER_ID, 'sky-atmosphere-sun-intensity', Math.max(0.1, sunIntensity));
-    map.setPaintProperty(SKY_LAYER_ID, 'sky-atmosphere-color', resolvedSky.color);
-    map.setPaintProperty(SKY_LAYER_ID, 'sky-atmosphere-halo-color', resolvedSky['horizon-color']);
-
-    if (typeof map.setFog === 'function') {
-      const fogOptions = filterDefined({
-        color: resolvedSky['fog-color'],
-        'high-color': resolvedSky['horizon-color'] || colorArrayToRgbaString(fogHighColor),
-        'space-color': resolvedSky.color || colorArrayToRgbaString(fogSpaceColor),
-        'horizon-blend': resolvedSky['horizon-fog-blend'],
-        range: [0.5, 8.5],
-        'star-intensity': starIntensity
-      });
-      map.setFog(fogOptions);
-    }
-  }
-
-  function ensureSkyLayer() {
-    if (!map) {
-      return false;
-    }
-
-    if (map.getLayer && map.getLayer(SKY_LAYER_ID)) {
-      skyImplementation = 'layer';
-      return true;
-    }
-
-    if (skyImplementation === 'setSky') {
-      return true;
-    }
-
-    if (skyLayerUnsupported) {
-      return false;
-    }
-
-    if (typeof map.setSky === 'function') {
-      try {
-        const fallbackSkyOptions = {
-          type: 'gradient',
-          color: colorArrayToRgbaString(SKY_ZENITH_DAY),
-          'horizon-blend': 0.35,
-          'horizon-color': colorArrayToRgbaString(SKY_HORIZON_DAY),
-          'horizon-fog-blend': 0.45,
-          'fog-color': colorArrayToRgbaString(FOG_NEAR_COLOR_DAY),
-          'fog-ground-blend': 0.55
-        };
-        const initialPreset = SKY_PRESETS[DEFAULT_SKY_PRESET_KEY] || null;
-        const resolvedSky = mergeSkyPreset(initialPreset, fallbackSkyOptions);
-        resolvedSky.type = resolvedSky.type || 'gradient';
-        const skyOptions = filterDefined(resolvedSky);
-        map.setSky(skyOptions);
-        if (typeof map.setFog === 'function') {
-          const fogOptions = filterDefined({
-            color: resolvedSky['fog-color'],
-            'high-color': resolvedSky['horizon-color'] || colorArrayToRgbaString(FOG_HIGH_COLOR_DAY),
-            'space-color': resolvedSky.color || colorArrayToRgbaString(FOG_SPACE_COLOR_DAY),
-            'horizon-blend': resolvedSky['horizon-fog-blend'],
-            range: [0.5, 8.5],
-            'star-intensity': 0
-          });
-          map.setFog(fogOptions);
-        }
-        skyImplementation = 'setSky';
-        requestSkyUpdate();
-        return true;
-      } catch (error) {
-        if (terrainDebugEnabled) {
-          console.warn('Failed to configure sky using setSky(). Falling back to layer API.', error);
-        }
-      }
-    }
-
-    try {
-      map.addLayer(SKY_LAYER_DEFINITION, 'swisstopo');
-      skyImplementation = 'layer';
-      requestSkyUpdate();
-      return true;
-    } catch (error) {
-      const message = error && typeof error.message === 'string' ? error.message : '';
-      if (message && /style( has)? not yet loaded/i.test(message)) {
-        return false;
-      }
-      if (terrainDebugEnabled) {
-        console.warn('Sky layer is not supported by this MapLibre build. Falling back without sky.', error);
-      }
-      skyLayerUnsupported = true;
-      return false;
-    }
-  }
-
-  function requestSkyUpdate() {
-    if (!map) {
-      return;
-    }
-    if (skyNeedsUpdate) {
-      return;
-    }
-    skyNeedsUpdate = true;
-
-    const invokeUpdate = () => {
-      skyNeedsUpdate = false;
-      try {
-        updateSkyLayer();
-      } catch (error) {
-        if (terrainDebugEnabled) {
-          console.warn('Failed to update sky layer', error);
-        }
-      }
-    };
-
-    if (typeof requestAnimationFrame === 'function') {
-      requestAnimationFrame(invokeUpdate);
-    } else {
-      invokeUpdate();
-    }
   }
 
   function colorTemperatureToRgb(cct) {
@@ -2585,7 +2180,6 @@
     if (toggle3DButton) {
       toggle3DButton.textContent = 'Revenir en 2D';
     }
-    requestSkyUpdate();
   }
 
   function enter2DView() {
@@ -2602,7 +2196,6 @@
     if (toggle3DButton) {
       toggle3DButton.textContent = 'Passer en 3D';
     }
-    requestSkyUpdate();
   }
 
   if (hqModeCheckbox) {
@@ -3997,11 +3590,8 @@
     HillshadeDebug.attachToMap(map, { sourceId: TERRAIN_SOURCE_ID, autoHookLayer: false });
   }
 
-  map.on('styledata', (event) => {
+  map.on('styledata', () => {
     applyHQModeToSources();
-    if (event && event.dataType === 'style' && ensureSkyLayer()) {
-      requestSkyUpdate();
-    }
   });
 
   const originalSetTerrain = map.setTerrain.bind(map);
@@ -4073,15 +3663,12 @@
       toggle3DButton.textContent = is3DViewEnabled ? 'Revenir en 2D' : 'Passer en 3D';
     }
     updateButtons();
-    ensureSkyLayer();
-    requestSkyUpdate();
   });
 
   initializeShadowDateTimeControls();
 
   map.on('moveend', () => {
     recomputeShadowTimeBounds();
-    requestSkyUpdate();
   });
 
   map.on('zoomend', () => {
@@ -4089,15 +3676,6 @@
     if (isModeActive('shadow') || isModeActive('daylight')) {
       map.triggerRepaint();
     }
-    requestSkyUpdate();
-  });
-
-  map.on('pitchend', () => {
-    requestSkyUpdate();
-  });
-
-  map.on('rotateend', () => {
-    requestSkyUpdate();
   });
 
   map.on('moveend', () => {
