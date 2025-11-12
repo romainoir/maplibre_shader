@@ -3565,7 +3565,31 @@
         { id: 'swisstopo', type: 'raster', source: 'swisstopo', paint: {'raster-opacity': 1.0} }
       ],
       terrain: { source: TERRAIN_SOURCE_ID, exaggeration: 1.0 },
-      background: { paint: { "background-color": "#ffffff" } }
+      background: { paint: { "background-color": "#ffffff" } },
+      sky: {
+        type: 'gradient',
+        paint: {
+          "sky-color": "#199EF3",
+          "sky-horizon-blend": 0.7,
+          "horizon-color": "#f0f8ff",
+          "horizon-fog-blend": 0.8,
+          "fog-color": "#2c7fb8",
+          "fog-ground-blend": 0.9,
+          "atmosphere-blend": [
+            "interpolate",
+            [
+              "linear"
+            ],
+            [
+              "zoom"
+            ],
+            0,
+            1,
+            12,
+            0
+          ]
+        }
+      }
     },
     zoom: 14,
     center: [7.73044, 46.09915],
