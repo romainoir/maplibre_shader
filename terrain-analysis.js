@@ -986,6 +986,8 @@
           context: gl
         });
         this.renderer.autoClear = false;
+        this.renderer.autoClearColor = false;
+        this.renderer.autoClearDepth = false;
         this.renderer.shadowMap.enabled = true;
         this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
         const isWebGL2 = typeof WebGL2RenderingContext !== 'undefined' && gl instanceof WebGL2RenderingContext;
@@ -1036,6 +1038,9 @@
           return;
         }
         const projectionMatrix = new THREE.Matrix4().fromArray(projectionArray);
+        if (gl && typeof gl.depthMask === 'function') {
+          gl.depthMask(true);
+        }
         if (gl && typeof gl.clearDepth === 'function') {
           gl.clearDepth(1.0);
         }
@@ -1054,10 +1059,25 @@
             terrainWireframeModelTransform.scale
           ));
         camera.projectionMatrix = projectionMatrix.multiply(transform);
+        if (camera.projectionMatrixInverse && typeof camera.projectionMatrixInverse.copy === 'function') {
+          camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
+        }
+        if (camera.matrixWorldInverse && typeof camera.matrixWorldInverse.identity === 'function') {
+          camera.matrixWorldInverse.identity();
+        }
+        if (camera.matrixWorld && typeof camera.matrixWorld.identity === 'function') {
+          camera.matrixWorld.identity();
+        }
         if (typeof renderer.resetState === 'function') {
           renderer.resetState();
         }
+        if (typeof renderer.setRenderTarget === 'function') {
+          renderer.setRenderTarget(null);
+        }
         renderer.render(terrainWireframeScene, camera);
+        if (typeof renderer.resetState === 'function') {
+          renderer.resetState();
+        }
         if (this.map) {
           this.map.triggerRepaint();
         }
