@@ -136,6 +136,7 @@
   // Global state variables
   const CUSTOM_LAYER_ORDER = Object.freeze(['hillshade', 'normal', 'avalanche', 'slope', 'aspect', 'snow', 'shadow', 'daylight']);
   const SKY_LAYER_ID = 'dynamic-sky';
+  let skyLayerUnsupported = false;
   const activeCustomModes = new Set();
   let currentMode = '';
   let hillshadeMode = 'none'; // "none", "native", or "custom"
@@ -1829,6 +1830,17 @@
   const SKY_ZENITH_NIGHT = [0.02, 0.05, 0.10];
   const SKY_HORIZON_DAY = [0.76, 0.80, 0.92];
   const SKY_HORIZON_NIGHT = [0.12, 0.16, 0.24];
+  const SKY_LAYER_DEFINITION = {
+    id: SKY_LAYER_ID,
+    type: 'sky',
+    paint: {
+      'sky-type': 'atmosphere',
+      'sky-atmosphere-sun': [0, 0],
+      'sky-atmosphere-sun-intensity': 0.5,
+      'sky-atmosphere-color': colorArrayToRgbaString(SKY_ZENITH_DAY),
+      'sky-atmosphere-halo-color': colorArrayToRgbaString(SKY_HORIZON_DAY)
+    }
+  };
 
   function updateSkyLayer() {
     if (!map || !map.getLayer(SKY_LAYER_ID)) {
@@ -1860,6 +1872,31 @@
     map.setPaintProperty(SKY_LAYER_ID, 'sky-atmosphere-sun-intensity', Math.max(0.1, sunIntensity));
     map.setPaintProperty(SKY_LAYER_ID, 'sky-atmosphere-color', colorArrayToRgbaString(zenithColor));
     map.setPaintProperty(SKY_LAYER_ID, 'sky-atmosphere-halo-color', colorArrayToRgbaString(horizonColor));
+  }
+
+  function ensureSkyLayer() {
+    if (!map || map.getLayer(SKY_LAYER_ID)) {
+      return true;
+    }
+
+    if (skyLayerUnsupported) {
+      return false;
+    }
+
+    try {
+      map.addLayer(SKY_LAYER_DEFINITION, 'swisstopo');
+      return true;
+    } catch (error) {
+      const message = error && typeof error.message === 'string' ? error.message : '';
+      if (message && /style( has)? not yet loaded/i.test(message)) {
+        return false;
+      }
+      if (terrainDebugEnabled) {
+        console.warn('Sky layer is not supported by this MapLibre build. Falling back without sky.', error);
+      }
+      skyLayerUnsupported = true;
+      return false;
+    }
   }
 
   function requestSkyUpdate() {
@@ -3641,17 +3678,6 @@
         }
       },
       layers: [
-        {
-          id: SKY_LAYER_ID,
-          type: 'sky',
-          paint: {
-            'sky-type': 'atmosphere',
-            'sky-atmosphere-sun': [0, 0],
-            'sky-atmosphere-sun-intensity': 0.5,
-            'sky-atmosphere-color': colorArrayToRgbaString(SKY_ZENITH_DAY),
-            'sky-atmosphere-halo-color': colorArrayToRgbaString(SKY_HORIZON_DAY)
-          }
-        },
         { id: 'swisstopo', type: 'raster', source: 'swisstopo', paint: {'raster-opacity': 1.0} }
       ],
       terrain: { source: TERRAIN_SOURCE_ID, exaggeration: 1.0 },
@@ -3680,8 +3706,11 @@
     HillshadeDebug.attachToMap(map, { sourceId: TERRAIN_SOURCE_ID, autoHookLayer: false });
   }
 
-  map.on('styledata', () => {
+  map.on('styledata', (event) => {
     applyHQModeToSources();
+    if (event && event.dataType === 'style' && ensureSkyLayer()) {
+      requestSkyUpdate();
+    }
   });
 
   const originalSetTerrain = map.setTerrain.bind(map);
@@ -3753,6 +3782,7 @@
       toggle3DButton.textContent = is3DViewEnabled ? 'Revenir en 2D' : 'Passer en 3D';
     }
     updateButtons();
+    ensureSkyLayer();
     requestSkyUpdate();
   });
 
