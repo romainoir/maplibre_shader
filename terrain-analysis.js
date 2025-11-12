@@ -3612,7 +3612,6 @@
     return clone;
   }
 
-  const BACKGROUND_LAYER_ID = 'background';
   let skyLayerSupportCache = null;
 
   function detectSkyLayerSupport() {
@@ -3735,25 +3734,6 @@
     }
   }
 
-  function applyBackgroundSkyFallback(paintProperties) {
-    if (!map || !canModifyStyle() || typeof map.getLayer !== 'function') {
-      return;
-    }
-    if (!map.getLayer(BACKGROUND_LAYER_ID) || typeof map.setPaintProperty !== 'function') {
-      return;
-    }
-    const fallbackColor = paintProperties && paintProperties['sky-color']
-      ? paintProperties['sky-color']
-      : '#199EF3';
-    try {
-      map.setPaintProperty(BACKGROUND_LAYER_ID, 'background-color', fallbackColor);
-    } catch (error) {
-      if (terrainDebugEnabled) {
-        console.warn('Failed to apply sky fallback paint', error);
-      }
-    }
-  }
-
   function getLayerInsertionPoint() {
     if (!map || typeof map.getLayer !== 'function') {
       return undefined;
@@ -3779,7 +3759,6 @@
           }
         }
       });
-      applyBackgroundSkyFallback(paintProperties);
       return;
     }
     if (detectSkyLayerSupport()) {
@@ -3788,8 +3767,6 @@
         updateSkyLayerPaint(paintProperties);
       }
       ensureSkyLayerOrder();
-    } else {
-      applyBackgroundSkyFallback(paintProperties);
     }
   };
 
