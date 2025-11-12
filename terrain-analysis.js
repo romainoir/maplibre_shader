@@ -701,7 +701,8 @@
         color: 0xffffff,
         transparent: true,
         opacity: 0.5,
-        depthWrite: false
+        depthWrite: false,
+        depthTest: false
       });
       terrainWireframeMesh = new THREE.LineSegments(wireframeGeometry, material);
       terrainWireframeMesh.frustumCulled = false;
@@ -859,6 +860,12 @@
           return;
         }
         const projectionMatrix = new THREE.Matrix4().fromArray(projectionArray);
+        if (gl && typeof gl.clearDepth === 'function') {
+          gl.clearDepth(1.0);
+        }
+        if (gl && typeof gl.clear === 'function' && typeof gl.DEPTH_BUFFER_BIT === 'number') {
+          gl.clear(gl.DEPTH_BUFFER_BIT);
+        }
         const transform = new THREE.Matrix4()
           .makeTranslation(
             terrainWireframeModelTransform.translateX,
