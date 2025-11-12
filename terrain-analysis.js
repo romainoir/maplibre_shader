@@ -617,7 +617,7 @@
       }
       if (hasNormals) {
         for (let i = 0; i < normals.length; i += 3) {
-          lines.push(`vn ${formatExportFloat(normals[i])} ${formatExportFloat(normals[i + 1])} ${formatExportFloat(normals[i + 2])}`);
+          lines.push(`vn ${formatExportFloat(-normals[i])} ${formatExportFloat(-normals[i + 1])} ${formatExportFloat(-normals[i + 2])}`);
         }
       }
       if (indices && indices.length >= 3) {
@@ -626,9 +626,9 @@
           const b = indices[i + 1] + 1;
           const c = indices[i + 2] + 1;
           if (hasNormals) {
-            lines.push(`f ${a}//${a} ${b}//${b} ${c}//${c}`);
+            lines.push(`f ${a}//${a} ${c}//${c} ${b}//${b}`);
           } else {
-            lines.push(`f ${a} ${b} ${c}`);
+            lines.push(`f ${a} ${c} ${b}`);
           }
         }
       } else {
@@ -637,9 +637,9 @@
           const b = i + 2;
           const c = i + 3;
           if (hasNormals) {
-            lines.push(`f ${a}//${a} ${b}//${b} ${c}//${c}`);
+            lines.push(`f ${a}//${a} ${c}//${c} ${b}//${b}`);
           } else {
-            lines.push(`f ${a} ${b} ${c}`);
+            lines.push(`f ${a} ${c} ${b}`);
           }
         }
       }
