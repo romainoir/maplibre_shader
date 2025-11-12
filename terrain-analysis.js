@@ -457,7 +457,7 @@
     }
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    geometry.setIndex(new THREE.BufferAttribute(new Uint16Array(indices), 1));
+    geometry.setIndex(new THREE.BufferAttribute(new Uint32Array(indices), 1));
     return geometry;
   }
 
@@ -496,7 +496,7 @@
       return;
     }
     if (typeof THREE === 'undefined') {
-      setTerrainStatus('THREE.js is required for the wireframe mesh.');
+      setTerrainStatus('Three.js is required for the mesh layer.');
       return;
     }
     const tiles = getRenderableTerrainTiles();
@@ -514,7 +514,7 @@
       return;
     }
     terrainWireframeLoading = true;
-    setTerrainStatus('Building wireframe mesh…');
+    setTerrainStatus('Building Three.js mesh…');
     try {
       const mercatorPositions = tiles.map((tile) => {
         const { x, y, z } = tile.tileID.canonical;
@@ -680,7 +680,7 @@
         }
       }
 
-      setTerrainStatus(`Wireframe mesh ready (${vertexCount} vertices).`);
+      setTerrainStatus(`Three.js mesh ready (${vertexCount} vertices).`);
       if (map) {
         map.triggerRepaint();
       }
@@ -697,7 +697,7 @@
       return terrainWireframeLayer;
     }
     if (typeof THREE === 'undefined') {
-      setTerrainStatus('THREE.js is required for the wireframe mesh.');
+      setTerrainStatus('Three.js is required for the mesh layer.');
       return null;
     }
     terrainWireframeLayer = {
@@ -832,11 +832,11 @@
           map.addLayer(layer);
         } catch (error) {
           if (DEBUG) {
-            console.warn('Failed to add terrain wireframe layer', error);
+            console.warn('Failed to add terrain Three.js mesh layer', error);
           }
           terrainWireframeLayerVisible = false;
           terrainWireframeLayer = null;
-          setTerrainStatus('Unable to add wireframe layer.');
+          setTerrainStatus('Unable to add Three.js mesh layer.');
           updateButtons();
           return;
         }
@@ -848,7 +848,7 @@
           map.removeLayer(TERRAIN_WIREFRAME_LAYER_ID);
         } catch (error) {
           if (DEBUG) {
-            console.warn('Failed to remove terrain wireframe layer', error);
+            console.warn('Failed to remove terrain Three.js mesh layer', error);
           }
         }
       }
@@ -1705,7 +1705,7 @@
     const meshStateLabel = terrainWireframeLayerVisible
       ? (terrainWireframeLoading ? 'visible (building)' : 'visible')
       : 'hidden';
-    lines.push(`Wireframe mesh: ${meshStateLabel}`);
+    lines.push(`Three.js mesh: ${meshStateLabel}`);
 
     if (lastRender && lastRender.debugMetrics) {
       const metrics = lastRender.debugMetrics;
@@ -3016,7 +3016,7 @@
         map.removeLayer(TERRAIN_WIREFRAME_LAYER_ID);
       } catch (error) {
         if (DEBUG) {
-          console.warn('Failed to remove wireframe layer during unload', error);
+          console.warn('Failed to remove Three.js mesh layer during unload', error);
         }
       }
     }
