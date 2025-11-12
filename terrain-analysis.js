@@ -295,6 +295,19 @@
   }
 
   function getRenderableTerrainTiles() {
+    const tileManager = getTerrainTileManager(map);
+    if (tileManager && typeof tileManager.getRenderableTiles === 'function') {
+      try {
+        const tiles = tileManager.getRenderableTiles();
+        return Array.isArray(tiles) ? tiles : [];
+      } catch (error) {
+        if (DEBUG) {
+          console.warn('Failed to access terrain tiles via tile manager', error);
+        }
+        return [];
+      }
+    }
+
     const sourceCache = map?.terrain?.sourceCache;
     if (!sourceCache || typeof sourceCache.getRenderableTiles !== 'function') {
       return [];
@@ -304,7 +317,7 @@
       return Array.isArray(tiles) ? tiles : [];
     } catch (error) {
       if (DEBUG) {
-        console.warn('Failed to access terrain tiles', error);
+        console.warn('Failed to access terrain tiles via source cache', error);
       }
       return [];
     }
