@@ -58,6 +58,7 @@
   const TERRAIN_DEFAULT_EXAGGERATION = 1.0;
   const TERRAIN_SOURCE_ID = 'terrain';
   const HILLSHADE_NATIVE_LAYER_ID = 'terrain-hillshade-native';
+  const SKY_LAYER_ID = 'terrain-sky';
   const DEFAULT_HILLSHADE_SETTINGS = {
     highlightColor: [1.0, 1.0, 1.0],
     shadowColor: [0.0, 0.0, 0.0],
@@ -1184,7 +1185,7 @@
       const existing = typeof map.getLayer === 'function' ? map.getLayer(TERRAIN_WIREFRAME_LAYER_ID) : null;
       if (!existing) {
         try {
-          map.addLayer(layer);
+          map.addLayer(layer, getLayerInsertionPoint());
           pushTerrainWireframeLayerToFront();
           logTerrainDebug('Terrain wireframe layer added to map.');
         } catch (error) {
@@ -1237,7 +1238,11 @@
       return;
     }
     try {
-      map.moveLayer(TERRAIN_WIREFRAME_LAYER_ID);
+      if (map.getLayer(SKY_LAYER_ID)) {
+        map.moveLayer(TERRAIN_WIREFRAME_LAYER_ID, SKY_LAYER_ID);
+      } else {
+        map.moveLayer(TERRAIN_WIREFRAME_LAYER_ID);
+      }
       logTerrainDebug('Terrain wireframe layer moved to front.');
     } catch (error) {
       if (terrainDebugEnabled) {
@@ -2561,7 +2566,7 @@
     }
     if (map.getLayer('terrain-normal')) return;
     terrainNormalLayer.frameCount = 0;
-    map.addLayer(terrainNormalLayer);
+    map.addLayer(terrainNormalLayer, getLayerInsertionPoint());
   }
 
   function removeCustomTerrainLayer() {
@@ -2579,7 +2584,7 @@
       type: 'hillshade',
       source: TERRAIN_SOURCE_ID
     };
-    map.addLayer(layerDefinition);
+    map.addLayer(layerDefinition, getLayerInsertionPoint());
     updateHillshadePaintSettingsFromMap();
     if (HillshadeDebug && typeof HillshadeDebug.attachToMap === 'function') {
       HillshadeDebug.attachToMap(map, {
@@ -3577,13 +3582,8 @@
     fadeDuration: 500
   });
 
-  const applySkySettings = () => {
-    if (!map) {
-      return;
-    }
-    const zoom = map.getZoom();
-    const blend = Math.max(0, Math.min(1, 1 - zoom / 12));
-    map.setSky({
+  function getSkyPaintProperties(blend) {
+    return {
       'sky-color': '#199EF3',
       'sky-horizon-blend': 0.7,
       'horizon-color': '#f0f8ff',
@@ -3591,7 +3591,87 @@
       'fog-color': '#2c7fb8',
       'fog-ground-blend': 0.2,
       'atmosphere-blend': blend
+    };
+  }
+
+  function ensureSkyLayer(paintProperties) {
+    if (!map || !canModifyStyle()) {
+      return false;
+    }
+    if (typeof map.getLayer === 'function' && map.getLayer(SKY_LAYER_ID)) {
+      return false;
+    }
+    try {
+      map.addLayer({
+        id: SKY_LAYER_ID,
+        type: 'sky',
+        paint: paintProperties
+      });
+      return true;
+    } catch (error) {
+      if (terrainDebugEnabled) {
+        console.warn('Failed to add sky layer', error);
+      }
+      return false;
+    }
+  }
+
+  function updateSkyLayerPaint(paintProperties) {
+    if (!map || typeof map.getLayer !== 'function' || !map.getLayer(SKY_LAYER_ID)) {
+      return;
+    }
+    if (typeof map.setPaintProperty !== 'function') {
+      return;
+    }
+    Object.entries(paintProperties).forEach(([property, value]) => {
+      try {
+        map.setPaintProperty(SKY_LAYER_ID, property, value);
+      } catch (error) {
+        if (terrainDebugEnabled) {
+          console.warn(`Failed to update sky paint property ${property}`, error);
+        }
+      }
     });
+  }
+
+  function ensureSkyLayerOrder() {
+    if (!map || typeof map.moveLayer !== 'function' || typeof map.getLayer !== 'function') {
+      return;
+    }
+    if (!map.getLayer(SKY_LAYER_ID)) {
+      return;
+    }
+    try {
+      map.moveLayer(SKY_LAYER_ID);
+    } catch (error) {
+      if (terrainDebugEnabled) {
+        console.warn('Failed to move sky layer to front', error);
+      }
+    }
+  }
+
+  function getLayerInsertionPoint() {
+    if (!map || typeof map.getLayer !== 'function') {
+      return undefined;
+    }
+    return map.getLayer(SKY_LAYER_ID) ? SKY_LAYER_ID : undefined;
+  }
+
+  const applySkySettings = () => {
+    if (!map) {
+      return;
+    }
+    if (!canModifyStyle()) {
+      return;
+    }
+    const zoom = map.getZoom();
+    const blend = Math.max(0, Math.min(1, 1 - zoom / 12));
+    const paintProperties = getSkyPaintProperties(blend);
+    const addedSky = ensureSkyLayer(paintProperties);
+    if (!addedSky) {
+      updateSkyLayerPaint(paintProperties);
+    }
+    ensureSkyLayerOrder();
   };
 
   is3DViewEnabled = map.getPitch() > 5;
