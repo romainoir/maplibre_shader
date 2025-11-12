@@ -184,7 +184,7 @@
   const gradientPreparer = TerrainGradientPreparer.create();
   const EARTH_CIRCUMFERENCE_METERS = 40075016.68557849;
   const MIN_METERS_PER_PIXEL = 1e-6;
-  const TERRAIN_ELEVATION_URL_TEMPLATE = 'https://tiles.mapterhorn.com/{z}/{x}/{y}.webp';
+  const TERRAIN_ELEVATION_URL_TEMPLATE = 'https://tiles.mapterhorn.com/terrarium/{z}/{x}/{y}.webp';
   const TERRAIN_TEXTURE_URL_TEMPLATE = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
   const TERRAIN_ELEVATION_DECODER = Object.freeze({
     rScale: 256,
@@ -2357,7 +2357,7 @@
         },
         [TERRAIN_SOURCE_ID]: {
           type: 'raster-dem',
-          tiles: ['https://tiles.mapterhorn.com/{z}/{x}/{y}.webp'],
+          tiles: ['https://tiles.mapterhorn.com/terrarium/{z}/{x}/{y}.webp'],
           tileSize: 512,
           maxzoom: 17,
           encoding: 'terrarium'
