@@ -3594,7 +3594,73 @@
     };
   }
 
+  const BACKGROUND_LAYER_ID = 'background';
+  let skyLayerSupportCache = null;
+
+  function detectSkyLayerSupport() {
+    if (skyLayerSupportCache !== null) {
+      return skyLayerSupportCache;
+    }
+    let detectedSupport = false;
+    try {
+      if (typeof maplibregl !== 'undefined' && typeof maplibregl.validateStyle === 'function') {
+        const validationResult = maplibregl.validateStyle({
+          version: 8,
+          sources: {},
+          layers: [{ id: '__sky-support-test__', type: 'sky', paint: {} }]
+        });
+        if (!Array.isArray(validationResult) || validationResult.length === 0) {
+          detectedSupport = true;
+        } else {
+          const hasSkyTypeError = validationResult.some((entry) => {
+            if (!entry || typeof entry !== 'object') {
+              return false;
+            }
+            const message = String(entry.message || '');
+            return message.indexOf('sky') !== -1;
+          });
+          detectedSupport = !hasSkyTypeError;
+        }
+      }
+    } catch (error) {
+      if (terrainDebugEnabled) {
+        console.warn('Failed to detect sky layer support via validateStyle', error);
+      }
+    }
+    if (!detectedSupport) {
+      try {
+        if (typeof maplibregl !== 'undefined' && maplibregl.styleSpec && maplibregl.styleSpec.layer && maplibregl.styleSpec.layer.type && maplibregl.styleSpec.layer.type.values) {
+          detectedSupport = Object.prototype.hasOwnProperty.call(maplibregl.styleSpec.layer.type.values, 'sky');
+        }
+      } catch (error) {
+        if (terrainDebugEnabled) {
+          console.warn('Failed to inspect style specification for sky support', error);
+        }
+      }
+    }
+    if (!detectedSupport) {
+      const versionString = typeof maplibregl !== 'undefined' && typeof maplibregl.version === 'string'
+        ? maplibregl.version
+        : null;
+      if (versionString) {
+        const versionMatch = versionString.match(/^(\d+)(?:\.(\d+))?/);
+        if (versionMatch) {
+          const major = parseInt(versionMatch[1], 10);
+          const minor = versionMatch[2] ? parseInt(versionMatch[2], 10) : 0;
+          if (Number.isFinite(major)) {
+            detectedSupport = major > 2 || (major === 2 && minor >= 0);
+          }
+        }
+      }
+    }
+    skyLayerSupportCache = detectedSupport;
+    return skyLayerSupportCache;
+  }
+
   function ensureSkyLayer(paintProperties) {
+    if (!detectSkyLayerSupport()) {
+      return false;
+    }
     if (!map || !canModifyStyle()) {
       return false;
     }
@@ -3612,6 +3678,7 @@
       if (terrainDebugEnabled) {
         console.warn('Failed to add sky layer', error);
       }
+      skyLayerSupportCache = false;
       return false;
     }
   }
@@ -3650,6 +3717,25 @@
     }
   }
 
+  function applyBackgroundSkyFallback(paintProperties) {
+    if (!map || !canModifyStyle() || typeof map.getLayer !== 'function') {
+      return;
+    }
+    if (!map.getLayer(BACKGROUND_LAYER_ID) || typeof map.setPaintProperty !== 'function') {
+      return;
+    }
+    const fallbackColor = paintProperties && paintProperties['sky-color']
+      ? paintProperties['sky-color']
+      : '#199EF3';
+    try {
+      map.setPaintProperty(BACKGROUND_LAYER_ID, 'background-color', fallbackColor);
+    } catch (error) {
+      if (terrainDebugEnabled) {
+        console.warn('Failed to apply sky fallback paint', error);
+      }
+    }
+  }
+
   function getLayerInsertionPoint() {
     if (!map || typeof map.getLayer !== 'function') {
       return undefined;
@@ -3667,11 +3753,15 @@
     const zoom = map.getZoom();
     const blend = Math.max(0, Math.min(1, 1 - zoom / 12));
     const paintProperties = getSkyPaintProperties(blend);
-    const addedSky = ensureSkyLayer(paintProperties);
-    if (!addedSky) {
-      updateSkyLayerPaint(paintProperties);
+    if (detectSkyLayerSupport()) {
+      const addedSky = ensureSkyLayer(paintProperties);
+      if (!addedSky) {
+        updateSkyLayerPaint(paintProperties);
+      }
+      ensureSkyLayerOrder();
+    } else {
+      applyBackgroundSkyFallback(paintProperties);
     }
-    ensureSkyLayerOrder();
   };
 
   is3DViewEnabled = map.getPitch() > 5;
