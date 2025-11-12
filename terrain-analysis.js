@@ -3562,7 +3562,7 @@
         }
       },
       layers: [
-        { id: 'background', type: 'background', paint: { 'background-color': '#ffffff' } },
+        { id: 'background', type: 'background', paint: { 'background-color': '#00000' } },
         { id: 'swisstopo', type: 'raster', source: 'swisstopo', paint: {'raster-opacity': 1.0} }
       ],
       terrain: { source: TERRAIN_SOURCE_ID, exaggeration: 1.0 }
