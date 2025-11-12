@@ -812,7 +812,7 @@
       onAdd(mapInstance, gl) {
         logTerrainDebug('terrainWireframeLayer.onAdd invoked', {
           hasGLContext: !!gl,
-          mapId: mapInstance?._id
+          mapId: getMapDebugIdentifier(mapInstance)
         });
         this.map = mapInstance;
         this.camera = new THREE.Camera();
@@ -1062,6 +1062,42 @@
       ];
     }
     return fallback.slice();
+  }
+
+  function getMapDebugIdentifier(mapInstance) {
+    if (!mapInstance) {
+      return undefined;
+    }
+    const container = typeof mapInstance.getContainer === 'function'
+      ? mapInstance.getContainer()
+      : mapInstance._container;
+    if (container) {
+      if (container.id) {
+        return container.id;
+      }
+      if (container.className) {
+        const classNames = container.className.trim().split(/\s+/).filter(Boolean);
+        if (classNames.length) {
+          return `.${classNames.join('.')}`;
+        }
+      }
+    }
+    const canvas = typeof mapInstance.getCanvas === 'function'
+      ? mapInstance.getCanvas()
+      : mapInstance._canvas;
+    if (canvas && canvas.id) {
+      return canvas.id;
+    }
+    if (mapInstance._instanceId !== undefined) {
+      return mapInstance._instanceId;
+    }
+    if (mapInstance._id !== undefined) {
+      return mapInstance._id;
+    }
+    if (mapInstance.id !== undefined) {
+      return mapInstance.id;
+    }
+    return undefined;
   }
 
   function parseRgbColor(value, fallback) {
