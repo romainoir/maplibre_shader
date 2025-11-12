@@ -175,10 +175,28 @@
   let gradientMaxSlider = null;
   let gradientMaxValueEl = null;
   let gradientAutoButton = null;
+  let terrainMeshBtn = null;
+  let terrainMenuContainer = null;
+  let terrainStatusEl = null;
+  let terrainWireframeToggle = null;
+  let terrainTextureToggle = null;
 
   const gradientPreparer = TerrainGradientPreparer.create();
   const EARTH_CIRCUMFERENCE_METERS = 40075016.68557849;
   const MIN_METERS_PER_PIXEL = 1e-6;
+  const TERRAIN_ELEVATION_URL_TEMPLATE = 'https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png';
+  const TERRAIN_TEXTURE_URL_TEMPLATE = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
+  const TERRAIN_ELEVATION_DECODER = Object.freeze({
+    rScale: 256,
+    gScale: 1,
+    bScale: 1 / 256,
+    offset: -32768
+  });
+  const DECK_TERRAIN_WORLD_BOUNDS = Object.freeze([-180, -85.051129, 180, 85.051129]);
+  let deckOverlay = null;
+  let deckTerrainVisible = false;
+  let deckTerrainWireframe = true;
+  let deckTerrainShowImagery = false;
 
   function ensureSunlightEngine(gl) {
     if (sunlightEngine && sunlightEngine.supported) {
@@ -261,6 +279,135 @@
   function clamp01(value) {
     if (!Number.isFinite(value)) return 0;
     return clamp(value, 0, 1);
+  }
+
+  function getDeckGlobal() {
+    if (typeof window === 'undefined') {
+      return null;
+    }
+    return window.deck || null;
+  }
+
+  function ensureDeckOverlay() {
+    if (!map) {
+      return null;
+    }
+    if (deckOverlay) {
+      return deckOverlay;
+    }
+    const deckGlobal = getDeckGlobal();
+    if (!deckGlobal || typeof deckGlobal.MapboxOverlay !== 'function') {
+      return null;
+    }
+    try {
+      deckOverlay = new deckGlobal.MapboxOverlay({ interleaved: true, layers: [] });
+      map.addControl(deckOverlay);
+    } catch (error) {
+      if (DEBUG) {
+        console.warn('Failed to create deck.gl overlay', error);
+      }
+      deckOverlay = null;
+      return null;
+    }
+    return deckOverlay;
+  }
+
+  function destroyDeckOverlay() {
+    if (deckOverlay && map && typeof map.removeControl === 'function') {
+      try {
+        map.removeControl(deckOverlay);
+      } catch (error) {
+        if (DEBUG) {
+          console.warn('Failed to remove deck.gl overlay', error);
+        }
+      }
+    }
+    deckOverlay = null;
+  }
+
+  function createDeckTerrainLayer() {
+    const deckGlobal = getDeckGlobal();
+    if (!deckGlobal || typeof deckGlobal.TerrainLayer !== 'function') {
+      return null;
+    }
+    const TerrainLayer = deckGlobal.TerrainLayer;
+    return new TerrainLayer({
+      id: 'deck-terrain-layer',
+      minZoom: 0,
+      maxZoom: 14,
+      strategy: 'no-overlap',
+      elevationDecoder: TERRAIN_ELEVATION_DECODER,
+      elevationData: TERRAIN_ELEVATION_URL_TEMPLATE,
+      texture: deckTerrainShowImagery ? TERRAIN_TEXTURE_URL_TEMPLATE : null,
+      color: deckTerrainShowImagery ? null : [210, 210, 210],
+      wireframe: deckTerrainWireframe,
+      material: deckTerrainShowImagery ? undefined : { ambient: 0.8, diffuse: 0.4, shininess: 2.5 },
+      bounds: DECK_TERRAIN_WORLD_BOUNDS,
+      pickable: false
+    });
+  }
+
+  function describeDeckTerrainMode() {
+    if (deckTerrainWireframe && deckTerrainShowImagery) {
+      return 'wireframe with imagery';
+    }
+    if (deckTerrainWireframe) {
+      return 'wireframe';
+    }
+    if (deckTerrainShowImagery) {
+      return 'textured surface';
+    }
+    return 'shaded surface';
+  }
+
+  function updateDeckTerrainLayer() {
+    if (!terrainStatusEl) {
+      terrainStatusEl = document.getElementById('terrainStatus');
+    }
+    const deckGlobal = getDeckGlobal();
+    if (!deckGlobal || typeof deckGlobal.MapboxOverlay !== 'function' || typeof deckGlobal.TerrainLayer !== 'function') {
+      if (deckOverlay) {
+        deckOverlay.setProps({ layers: [] });
+      }
+      if (terrainStatusEl) {
+        terrainStatusEl.textContent = 'deck.gl TerrainLayer not supported in this browser.';
+      }
+      return;
+    }
+    if (!deckTerrainVisible) {
+      if (deckOverlay) {
+        deckOverlay.setProps({ layers: [] });
+      }
+      if (terrainStatusEl) {
+        terrainStatusEl.textContent = 'Mesh hidden.';
+      }
+      return;
+    }
+    const overlay = ensureDeckOverlay();
+    if (!overlay) {
+      if (terrainStatusEl) {
+        terrainStatusEl.textContent = 'Unable to attach deck.gl overlay.';
+      }
+      return;
+    }
+    const terrainLayer = createDeckTerrainLayer();
+    if (!terrainLayer) {
+      overlay.setProps({ layers: [] });
+      if (terrainStatusEl) {
+        terrainStatusEl.textContent = 'Unable to create terrain mesh.';
+      }
+      return;
+    }
+    overlay.setProps({ layers: [terrainLayer] });
+    if (terrainStatusEl) {
+      terrainStatusEl.textContent = `Streaming global terrain mesh (${describeDeckTerrainMode()}).`;
+    }
+  }
+
+  function setDeckTerrainVisibility(visible) {
+    deckTerrainVisible = Boolean(visible);
+    updateDeckTerrainLayer();
+    updateButtons();
   }
 
   function degreesToRadians(value) {
@@ -963,6 +1110,33 @@
     if (daylightBtn) {
       daylightBtn.classList.toggle('active', isCustomActive && currentMode === "daylight");
     }
+    if (!terrainMeshBtn) {
+      terrainMeshBtn = document.getElementById('terrainMeshBtn');
+    }
+    if (terrainMeshBtn) {
+      terrainMeshBtn.classList.toggle('active', deckTerrainVisible);
+    }
+    if (!terrainMenuContainer) {
+      terrainMenuContainer = document.getElementById('terrainMenu');
+    }
+    if (terrainMenuContainer) {
+      terrainMenuContainer.style.display = deckTerrainVisible ? 'flex' : 'none';
+    }
+    if (!terrainWireframeToggle) {
+      terrainWireframeToggle = document.getElementById('terrainWireframeToggle');
+    }
+    if (terrainWireframeToggle) {
+      terrainWireframeToggle.checked = deckTerrainWireframe;
+    }
+    if (!terrainTextureToggle) {
+      terrainTextureToggle = document.getElementById('terrainTextureToggle');
+    }
+    if (terrainTextureToggle) {
+      terrainTextureToggle.checked = deckTerrainShowImagery;
+    }
+    if (!terrainStatusEl) {
+      terrainStatusEl = document.getElementById('terrainStatus');
+    }
     const snowSliderContainer = document.getElementById('snowSliderContainer');
     if (snowSliderContainer) {
       snowSliderContainer.style.display = (isCustomActive && currentMode === "snow") ? "block" : "none";
@@ -1010,6 +1184,11 @@
   gradientMaxSlider = document.getElementById('gradientMaxSlider');
   gradientMaxValueEl = document.getElementById('gradientMaxValue');
   gradientAutoButton = document.getElementById('gradientAutoButton');
+  terrainMeshBtn = document.getElementById('terrainMeshBtn');
+  terrainMenuContainer = document.getElementById('terrainMenu');
+  terrainStatusEl = document.getElementById('terrainStatus');
+  terrainWireframeToggle = document.getElementById('terrainWireframeToggle');
+  terrainTextureToggle = document.getElementById('terrainTextureToggle');
 
   const debugPanelEl = document.getElementById('debugPanel');
   const debugContentEl = document.getElementById('debugContent');
@@ -2364,6 +2543,33 @@
     });
   }
 
+  if (terrainMeshBtn) {
+    terrainMeshBtn.addEventListener('click', () => {
+      setDeckTerrainVisibility(!deckTerrainVisible);
+    });
+  }
+
+  if (terrainWireframeToggle) {
+    terrainWireframeToggle.checked = deckTerrainWireframe;
+    terrainWireframeToggle.addEventListener('change', (event) => {
+      deckTerrainWireframe = Boolean(event.target.checked);
+      if (deckTerrainVisible) {
+        updateDeckTerrainLayer();
+      }
+    });
+  }
+
+  if (terrainTextureToggle) {
+    terrainTextureToggle.checked = deckTerrainShowImagery;
+    terrainTextureToggle.addEventListener('change', (event) => {
+      deckTerrainShowImagery = Boolean(event.target.checked);
+      if (deckTerrainVisible) {
+        updateDeckTerrainLayer();
+      }
+    });
+  }
+
+  updateDeckTerrainLayer();
   updateButtons();
 
   window.addEventListener('unload', () => {
@@ -2371,6 +2577,7 @@
     if (sunlightEngine && typeof sunlightEngine.destroy === 'function') {
       sunlightEngine.destroy();
     }
+    destroyDeckOverlay();
   });
 
 })();
