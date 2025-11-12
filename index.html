@@ -97,7 +97,8 @@
       text-align: right;
       font-variant-numeric: tabular-nums;
     }
-    #gradientMenu button {
+    #gradientMenu button,
+    #terrainMenu button {
       margin-top: 4px;
       padding: 6px 10px;
       font-size: 12px;
@@ -108,10 +109,12 @@
       cursor: pointer;
       transition: background 0.2s, opacity 0.2s;
     }
-    #gradientMenu button:hover:not(:disabled) {
+    #gradientMenu button:hover:not(:disabled),
+    #terrainMenu button:hover:not(:disabled) {
       background: #e67e54;
     }
-    #gradientMenu button:disabled {
+    #gradientMenu button:disabled,
+    #terrainMenu button:disabled {
       opacity: 0.55;
       cursor: default;
     }
@@ -281,6 +284,7 @@
     <h3>Three.js Mesh</h3>
     <p id="terrainStatus">Mesh hidden.</p>
     <small>Displays a Three.js mesh generated from the current terrain tiles.</small>
+    <button id="terrainExportBtn" type="button" disabled>Export Mesh (.obj)</button>
   </div>
   <div id="debugPanel">
     <h3>Debug Info</h3>
