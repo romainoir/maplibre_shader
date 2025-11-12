@@ -554,6 +554,9 @@ export class Painter {
         this.context.clear({color: options.showOverdrawInspector ? Color.black : Color.transparent, depth: 1});
         this.clearStencil();
 
+        // draw sky first to not overwrite symbols
+        if (this.style.sky) drawSky(this, this.style.sky);
+
         this._showOverdrawInspector = options.showOverdrawInspector;
         this.depthRangeFor3D = [0, 1 - ((style._order.length + 2) * this.numSublayers * this.depthEpsilon)];
 
@@ -602,6 +605,11 @@ export class Painter {
             this.renderLayer(this, tileManager, layer, coords, renderOptions);
         }
 
+        // Render atmosphere, only for Globe projection
+        if (renderOptions.isRenderingGlobe) {
+            drawAtmosphere(this, this.style.sky, this.style.light);
+        }
+
         if (this.options.showTileBoundaries) {
             const selectedSource = selectDebugSource(this.style, this.transform.zoom);
             if (selectedSource) {
@@ -611,14 +619,6 @@ export class Painter {
 
         if (this.options.showPadding) {
             drawDebugPadding(this);
-        }
-
-        // Draw sky at the very end so it can overlay other content.
-        if (this.style.sky) drawSky(this, this.style.sky);
-
-        // Render atmosphere, only for Globe projection (after sky to keep draw order grouped).
-        if (renderOptions.isRenderingGlobe) {
-            drawAtmosphere(this, this.style.sky, this.style.light);
         }
 
         // Set defaults for most GL values so that anyone using the state after the render

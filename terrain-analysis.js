@@ -152,6 +152,50 @@
   let shadowRayStepMultiplier = 1.0;
   let shadowSlopeBias = 0.03;
   let shadowPixelBias = 0.15;
+  const SKY_OVERLAY_LAYER_ID = 'terrain-sky-overlay';
+  const SKY_OVERLAY_VERTEX_SHADER = `
+attribute vec2 a_pos;
+varying vec2 v_pos;
+void main() {
+  v_pos = a_pos;
+  gl_Position = vec4(a_pos, 0.0, 1.0);
+}
+`;
+  const SKY_OVERLAY_FRAGMENT_SHADER = `
+precision mediump float;
+varying vec2 v_pos;
+uniform vec3 u_skyTopColor;
+uniform vec3 u_skyHorizonColor;
+uniform vec3 u_fogColor;
+uniform float u_horizonBlend;
+uniform float u_horizonFogBlend;
+uniform float u_groundFogBlend;
+uniform float u_atmosphereBlend;
+uniform float u_pitchAttenuation;
+void main() {
+  float t = clamp((v_pos.y + 1.0) * 0.5, 0.0, 1.0);
+  float horizonMix = smoothstep(0.0, max(u_horizonBlend, 0.0001), t);
+  vec3 baseColor = mix(u_skyHorizonColor, u_skyTopColor, horizonMix);
+  float fogFromHorizon = smoothstep(1.0 - max(u_horizonFogBlend, 0.0001), 1.0, 1.0 - t);
+  float fogFromGround = smoothstep(0.0, max(u_groundFogBlend, 0.0001), 1.0 - t);
+  float fogMix = clamp(fogFromHorizon + fogFromGround - fogFromHorizon * fogFromGround, 0.0, 1.0);
+  vec3 fogged = mix(baseColor, u_fogColor, fogMix);
+  float finalAlpha = clamp(u_atmosphereBlend * u_pitchAttenuation, 0.0, 1.0);
+  gl_FragColor = vec4(fogged, finalAlpha);
+}
+`;
+  const DEFAULT_SKY_OVERLAY_SETTINGS = Object.freeze({
+    'sky-color': '#199EF3',
+    'horizon-color': '#f0f8ff',
+    'fog-color': '#2c7fb8',
+    'sky-horizon-blend': 0.7,
+    'horizon-fog-blend': 0.8,
+    'fog-ground-blend': 0.9,
+    'atmosphere-blend': 1.0
+  });
+  let skyOverlayLayerInstance = null;
+  let currentSkyOverlaySettings = { ...DEFAULT_SKY_OVERLAY_SETTINGS };
+  let pendingSkyOverlaySettings = { ...DEFAULT_SKY_OVERLAY_SETTINGS };
   let pendingCustomLayerEnsure = false;
   function isModeActive(mode) {
     return activeCustomModes.has(mode);
@@ -314,6 +358,29 @@
     return Math.max(min, Math.min(max, value));
   }
 
+  function clampNumber(value, min, max, fallback = min) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) {
+      return clamp(fallback, min, max);
+    }
+    return clamp(numeric, min, max);
+  }
+
+  function toUnitInterval(value) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) {
+      return 0;
+    }
+    if (numeric <= 0) return 0;
+    if (numeric >= 1 && numeric <= 255) {
+      return clamp(numeric / 255, 0, 1);
+    }
+    if (numeric > 255) {
+      return 1;
+    }
+    return clamp(numeric, 0, 1);
+  }
+
   function sanitizeGradientParameters() {
     const minDistance = Math.max(MIN_GRADIENT_DISTANCE, Math.min(gradientParameters.minDistance, gradientParameters.maxDistance));
     const maxDistance = Math.max(minDistance, Math.max(gradientParameters.minDistance, gradientParameters.maxDistance));
@@ -334,6 +401,301 @@
   function clamp01(value) {
     if (!Number.isFinite(value)) return 0;
     return clamp(value, 0, 1);
+  }
+
+  function parseColorToVec3(color, fallback = [1, 1, 1]) {
+    const resolveFallback = () => {
+      if (fallback instanceof Float32Array) {
+        return new Float32Array(fallback);
+      }
+      if (Array.isArray(fallback)) {
+        const values = [fallback[0] ?? 1, fallback[1] ?? 1, fallback[2] ?? 1];
+        return new Float32Array(values.map(toUnitInterval));
+      }
+      return new Float32Array([1, 1, 1]);
+    };
+
+    if (Array.isArray(color) && color.length >= 3) {
+      const values = [color[0], color[1], color[2]].map(toUnitInterval);
+      return new Float32Array(values);
+    }
+
+    if (color instanceof Float32Array && color.length >= 3) {
+      return new Float32Array([color[0], color[1], color[2]].map(toUnitInterval));
+    }
+
+    if (typeof color === 'string') {
+      const trimmed = color.trim();
+      const hexMatch = /^#([0-9a-f]{6}|[0-9a-f]{8})$/i.exec(trimmed);
+      if (hexMatch) {
+        const hex = hexMatch[1];
+        const parseComponent = (start) => parseInt(hex.slice(start, start + 2), 16);
+        const r = parseComponent(0);
+        const g = parseComponent(2);
+        const b = parseComponent(4);
+        return new Float32Array([r, g, b].map(toUnitInterval));
+      }
+      const rgbaMatch = /^rgba?\(([^)]+)\)$/i.exec(trimmed);
+      if (rgbaMatch) {
+        const parts = rgbaMatch[1].split(',').map((part) => part.trim());
+        if (parts.length >= 3) {
+          const r = parseFloat(parts[0]);
+          const g = parseFloat(parts[1]);
+          const b = parseFloat(parts[2]);
+          return new Float32Array([r, g, b].map(toUnitInterval));
+        }
+      }
+    }
+
+    return resolveFallback();
+  }
+
+  function normaliseSkyOverlaySettings(settings = {}) {
+    const resolved = {
+      ...DEFAULT_SKY_OVERLAY_SETTINGS,
+      ...(settings || {})
+    };
+
+    return {
+      skyTopColor: parseColorToVec3(resolved['sky-color'], [0.1, 0.5, 0.9]),
+      horizonColor: parseColorToVec3(resolved['horizon-color'], [0.93, 0.96, 1.0]),
+      fogColor: parseColorToVec3(resolved['fog-color'], [0.2, 0.55, 0.85]),
+      horizonBlend: clampNumber(resolved['sky-horizon-blend'], 0, 1, DEFAULT_SKY_OVERLAY_SETTINGS['sky-horizon-blend']),
+      horizonFogBlend: clampNumber(resolved['horizon-fog-blend'], 0, 1, DEFAULT_SKY_OVERLAY_SETTINGS['horizon-fog-blend']),
+      groundFogBlend: clampNumber(resolved['fog-ground-blend'], 0, 1, DEFAULT_SKY_OVERLAY_SETTINGS['fog-ground-blend']),
+      atmosphereBlend: clampNumber(resolved['atmosphere-blend'], 0, 1, DEFAULT_SKY_OVERLAY_SETTINGS['atmosphere-blend'])
+    };
+  }
+
+  function compileSkyOverlayShader(gl, type, source) {
+    const shader = gl.createShader(type);
+    if (!shader) {
+      return null;
+    }
+    gl.shaderSource(shader, source);
+    gl.compileShader(shader);
+    const compiled = gl.getShaderParameter(shader, gl.COMPILE_STATUS);
+    if (!compiled) {
+      if (terrainDebugEnabled) {
+        console.warn('Sky overlay shader compilation failed:', gl.getShaderInfoLog(shader));
+      }
+      gl.deleteShader(shader);
+      return null;
+    }
+    return shader;
+  }
+
+  function createSkyOverlayProgram(gl) {
+    const vertexShader = compileSkyOverlayShader(gl, gl.VERTEX_SHADER, SKY_OVERLAY_VERTEX_SHADER);
+    const fragmentShader = compileSkyOverlayShader(gl, gl.FRAGMENT_SHADER, SKY_OVERLAY_FRAGMENT_SHADER);
+    if (!vertexShader || !fragmentShader) {
+      if (vertexShader) gl.deleteShader(vertexShader);
+      if (fragmentShader) gl.deleteShader(fragmentShader);
+      return null;
+    }
+
+    const program = gl.createProgram();
+    if (!program) {
+      gl.deleteShader(vertexShader);
+      gl.deleteShader(fragmentShader);
+      return null;
+    }
+    gl.attachShader(program, vertexShader);
+    gl.attachShader(program, fragmentShader);
+    gl.linkProgram(program);
+    gl.deleteShader(vertexShader);
+    gl.deleteShader(fragmentShader);
+
+    const linked = gl.getProgramParameter(program, gl.LINK_STATUS);
+    if (!linked) {
+      if (terrainDebugEnabled) {
+        console.warn('Sky overlay program link failed:', gl.getProgramInfoLog(program));
+      }
+      gl.deleteProgram(program);
+      return null;
+    }
+
+    return program;
+  }
+
+  function createSkyOverlayLayer() {
+    const layer = {
+      id: SKY_OVERLAY_LAYER_ID,
+      type: 'custom',
+      renderingMode: '3d',
+      map: null,
+      gl: null,
+      program: null,
+      buffer: null,
+      attributeLocations: null,
+      uniformLocations: null,
+      uniformValues: normaliseSkyOverlaySettings(pendingSkyOverlaySettings),
+      updateSettings(nextSettings) {
+        this.uniformValues = normaliseSkyOverlaySettings(nextSettings);
+      },
+      onAdd(mapInstance, gl) {
+        this.map = mapInstance;
+        this.gl = gl;
+        this.program = createSkyOverlayProgram(gl);
+        if (!this.program) {
+          if (terrainDebugEnabled) {
+            console.warn('Failed to initialise sky overlay program.');
+          }
+          return;
+        }
+        this.attributeLocations = {
+          aPos: gl.getAttribLocation(this.program, 'a_pos')
+        };
+        this.uniformLocations = {
+          skyTopColor: gl.getUniformLocation(this.program, 'u_skyTopColor'),
+          horizonColor: gl.getUniformLocation(this.program, 'u_skyHorizonColor'),
+          fogColor: gl.getUniformLocation(this.program, 'u_fogColor'),
+          horizonBlend: gl.getUniformLocation(this.program, 'u_horizonBlend'),
+          horizonFogBlend: gl.getUniformLocation(this.program, 'u_horizonFogBlend'),
+          groundFogBlend: gl.getUniformLocation(this.program, 'u_groundFogBlend'),
+          atmosphereBlend: gl.getUniformLocation(this.program, 'u_atmosphereBlend'),
+          pitchAttenuation: gl.getUniformLocation(this.program, 'u_pitchAttenuation')
+        };
+        this.buffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+        gl.bindBuffer(gl.ARRAY_BUFFER, null);
+        if (pendingSkyOverlaySettings) {
+          this.updateSettings(pendingSkyOverlaySettings);
+        }
+      },
+      render(gl) {
+        if (!this.program || !this.uniformValues) {
+          return;
+        }
+        const baseBlend = this.uniformValues.atmosphereBlend;
+        if (baseBlend <= 0.001) {
+          return;
+        }
+
+        gl.useProgram(this.program);
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
+        gl.enableVertexAttribArray(this.attributeLocations.aPos);
+        gl.vertexAttribPointer(this.attributeLocations.aPos, 2, gl.FLOAT, false, 0, 0);
+
+        const prevDepthTest = gl.isEnabled(gl.DEPTH_TEST);
+        const prevCullFace = gl.isEnabled(gl.CULL_FACE);
+        const prevBlend = gl.isEnabled(gl.BLEND);
+        const prevDepthMask = gl.getParameter(gl.DEPTH_WRITEMASK);
+        const prevBlendSrcRGB = gl.getParameter(gl.BLEND_SRC_RGB);
+        const prevBlendDstRGB = gl.getParameter(gl.BLEND_DST_RGB);
+        const prevBlendSrcAlpha = gl.getParameter(gl.BLEND_SRC_ALPHA);
+        const prevBlendDstAlpha = gl.getParameter(gl.BLEND_DST_ALPHA);
+
+        gl.disable(gl.DEPTH_TEST);
+        gl.depthMask(false);
+        gl.disable(gl.CULL_FACE);
+        gl.enable(gl.BLEND);
+        gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+
+        gl.uniform3fv(this.uniformLocations.skyTopColor, this.uniformValues.skyTopColor);
+        gl.uniform3fv(this.uniformLocations.horizonColor, this.uniformValues.horizonColor);
+        gl.uniform3fv(this.uniformLocations.fogColor, this.uniformValues.fogColor);
+        gl.uniform1f(this.uniformLocations.horizonBlend, this.uniformValues.horizonBlend);
+        gl.uniform1f(this.uniformLocations.horizonFogBlend, this.uniformValues.horizonFogBlend);
+        gl.uniform1f(this.uniformLocations.groundFogBlend, this.uniformValues.groundFogBlend);
+
+        const pitch = this.map ? this.map.getPitch() : 0;
+        const pitchFactor = clamp((pitch - 5) / 80, 0, 1);
+        gl.uniform1f(this.uniformLocations.atmosphereBlend, baseBlend);
+        gl.uniform1f(this.uniformLocations.pitchAttenuation, pitchFactor);
+
+        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+        gl.disableVertexAttribArray(this.attributeLocations.aPos);
+        gl.bindBuffer(gl.ARRAY_BUFFER, null);
+        gl.useProgram(null);
+
+        if (!prevBlend) {
+          gl.disable(gl.BLEND);
+        } else {
+          gl.enable(gl.BLEND);
+        }
+        gl.blendFuncSeparate(prevBlendSrcRGB, prevBlendDstRGB, prevBlendSrcAlpha, prevBlendDstAlpha);
+        if (prevCullFace) {
+          gl.enable(gl.CULL_FACE);
+        } else {
+          gl.disable(gl.CULL_FACE);
+        }
+        if (prevDepthTest) {
+          gl.enable(gl.DEPTH_TEST);
+        } else {
+          gl.disable(gl.DEPTH_TEST);
+        }
+        gl.depthMask(prevDepthMask);
+      },
+      onRemove(mapInstance, gl) {
+        if (this.buffer) {
+          gl.deleteBuffer(this.buffer);
+          this.buffer = null;
+        }
+        if (this.program) {
+          gl.deleteProgram(this.program);
+          this.program = null;
+        }
+        this.map = null;
+        this.gl = null;
+        if (skyOverlayLayerInstance === this) {
+          skyOverlayLayerInstance = null;
+        }
+      }
+    };
+    return layer;
+  }
+
+  function ensureSkyOverlayLayer() {
+    if (!map || typeof map.getLayer !== 'function') {
+      return null;
+    }
+    const existing = map.getLayer(SKY_OVERLAY_LAYER_ID);
+    if (existing) {
+      skyOverlayLayerInstance = existing;
+      return existing;
+    }
+    try {
+      const layer = createSkyOverlayLayer();
+      map.addLayer(layer);
+      skyOverlayLayerInstance = layer;
+      return layer;
+    } catch (error) {
+      if (terrainDebugEnabled) {
+        console.warn('Failed to ensure sky overlay layer', error);
+      }
+      return null;
+    }
+  }
+
+  function updateSkyOverlaySettings(settings) {
+    currentSkyOverlaySettings = {
+      ...DEFAULT_SKY_OVERLAY_SETTINGS,
+      ...(settings || {})
+    };
+    pendingSkyOverlaySettings = currentSkyOverlaySettings;
+    const layer = ensureSkyOverlayLayer();
+    if (layer && typeof layer.updateSettings === 'function') {
+      layer.updateSettings(currentSkyOverlaySettings);
+    }
+  }
+
+  function moveSkyOverlayToFront() {
+    if (!map || typeof map.getLayer !== 'function' || typeof map.moveLayer !== 'function') {
+      return;
+    }
+    if (!map.getLayer(SKY_OVERLAY_LAYER_ID)) {
+      return;
+    }
+    try {
+      map.moveLayer(SKY_OVERLAY_LAYER_ID);
+    } catch (error) {
+      if (terrainDebugEnabled) {
+        console.warn('Failed to move sky overlay layer to the front', error);
+      }
+    }
   }
 
   function formatExportFloat(value) {
@@ -2562,6 +2924,7 @@
     if (map.getLayer('terrain-normal')) return;
     terrainNormalLayer.frameCount = 0;
     map.addLayer(terrainNormalLayer);
+    moveSkyOverlayToFront();
   }
 
   function removeCustomTerrainLayer() {
@@ -2587,6 +2950,7 @@
         sourceId: TERRAIN_SOURCE_ID
       });
     }
+    moveSkyOverlayToFront();
   }
 
   function removeNativeHillshadeLayer() {
@@ -2647,6 +3011,7 @@
     if (styleReady && map) {
       map.triggerRepaint();
     }
+    moveSkyOverlayToFront();
   }
 
   function clearCustomModes() {
@@ -2668,6 +3033,7 @@
       map.triggerRepaint();
     }
     publishRenderDebugInfo(null);
+    moveSkyOverlayToFront();
   }
 
   function toggleCustomMode(mode) {
@@ -2709,6 +3075,7 @@
     if (styleReady && map) {
       map.triggerRepaint();
     }
+    moveSkyOverlayToFront();
   }
 
   const shadowSampleCountSlider = document.getElementById('shadowSampleCountSlider');
@@ -3582,16 +3949,14 @@
       return;
     }
     const zoom = map.getZoom();
-    const blend = Math.max(0, Math.min(1, 1 - zoom / 12));
-    map.setSky({
-      'sky-color': '#199EF3',
-      'sky-horizon-blend': 0.7,
-      'horizon-color': '#f0f8ff',
-      'horizon-fog-blend': 0.8,
-      'fog-color': '#2c7fb8',
-      'fog-ground-blend': 0.9,
+    const blend = clampNumber(1 - zoom / 12, 0, 1, DEFAULT_SKY_OVERLAY_SETTINGS['atmosphere-blend']);
+    const nextSettings = {
+      ...DEFAULT_SKY_OVERLAY_SETTINGS,
       'atmosphere-blend': blend
-    });
+    };
+    map.setSky(nextSettings);
+    updateSkyOverlaySettings(nextSettings);
+    moveSkyOverlayToFront();
   };
 
   is3DViewEnabled = map.getPitch() > 5;
@@ -3603,6 +3968,16 @@
     refreshDebugPanel();
   });
 
+  if (typeof map.once === 'function') {
+    map.once('load', () => {
+      ensureSkyOverlayLayer();
+      if (currentSkyOverlaySettings) {
+        updateSkyOverlaySettings(currentSkyOverlaySettings);
+      }
+      moveSkyOverlayToFront();
+    });
+  }
+
   if (HillshadeDebug && typeof HillshadeDebug.attachToMap === 'function') {
     HillshadeDebug.attachToMap(map, { sourceId: TERRAIN_SOURCE_ID, autoHookLayer: false });
   }
@@ -3610,6 +3985,8 @@
   map.on('styledata', () => {
     applyHQModeToSources();
     applySkySettings();
+    ensureSkyOverlayLayer();
+    moveSkyOverlayToFront();
   });
 
   const originalSetTerrain = map.setTerrain.bind(map);
@@ -3693,6 +4070,8 @@
 
   map.on('zoomend', () => {
     updateSamplingDistanceForZoom();
+    applySkySettings();
+    moveSkyOverlayToFront();
     if (isModeActive('shadow') || isModeActive('daylight')) {
       map.triggerRepaint();
     }
