@@ -1,6 +1,6 @@
 /* terrain-analysis.js */
 (function() {
-  const DEBUG = (() => {
+  const initialTerrainDebugEnabled = (() => {
     try {
       const searchParams = new URLSearchParams(window.location.search || '');
       if (searchParams.has('terrainDebug')) {
@@ -14,6 +14,7 @@
     }
     return false;
   })();
+  let terrainDebugEnabled = initialTerrainDebugEnabled;
   const HillshadeDebug = window.__MapLibreHillshadeDebug || null;
   const hillshadeDebugEnabled = (() => {
     try {
@@ -23,7 +24,7 @@
       }
       return typeof window.location.hash === 'string' && window.location.hash.includes('hillshadeDebug');
     } catch (error) {
-      if (DEBUG) console.warn('Failed to evaluate hillshade debug flag', error);
+      if (terrainDebugEnabled) console.warn('Failed to evaluate hillshade debug flag', error);
       return false;
     }
   })();
@@ -88,7 +89,7 @@
       const tiles = debugApi.getTiles({ map: mapInstance, sourceId: TERRAIN_SOURCE_ID, ...options });
       return Array.isArray(tiles) ? tiles : [];
     } catch (error) {
-      if (DEBUG) console.warn('Failed to query hillshade tiles from debug API', error);
+      if (terrainDebugEnabled) console.warn('Failed to query hillshade tiles from debug API', error);
       return [];
     }
   }
@@ -102,7 +103,7 @@
       try {
         return attachment.get();
       } catch (error) {
-        if (DEBUG) console.warn('Failed to access hillshade framebuffer attachment', error);
+        if (terrainDebugEnabled) console.warn('Failed to access hillshade framebuffer attachment', error);
         return null;
       }
     }
@@ -189,6 +190,7 @@
   let gradientMaxValueEl = null;
   let gradientAutoButton = null;
   let terrainMeshBtn = null;
+  let terrainDebugBtn = null;
   let terrainMenuContainer = null;
   let terrainStatusEl = null;
 
@@ -311,6 +313,38 @@
     }
   }
 
+  function syncTerrainDebugQueryFlag(enabled) {
+    if (typeof window === 'undefined' || !window.history || typeof window.history.replaceState !== 'function') {
+      return;
+    }
+    try {
+      const url = new URL(window.location.href);
+      if (enabled) {
+        url.searchParams.set('terrainDebug', '1');
+      } else {
+        url.searchParams.delete('terrainDebug');
+      }
+      window.history.replaceState({}, '', url.toString());
+    } catch (error) {
+      if (terrainDebugEnabled) {
+        console.warn('Failed to update terrain debug flag in URL', error);
+      }
+    }
+  }
+
+  function setTerrainDebugEnabled(enabled, options = {}) {
+    const nextEnabled = Boolean(enabled);
+    if (terrainDebugEnabled === nextEnabled) {
+      return terrainDebugEnabled;
+    }
+    terrainDebugEnabled = nextEnabled;
+    if (options.updateUrl) {
+      syncTerrainDebugQueryFlag(nextEnabled);
+    }
+    updateButtons();
+    return terrainDebugEnabled;
+  }
+
   function getRenderableTerrainTiles() {
     const tileManager = getTerrainTileManager(map);
     if (tileManager && typeof tileManager.getRenderableTiles === 'function') {
@@ -318,7 +352,7 @@
         const tiles = tileManager.getRenderableTiles();
         return Array.isArray(tiles) ? tiles : [];
       } catch (error) {
-        if (DEBUG) {
+        if (terrainDebugEnabled) {
           console.warn('Failed to access terrain tiles via tile manager', error);
         }
         return [];
@@ -333,7 +367,7 @@
       const tiles = sourceCache.getRenderableTiles();
       return Array.isArray(tiles) ? tiles : [];
     } catch (error) {
-      if (DEBUG) {
+      if (terrainDebugEnabled) {
         console.warn('Failed to access terrain tiles via source cache', error);
       }
       return [];
@@ -579,7 +613,7 @@
             elevations = result.elevations;
             demDim = result.demDim;
           } catch (error) {
-            if (DEBUG) {
+            if (terrainDebugEnabled) {
               console.warn('Failed to load DEM tile for mesh', tile.tileID, error);
             }
             logTerrainDebug('Skipping tile due to DEM loading failure', tile.tileID);
@@ -920,7 +954,7 @@
           pushTerrainWireframeLayerToFront();
           logTerrainDebug('Terrain wireframe layer added to map.');
         } catch (error) {
-          if (DEBUG) {
+          if (terrainDebugEnabled) {
             console.warn('Failed to add terrain Three.js mesh layer', error);
           }
           terrainWireframeLayerVisible = false;
@@ -939,7 +973,7 @@
           map.removeLayer(TERRAIN_WIREFRAME_LAYER_ID);
           logTerrainDebug('Terrain wireframe layer removed from map.');
         } catch (error) {
-          if (DEBUG) {
+          if (terrainDebugEnabled) {
             console.warn('Failed to remove terrain Three.js mesh layer', error);
           }
         }
@@ -971,7 +1005,7 @@
       map.moveLayer(TERRAIN_WIREFRAME_LAYER_ID);
       logTerrainDebug('Terrain wireframe layer moved to front.');
     } catch (error) {
-      if (DEBUG) {
+      if (terrainDebugEnabled) {
         console.warn('Failed to move terrain Three.js mesh layer to the front', error);
       }
     }
@@ -1677,6 +1711,12 @@
     if (daylightBtn) {
       daylightBtn.classList.toggle('active', isCustomActive && currentMode === "daylight");
     }
+    if (!terrainDebugBtn) {
+      terrainDebugBtn = document.getElementById('terrainDebugBtn');
+    }
+    if (terrainDebugBtn) {
+      terrainDebugBtn.classList.toggle('active', terrainDebugEnabled);
+    }
     if (!terrainMeshBtn) {
       terrainMeshBtn = document.getElementById('terrainMeshBtn');
     }
@@ -1740,6 +1780,7 @@
   gradientMaxValueEl = document.getElementById('gradientMaxValue');
   gradientAutoButton = document.getElementById('gradientAutoButton');
   terrainMeshBtn = document.getElementById('terrainMeshBtn');
+  terrainDebugBtn = document.getElementById('terrainDebugBtn');
   terrainMenuContainer = document.getElementById('terrainMenu');
   terrainStatusEl = document.getElementById('terrainStatus');
 
@@ -1775,6 +1816,7 @@
     })();
 
     lines.push(`Mode: ${modeLabel}`);
+    lines.push(`Terrain debug logging: ${terrainDebugEnabled ? 'enabled' : 'disabled'}`);
 
     if (map) {
       const zoom = Number.isFinite(map.getZoom()) ? map.getZoom().toFixed(2) : 'n/a';
@@ -2457,7 +2499,7 @@
       for (const tile of renderableTiles) {
         const sourceTile = tileManager.getSourceTile(tile.tileID, true);
         if (!sourceTile || sourceTile.tileID.key !== tile.tileID.key) {
-          if (DEBUG) console.log(`Skipping tile ${tile.tileID.key}: source tile mismatch or overscaled`);
+          if (terrainDebugEnabled) console.log(`Skipping tile ${tile.tileID.key}: source tile mismatch or overscaled`);
           skippedCount++;
           continue;
         }
@@ -2468,13 +2510,13 @@
         }
 
         if (!terrainData || !terrainData.texture) {
-          if (DEBUG) console.log(`Skipping tile ${tile.tileID.key}: no terrain data or texture`);
+          if (terrainDebugEnabled) console.log(`Skipping tile ${tile.tileID.key}: no terrain data or texture`);
           skippedCount++;
           continue;
         }
 
         if (terrainData.fallback) {
-          if (DEBUG) console.log(`Skipping tile ${tile.tileID.key}: fallback tile`);
+          if (terrainDebugEnabled) console.log(`Skipping tile ${tile.tileID.key}: fallback tile`);
           skippedCount++;
           continue;
         }
@@ -2708,7 +2750,7 @@
         }
       }
 
-      if (DEBUG && (renderedCount > 0 || skippedCount > 0)) {
+      if (terrainDebugEnabled && (renderedCount > 0 || skippedCount > 0)) {
         console.log(`Rendered ${renderedCount} tiles, skipped ${skippedCount} tiles`);
       }
       if (debugMetrics) {
@@ -2730,7 +2772,7 @@
       const terrainInterface = getTerrainInterface(this.map);
       const tileManager = terrainInterface ? terrainInterface.tileManager : null;
       if (!tileManager) {
-        if (DEBUG) console.warn("Tile manager not available; skipping render");
+        if (terrainDebugEnabled) console.warn("Tile manager not available; skipping render");
         this.map.triggerRepaint();
         return;
       }
@@ -2744,7 +2786,7 @@
         try {
           tileManager.update(this.map.transform, terrainInterface);
         } catch (error) {
-          if (DEBUG) console.error('Failed to update terrain tiles while terrain is flattened', error);
+          if (terrainDebugEnabled) console.error('Failed to update terrain tiles while terrain is flattened', error);
         }
       }
 
@@ -2757,7 +2799,7 @@
 
       // Don't render if we have no tiles
       if (renderableTiles.length === 0) {
-        if (DEBUG) console.log("No renderable tiles available");
+        if (terrainDebugEnabled) console.log("No renderable tiles available");
         publishRenderDebugInfo({
           debugMetrics: { totalTiles: 0, drawnTiles: 0, skippedTiles: 0, passes: 0 },
           renderableTileCount: 0,
@@ -3110,6 +3152,20 @@
     });
   }
 
+  if (terrainDebugBtn) {
+    terrainDebugBtn.addEventListener('click', () => {
+      if (terrainDebugEnabled) {
+        logTerrainDebug('Terrain debug logging disabled via UI.');
+      }
+      const nextEnabled = !terrainDebugEnabled;
+      setTerrainDebugEnabled(nextEnabled, { updateUrl: true });
+      if (nextEnabled) {
+        logTerrainDebug('Terrain debug logging enabled via UI.');
+      }
+      console.info(`Terrain debug logging ${nextEnabled ? 'enabled' : 'disabled'}.`);
+    });
+  }
+
   if (terrainMeshBtn) {
     terrainMeshBtn.addEventListener('click', () => {
       setTerrainWireframeVisibility(!terrainWireframeLayerVisible);
@@ -3127,7 +3183,7 @@
       try {
         map.removeLayer(TERRAIN_WIREFRAME_LAYER_ID);
       } catch (error) {
-        if (DEBUG) {
+        if (terrainDebugEnabled) {
           console.warn('Failed to remove Three.js mesh layer during unload', error);
         }
       }
@@ -3135,7 +3191,7 @@
   });
 
   function logTerrainDebug(message, details) {
-    if (!DEBUG) {
+    if (!terrainDebugEnabled) {
       return;
     }
     if (details !== undefined) {
