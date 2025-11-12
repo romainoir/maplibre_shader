@@ -27,13 +27,23 @@ function shaderUniformNameForOffset(dx, dy) {
   return `u_image_${shaderFormatOffsetPart(dx)}_${shaderFormatOffsetPart(dy)}`;
 }
 
+function shaderMetersUniformNameForOffset(dx, dy) {
+  const base = shaderUniformNameForOffset(dx, dy);
+  return base.replace('u_image', 'u_metersPerPixel');
+}
+
 function shaderBuildNeighborOffsets(maxOffset) {
   const offsets = [];
   for (let dy = -maxOffset; dy <= maxOffset; dy++) {
     for (let dx = -maxOffset; dx <= maxOffset; dx++) {
       if (dx === 0 && dy === 0) continue;
       if (Math.abs(dx) + Math.abs(dy) > maxOffset) continue;
-      offsets.push({ dx, dy, uniform: shaderUniformNameForOffset(dx, dy) });
+      offsets.push({
+        dx,
+        dy,
+        uniform: shaderUniformNameForOffset(dx, dy),
+        metersUniform: shaderMetersUniformNameForOffset(dx, dy)
+      });
     }
   }
   return offsets;
@@ -45,6 +55,12 @@ const SHADER_NEIGHBOR_UNIFORM_DECLARATIONS = SHADER_NEIGHBOR_OFFSETS
   .join('\n');
 const SHADER_NEIGHBOR_UNIFORM_BLOCK = SHADER_NEIGHBOR_UNIFORM_DECLARATIONS
   ? `${SHADER_NEIGHBOR_UNIFORM_DECLARATIONS}\n`
+  : '';
+const SHADER_NEIGHBOR_METERS_DECLARATIONS = SHADER_NEIGHBOR_OFFSETS
+  .map(({ metersUniform }) => `    uniform float ${metersUniform};`)
+  .join('\n');
+const SHADER_NEIGHBOR_METERS_UNIFORM_BLOCK = SHADER_NEIGHBOR_METERS_DECLARATIONS
+  ? `${SHADER_NEIGHBOR_METERS_DECLARATIONS}\n`
   : '';
 const SHADER_NEIGHBOR_FETCH_CASES = SHADER_NEIGHBOR_OFFSETS
   .map(({ dx, dy, uniform }) => `      if (offset == ivec2(${dx}, ${dy})) {\n        return getElevationFromTexture(${uniform}, tilePos);\n      }`)
@@ -58,6 +74,12 @@ const SHADER_NEIGHBOR_FETCH_CASES_LOD = SHADER_NEIGHBOR_OFFSETS
 const SHADER_NEIGHBOR_FETCH_BLOCK_LOD = SHADER_NEIGHBOR_FETCH_CASES_LOD
   ? `\n${SHADER_NEIGHBOR_FETCH_CASES_LOD}\n`
   : '';
+const SHADER_NEIGHBOR_METERS_CASES = SHADER_NEIGHBOR_OFFSETS
+  .map(({ dx, dy, metersUniform }) => `      if (offset == ivec2(${dx}, ${dy})) {\n        return max(${metersUniform}, 0.0);\n      }`)
+  .join('\n');
+const SHADER_NEIGHBOR_METERS_BLOCK = SHADER_NEIGHBOR_METERS_CASES
+  ? `\n${SHADER_NEIGHBOR_METERS_CASES}\n`
+  : '';
 
 const TerrainShaders = {
   // Common GLSL functions shared among the fragment shaders.
@@ -70,7 +92,7 @@ ${SHADER_NEIGHBOR_UNIFORM_BLOCK}    uniform sampler2D u_gradient;
     uniform vec2 u_dimension;
     uniform float u_zoom;
     uniform float u_metersPerPixel;
-    uniform vec2 u_latrange;
+${SHADER_NEIGHBOR_METERS_UNIFORM_BLOCK}    uniform vec2 u_latrange;
     uniform float u_samplingDistance;
     uniform int u_usePrecomputedGradient;
 
@@ -113,9 +135,9 @@ ${SHADER_NEIGHBOR_UNIFORM_BLOCK}    uniform sampler2D u_gradient;
       );
     }
 
-    float getElevationExtended(vec2 pos) {
+    vec2 resolveNeighborCoords(vec2 pos, out ivec2 offset) {
       vec2 tilePos = pos;
-      ivec2 offset = ivec2(0);
+      offset = ivec2(0);
       const int MAX_OFFSET = ${SHADER_MAX_NEIGHBOR_OFFSET};
       for (int i = 0; i < ${SHADER_MAX_NEIGHBOR_OFFSET * 4}; ++i) {
         bool adjusted = false;
@@ -155,54 +177,31 @@ ${SHADER_NEIGHBOR_UNIFORM_BLOCK}    uniform sampler2D u_gradient;
       }
       offset.x = clamp(offset.x, -MAX_OFFSET, MAX_OFFSET);
       offset.y = clamp(offset.y, -MAX_OFFSET, MAX_OFFSET);
-      tilePos = clampTexCoord(tilePos);
-${SHADER_NEIGHBOR_FETCH_BLOCK}      return getElevationFromTexture(u_image, tilePos);
+      return clampTexCoord(tilePos);
     }
 
-    float getElevationExtendedLod(vec2 pos, float lod) {
-      vec2 tilePos = pos;
-      ivec2 offset = ivec2(0);
-      const int MAX_OFFSET = ${SHADER_MAX_NEIGHBOR_OFFSET};
-      for (int i = 0; i < ${SHADER_MAX_NEIGHBOR_OFFSET * 4}; ++i) {
-        bool adjusted = false;
-        if (tilePos.x < 0.0) {
-          int nextOffsetX = offset.x - 1;
-          if (nextOffsetX >= -MAX_OFFSET && abs(nextOffsetX) + abs(offset.y) <= MAX_OFFSET) {
-            tilePos.x += 1.0;
-            offset.x = nextOffsetX;
-            adjusted = true;
-          }
-        } else if (tilePos.x > 1.0) {
-          int nextOffsetX = offset.x + 1;
-          if (nextOffsetX <= MAX_OFFSET && abs(nextOffsetX) + abs(offset.y) <= MAX_OFFSET) {
-            tilePos.x -= 1.0;
-            offset.x = nextOffsetX;
-            adjusted = true;
-          }
-        }
-        if (tilePos.y < 0.0) {
-          int nextOffsetY = offset.y - 1;
-          if (nextOffsetY >= -MAX_OFFSET && abs(offset.x) + abs(nextOffsetY) <= MAX_OFFSET) {
-            tilePos.y += 1.0;
-            offset.y = nextOffsetY;
-            adjusted = true;
-          }
-        } else if (tilePos.y > 1.0) {
-          int nextOffsetY = offset.y + 1;
-          if (nextOffsetY <= MAX_OFFSET && abs(offset.x) + abs(nextOffsetY) <= MAX_OFFSET) {
-            tilePos.y -= 1.0;
-            offset.y = nextOffsetY;
-            adjusted = true;
-          }
-        }
-        if (!adjusted) {
-          break;
-        }
-      }
-      offset.x = clamp(offset.x, -MAX_OFFSET, MAX_OFFSET);
-      offset.y = clamp(offset.y, -MAX_OFFSET, MAX_OFFSET);
-      tilePos = clampTexCoord(tilePos);
-${SHADER_NEIGHBOR_FETCH_BLOCK_LOD}      return getElevationFromTextureLod(u_image, tilePos, lod);
+    float fetchElevationForOffset(ivec2 offset, vec2 tilePos) {
+      if (offset == ivec2(0, 0)) {
+        return getElevationFromTexture(u_image, tilePos);
+      }${SHADER_NEIGHBOR_FETCH_BLOCK}      return getElevationFromTexture(u_image, tilePos);
+    }
+
+    float fetchElevationForOffsetLod(ivec2 offset, vec2 tilePos, float lod) {
+      if (offset == ivec2(0, 0)) {
+        return getElevationFromTextureLod(u_image, tilePos, lod);
+      }${SHADER_NEIGHBOR_FETCH_BLOCK_LOD}      return getElevationFromTextureLod(u_image, tilePos, lod);
+    }
+
+    float getMetersPerPixelForOffset(ivec2 offset) {
+      if (offset == ivec2(0, 0)) {
+        return max(u_metersPerPixel, 0.0);
+      }${SHADER_NEIGHBOR_METERS_BLOCK}      return max(u_metersPerPixel, 0.0);
+    }
+
+    float getElevationExtended(vec2 pos) {
+      ivec2 offset;
+      vec2 tilePos = resolveNeighborCoords(pos, offset);
+      return fetchElevationForOffset(offset, tilePos);
     }
 
     float computeRaySampleLod(float horizontalMeters, float metersPerPixel) {
@@ -212,11 +211,18 @@ ${SHADER_NEIGHBOR_FETCH_BLOCK_LOD}      return getElevationFromTextureLod(u_imag
     }
 
     float sampleElevationAdaptive(vec2 pos, float horizontalMeters, float metersPerPixel) {
-      float lod = computeRaySampleLod(horizontalMeters, metersPerPixel);
-      if (lod <= 0.001) {
-        return getElevationExtended(pos);
+      ivec2 offset;
+      vec2 tilePos = resolveNeighborCoords(pos, offset);
+      float localMetersPerPixel = getMetersPerPixelForOffset(offset);
+      if (localMetersPerPixel <= 0.0) {
+        localMetersPerPixel = metersPerPixel;
       }
-      return getElevationExtendedLod(pos, lod);
+      localMetersPerPixel = max(localMetersPerPixel, 0.0001);
+      float lod = computeRaySampleLod(horizontalMeters, localMetersPerPixel);
+      if (lod <= 0.001) {
+        return fetchElevationForOffset(offset, tilePos);
+      }
+      return fetchElevationForOffsetLod(offset, tilePos, lod);
     }
 
     float computeAdaptiveStepGrowth(float horizontalMeters) {

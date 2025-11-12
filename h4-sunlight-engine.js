@@ -171,8 +171,12 @@
       };
 
       this.horizonUniforms.neighbors = this.neighborOffsets.map(offset => ({
-        name: offset.uniform,
-        location: gl.getUniformLocation(this.horizonProgram, offset.uniform)
+        textureUniform: offset.uniform,
+        textureLocation: gl.getUniformLocation(this.horizonProgram, offset.uniform),
+        metersUniform: offset.metersUniform || null,
+        metersLocation: offset.metersUniform
+          ? gl.getUniformLocation(this.horizonProgram, offset.metersUniform)
+          : null
       }));
 
       this.framebuffer = gl.createFramebuffer();
@@ -283,6 +287,7 @@
         tileSize,
         baseTexture,
         neighborTextures = [],
+        neighborMeters = [],
         metersPerPixel,
         maxDistance,
         stepMultiplier
@@ -345,6 +350,7 @@
         entry.ready = this._buildHorizon(entry, {
           baseTexture,
           neighborTextures,
+          neighborMeters,
           tileSize,
           meters,
           maxDist,
@@ -457,13 +463,20 @@
 
       for (let i = 0; i < this.horizonUniforms.neighbors.length; i++) {
         const uniform = this.horizonUniforms.neighbors[i];
-        if (!uniform || !uniform.location) continue;
+        if (!uniform || !uniform.textureLocation) continue;
         const texture = params.neighborTextures[i] || params.baseTexture;
         gl.activeTexture(gl.TEXTURE1 + i);
         gl.bindTexture(gl.TEXTURE_2D, texture);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-        gl.uniform1i(uniform.location, 1 + i);
+        gl.uniform1i(uniform.textureLocation, 1 + i);
+        if (uniform.metersLocation) {
+          const neighborMeters = Array.isArray(params.neighborMeters) ? params.neighborMeters : null;
+          const metersValue = neighborMeters && Number.isFinite(neighborMeters[i])
+            ? neighborMeters[i]
+            : params.meters;
+          gl.uniform1f(uniform.metersLocation, metersValue);
+        }
       }
 
       let success = true;

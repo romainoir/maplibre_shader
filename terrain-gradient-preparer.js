@@ -30,13 +30,23 @@ const TerrainGradientPreparer = (function() {
     return `u_image_${gradientFormatOffsetPart(dx)}_${gradientFormatOffsetPart(dy)}`;
   }
 
+  function gradientMetersUniformNameForOffset(dx, dy) {
+    const base = gradientUniformNameForOffset(dx, dy);
+    return base.replace('u_image', 'u_metersPerPixel');
+  }
+
   function gradientBuildNeighborOffsets(maxOffset) {
     const offsets = [];
     for (let dy = -maxOffset; dy <= maxOffset; dy++) {
       for (let dx = -maxOffset; dx <= maxOffset; dx++) {
         if (dx === 0 && dy === 0) continue;
         if (Math.abs(dx) + Math.abs(dy) > maxOffset) continue;
-        offsets.push({ dx, dy, uniform: gradientUniformNameForOffset(dx, dy) });
+        offsets.push({
+          dx,
+          dy,
+          uniform: gradientUniformNameForOffset(dx, dy),
+          metersUniform: gradientMetersUniformNameForOffset(dx, dy)
+        });
       }
     }
     return offsets;
@@ -49,11 +59,23 @@ const TerrainGradientPreparer = (function() {
   const GRADIENT_NEIGHBOR_UNIFORM_BLOCK = GRADIENT_NEIGHBOR_UNIFORM_DECLARATIONS
     ? `${GRADIENT_NEIGHBOR_UNIFORM_DECLARATIONS}\n`
     : '';
+  const GRADIENT_NEIGHBOR_METERS_DECLARATIONS = GRADIENT_NEIGHBOR_OFFSETS
+    .map(({ metersUniform }) => `uniform float ${metersUniform};`)
+    .join('\n');
+  const GRADIENT_NEIGHBOR_METERS_UNIFORM_BLOCK = GRADIENT_NEIGHBOR_METERS_DECLARATIONS
+    ? `${GRADIENT_NEIGHBOR_METERS_DECLARATIONS}\n`
+    : '';
   const GRADIENT_NEIGHBOR_FETCH_CASES = GRADIENT_NEIGHBOR_OFFSETS
     .map(({ dx, dy, uniform }) => `  if (offset == ivec2(${dx}, ${dy})) return getElevationFromTexture(${uniform}, tilePos);`)
     .join('\n');
   const GRADIENT_NEIGHBOR_FETCH_BLOCK = GRADIENT_NEIGHBOR_FETCH_CASES
     ? `\n${GRADIENT_NEIGHBOR_FETCH_CASES}\n`
+    : '';
+  const GRADIENT_NEIGHBOR_METERS_CASES = GRADIENT_NEIGHBOR_OFFSETS
+    .map(({ dx, dy, metersUniform }) => `  if (offset == ivec2(${dx}, ${dy})) return max(${metersUniform}, 0.0);`)
+    .join('\n');
+  const GRADIENT_NEIGHBOR_METERS_BLOCK = GRADIENT_NEIGHBOR_METERS_CASES
+    ? `\n${GRADIENT_NEIGHBOR_METERS_CASES}\n`
     : '';
 
   function computeTileCenterLatitude(canonical) {
@@ -200,6 +222,7 @@ uniform vec2 u_dimension;
 uniform float u_zoom;
 uniform float u_samplingDistance;
 uniform float u_metersPerPixel;
+${GRADIENT_NEIGHBOR_METERS_UNIFORM_BLOCK}
 float getElevationFromTexture(sampler2D tex, vec2 pos) {
   vec4 data = texture(tex, pos) * 255.0;
   return (data.r * u_terrain_unpack[0]
@@ -211,9 +234,9 @@ vec2 clampTexCoord(vec2 pos) {
   float border = 0.5 / u_dimension.x;
   return clamp(pos, vec2(border), vec2(1.0 - border));
 }
-float getElevationExtended(vec2 pos) {
+vec2 resolveNeighborCoords(vec2 pos, out ivec2 offset) {
   vec2 tilePos = pos;
-  ivec2 offset = ivec2(0);
+  offset = ivec2(0);
   const int MAX_OFFSET = ${GRADIENT_MAX_NEIGHBOR_OFFSET};
   for (int i = 0; i < ${GRADIENT_MAX_NEIGHBOR_OFFSET * 4}; ++i) {
     bool adjusted = false;
@@ -253,8 +276,27 @@ float getElevationExtended(vec2 pos) {
   }
   offset.x = clamp(offset.x, -MAX_OFFSET, MAX_OFFSET);
   offset.y = clamp(offset.y, -MAX_OFFSET, MAX_OFFSET);
-  tilePos = clampTexCoord(tilePos);
+  return clampTexCoord(tilePos);
+}
+
+float fetchElevationForOffset(ivec2 offset, vec2 tilePos) {
+  if (offset == ivec2(0, 0)) {
+    return getElevationFromTexture(u_image, tilePos);
+  }
 ${GRADIENT_NEIGHBOR_FETCH_BLOCK}  return getElevationFromTexture(u_image, tilePos);
+}
+
+float getMetersPerPixelForOffset(ivec2 offset) {
+  if (offset == ivec2(0, 0)) {
+    return max(u_metersPerPixel, 0.0);
+  }
+${GRADIENT_NEIGHBOR_METERS_BLOCK}  return max(u_metersPerPixel, 0.0);
+}
+
+float getElevationExtended(vec2 pos) {
+  ivec2 offset;
+  vec2 tilePos = resolveNeighborCoords(pos, offset);
+  return fetchElevationForOffset(offset, tilePos);
 }
 void main() {
   float sampleDist = max(u_samplingDistance, 0.0001);
@@ -290,8 +332,11 @@ void main() {
         u_samplingDistance: gl.getUniformLocation(this.program, 'u_samplingDistance'),
         u_metersPerPixel: gl.getUniformLocation(this.program, 'u_metersPerPixel')
       };
-      GRADIENT_NEIGHBOR_OFFSETS.forEach(({ uniform }) => {
+      GRADIENT_NEIGHBOR_OFFSETS.forEach(({ uniform, metersUniform }) => {
         this.uniforms[uniform] = gl.getUniformLocation(this.program, uniform);
+        if (metersUniform) {
+          this.uniforms[metersUniform] = gl.getUniformLocation(this.program, metersUniform);
+        }
       });
 
       const quadVertices = new Float32Array([
@@ -413,6 +458,7 @@ void main() {
         terrainInterface,
         terrainDataCache,
         textureCache,
+        metersPerPixelCache,
         neighborOffsets,
         samplingDistance
       } = options;
@@ -535,34 +581,50 @@ void main() {
         gl.viewport(0, 0, tileSize, tileSize);
 
         const canonical = tile.tileID.canonical;
+        const metersPerPixel = computeMetersPerPixelForTile(canonical, tileSize);
 
-        const neighborTextures = neighborOffsets.map(offset => {
+        const neighborInfo = neighborOffsets.map(offset => {
           const neighborKey = this.getNeighborCacheKey(tile.tileID, offset);
+          let metersValue = metersPerPixel;
+          let texture = terrainData.texture;
           if (!neighborKey) {
             frameInfo.neighborFallbacks++;
-            return terrainData.texture;
+          } else {
+            if (metersPerPixelCache && metersPerPixelCache.has(neighborKey)) {
+              const cachedMeters = metersPerPixelCache.get(neighborKey);
+              if (Number.isFinite(cachedMeters)) {
+                metersValue = cachedMeters;
+              }
+            }
+            const cachedTexture = textureCache.get(neighborKey);
+            if (cachedTexture) {
+              texture = cachedTexture;
+              frameInfo.neighborMatches++;
+            } else {
+              frameInfo.neighborFallbacks++;
+            }
           }
-          const texture = textureCache.get(neighborKey);
-          if (!texture) {
-            frameInfo.neighborFallbacks++;
-            return terrainData.texture;
-          }
-          frameInfo.neighborMatches++;
-          return texture;
+          return { texture, meters: metersValue };
         });
+
+        const neighborTextures = neighborInfo.map(info => info.texture);
+        const neighborMeters = neighborInfo.map(info => info.meters);
 
         this.bindInputTexture(gl, 0, terrainData.texture, this.uniforms.u_image);
 
         neighborOffsets.forEach((offset, index) => {
           const location = this.uniforms[offset.uniform] || null;
           this.bindInputTexture(gl, index + 1, neighborTextures[index], location);
+          const metersLocation = this.uniforms[offset.metersUniform] || null;
+          if (metersLocation !== null) {
+            gl.uniform1f(metersLocation, neighborMeters[index]);
+          }
         });
 
         gl.uniform4f(this.uniforms.u_terrain_unpack, rgbaFactors.r, rgbaFactors.g, rgbaFactors.b, rgbaFactors.base);
         gl.uniform2f(this.uniforms.u_dimension, tileSize, tileSize);
         gl.uniform1f(this.uniforms.u_zoom, canonical.z);
         if (this.uniforms.u_metersPerPixel !== null) {
-          const metersPerPixel = computeMetersPerPixelForTile(canonical, tileSize);
           gl.uniform1f(this.uniforms.u_metersPerPixel, metersPerPixel);
         }
         gl.uniform1f(this.uniforms.u_samplingDistance, samplingDistance);
