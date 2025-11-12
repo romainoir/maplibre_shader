@@ -55,6 +55,7 @@
   const TILE_SIZE = 512;
   const DEM_MAX_ZOOM = 18; // native DEM max zoom
   const TERRAIN_FLATTEN_EXAGGERATION = 1e-6;
+  const TERRAIN_DEFAULT_EXAGGERATION = 1.0;
   const TERRAIN_SOURCE_ID = 'terrain';
   const HILLSHADE_NATIVE_LAYER_ID = 'terrain-hillshade-native';
   const DEFAULT_HILLSHADE_SETTINGS = {
@@ -77,7 +78,10 @@
     lightAltitude: DEFAULT_HILLSHADE_SETTINGS.lightAltitude,
     opacity: DEFAULT_HILLSHADE_SETTINGS.opacity
   };
-  let lastTerrainSpecification = { source: TERRAIN_SOURCE_ID, exaggeration: 1.0 };
+  let lastTerrainSpecification = { source: TERRAIN_SOURCE_ID, exaggeration: TERRAIN_DEFAULT_EXAGGERATION };
+  let currentTerrainExaggeration = TERRAIN_DEFAULT_EXAGGERATION;
+  let terrainAnimationFrameId = null;
+  let is3DViewEnabled = true;
   let isTerrainFlattened = false;
 
   function getHillshadeDebugTiles(mapInstance, options = {}) {
@@ -169,6 +173,13 @@
     return `${formatGradientDistance(value)} m`;
   }
 
+  function formatAutoSamplingScaleLabel(scale) {
+    if (!Number.isFinite(scale)) {
+      return '1.00×';
+    }
+    return `${scale.toFixed(2)}×`;
+  }
+
   const gradientParameters = {
     baseDistance: 0.35,
     minDistance: MIN_GRADIENT_DISTANCE,
@@ -176,6 +187,8 @@
   };
   let samplingDistance = gradientParameters.baseDistance;
   let isSamplingDistanceManual = false;
+  let gradientAutoScaleKey = '0.5';
+  let gradientAutoScale = parseFloat(gradientAutoScaleKey);
   let shadowDateValue = null;
   let shadowTimeValue = null;
   let map;
@@ -189,11 +202,18 @@
   let gradientMaxSlider = null;
   let gradientMaxValueEl = null;
   let gradientAutoButton = null;
+  let gradientAutoScaleSelect = null;
   let terrainMeshBtn = null;
   let terrainExportBtn = null;
   let terrainDebugBtn = null;
   let terrainMenuContainer = null;
   let terrainStatusEl = null;
+  let layersPanelEl = null;
+  let layersToggleButton = null;
+  let layersCloseButton = null;
+  let hqModeCheckbox = null;
+  let toggle3DButton = null;
+  let layersPanelOpen = false;
 
   const gradientPreparer = TerrainGradientPreparer.create();
   const EARTH_CIRCUMFERENCE_METERS = 40075016.68557849;
@@ -1428,7 +1448,7 @@
       return baseDistance;
     }
     const effectiveZoom = Math.min(Math.max(zoom, 0), DEM_MAX_ZOOM);
-    const scaled = baseDistance * Math.pow(2, GRADIENT_ZOOM_PIVOT - effectiveZoom);
+    const scaled = baseDistance * gradientAutoScale * Math.pow(2, GRADIENT_ZOOM_PIVOT - effectiveZoom);
     return clamp(scaled, minDistance, maxDistance);
   }
 
@@ -1977,7 +1997,7 @@
     }
     const snowSliderContainer = document.getElementById('snowSliderContainer');
     if (snowSliderContainer) {
-      snowSliderContainer.style.display = (isCustomActive && currentMode === "snow") ? "block" : "none";
+      snowSliderContainer.style.display = (isCustomActive && currentMode === "snow") ? "flex" : "none";
     }
     const shadowControls = document.getElementById('shadowControls');
     if (shadowControls) {
@@ -2022,11 +2042,168 @@
   gradientMaxSlider = document.getElementById('gradientMaxSlider');
   gradientMaxValueEl = document.getElementById('gradientMaxValue');
   gradientAutoButton = document.getElementById('gradientAutoButton');
+  gradientAutoScaleSelect = document.getElementById('gradientAutoScaleSelect');
   terrainMeshBtn = document.getElementById('terrainMeshBtn');
   terrainExportBtn = document.getElementById('terrainExportBtn');
   terrainDebugBtn = document.getElementById('terrainDebugBtn');
   terrainMenuContainer = document.getElementById('terrainMenu');
   terrainStatusEl = document.getElementById('terrainStatus');
+  layersPanelEl = document.getElementById('layersPanel');
+  layersToggleButton = document.getElementById('layersToggle');
+  layersCloseButton = document.getElementById('layersClose');
+  hqModeCheckbox = document.getElementById('hqMode');
+  toggle3DButton = document.getElementById('toggle3D');
+
+  if (gradientAutoScaleSelect) {
+    gradientAutoScaleSelect.value = gradientAutoScaleKey;
+  }
+
+  function setLayersPanelVisibility(visible) {
+    if (!layersPanelEl) {
+      layersPanelOpen = false;
+      return;
+    }
+    layersPanelOpen = Boolean(visible);
+    layersPanelEl.classList.toggle('open', layersPanelOpen);
+    layersPanelEl.setAttribute('aria-hidden', layersPanelOpen ? 'false' : 'true');
+    if (layersToggleButton) {
+      layersToggleButton.classList.toggle('active', layersPanelOpen);
+      layersToggleButton.setAttribute('aria-expanded', layersPanelOpen ? 'true' : 'false');
+    }
+  }
+
+  setLayersPanelVisibility(false);
+
+  if (layersToggleButton) {
+    layersToggleButton.addEventListener('click', () => {
+      setLayersPanelVisibility(!layersPanelOpen);
+    });
+  }
+
+  if (layersCloseButton) {
+    layersCloseButton.addEventListener('click', () => {
+      setLayersPanelVisibility(false);
+    });
+  }
+
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && layersPanelOpen) {
+      setLayersPanelVisibility(false);
+    }
+  });
+
+  function stopTerrainAnimation() {
+    if (terrainAnimationFrameId != null) {
+      cancelAnimationFrame(terrainAnimationFrameId);
+      terrainAnimationFrameId = null;
+    }
+  }
+
+  function setTerrainExaggerationImmediate(exaggeration) {
+    if (!map) {
+      return;
+    }
+    try {
+      map.setTerrain({ source: TERRAIN_SOURCE_ID, exaggeration });
+    } catch (error) {
+      if (terrainDebugEnabled) {
+        console.warn('Failed to update terrain exaggeration', error);
+      }
+    }
+  }
+
+  function animateTerrainExaggeration(targetExaggeration, duration = 1500) {
+    if (!map) {
+      return;
+    }
+    stopTerrainAnimation();
+    const startExaggeration = currentTerrainExaggeration;
+    const startTime = performance.now();
+    const ease = (t) => 0.5 * (1 - Math.cos(Math.PI * t));
+
+    function step(now) {
+      const progress = duration <= 0 ? 1 : Math.min(1, (now - startTime) / duration);
+      const eased = ease(progress);
+      const value = startExaggeration + (targetExaggeration - startExaggeration) * eased;
+      setTerrainExaggerationImmediate(value);
+      if (progress < 1) {
+        terrainAnimationFrameId = requestAnimationFrame(step);
+      } else {
+        terrainAnimationFrameId = null;
+      }
+    }
+
+    terrainAnimationFrameId = requestAnimationFrame(step);
+  }
+
+  function applyHQModeToSources() {
+    if (!map || typeof map.setSourceTileLodParams !== 'function') {
+      return;
+    }
+    const minLod = hqModeCheckbox && hqModeCheckbox.checked ? 3 : 4;
+    const maxLod = hqModeCheckbox && hqModeCheckbox.checked ? 9 : 6;
+    const sourceIds = ['swisstopo', TERRAIN_SOURCE_ID];
+    for (const sourceId of sourceIds) {
+      if (!map.getSource(sourceId)) {
+        continue;
+      }
+      try {
+        map.setSourceTileLodParams(minLod, maxLod, sourceId);
+      } catch (error) {
+        if (terrainDebugEnabled) {
+          console.warn(`Failed to adjust LOD params for ${sourceId}`, error);
+        }
+      }
+    }
+  }
+
+  function enter3DView() {
+    if (!map) {
+      return;
+    }
+    stopTerrainAnimation();
+    if (typeof map.stop === 'function') {
+      map.stop();
+    }
+    animateTerrainExaggeration(TERRAIN_DEFAULT_EXAGGERATION, 2000);
+    map.easeTo({ pitch: 45, bearing: 0, duration: 1500 });
+    is3DViewEnabled = true;
+    if (toggle3DButton) {
+      toggle3DButton.textContent = 'Revenir en 2D';
+    }
+  }
+
+  function enter2DView() {
+    if (!map) {
+      return;
+    }
+    stopTerrainAnimation();
+    if (typeof map.stop === 'function') {
+      map.stop();
+    }
+    animateTerrainExaggeration(TERRAIN_FLATTEN_EXAGGERATION, 1500);
+    map.easeTo({ pitch: 0, bearing: 0, duration: 1200 });
+    is3DViewEnabled = false;
+    if (toggle3DButton) {
+      toggle3DButton.textContent = 'Passer en 3D';
+    }
+  }
+
+  if (hqModeCheckbox) {
+    hqModeCheckbox.addEventListener('change', () => {
+      applyHQModeToSources();
+    });
+  }
+
+  if (toggle3DButton) {
+    toggle3DButton.addEventListener('click', () => {
+      if (is3DViewEnabled) {
+        enter2DView();
+      } else {
+        enter3DView();
+      }
+    });
+  }
 
   const debugPanelEl = document.getElementById('debugPanel');
   const debugContentEl = document.getElementById('debugContent');
@@ -2099,6 +2276,7 @@
       ? (lastRender.isSamplingDistanceManual ? 'manual' : 'auto')
       : (isSamplingDistanceManual ? 'manual' : 'auto');
     lines.push(`Gradient sampling: ${samplingLabel} (${samplingMode})`);
+    lines.push(`Auto sampling scale: ${formatAutoSamplingScaleLabel(gradientAutoScale)}`);
 
     const meshStateLabel = terrainWireframeLayerVisible
       ? (terrainWireframeLoading ? 'visible (building)' : 'visible')
@@ -2206,6 +2384,9 @@
     if (gradientAutoButton) {
       gradientAutoButton.disabled = !isSamplingDistanceManual;
     }
+    if (gradientAutoScaleSelect && gradientAutoScaleSelect.value !== gradientAutoScaleKey) {
+      gradientAutoScaleSelect.value = gradientAutoScaleKey;
+    }
     refreshDebugPanel();
   }
 
@@ -2305,6 +2486,26 @@
       }
       refreshGradientUI();
       if (map) map.triggerRepaint();
+    });
+  }
+
+  if (gradientAutoScaleSelect) {
+    gradientAutoScaleSelect.addEventListener('change', (event) => {
+      const value = typeof event.target?.value === 'string' ? event.target.value : '';
+      if (!value) {
+        return;
+      }
+      const parsed = parseFloat(value);
+      if (!Number.isFinite(parsed) || parsed <= 0) {
+        return;
+      }
+      gradientAutoScaleKey = value;
+      gradientAutoScale = parsed;
+      if (isSamplingDistanceManual) {
+        refreshGradientUI();
+      } else {
+        updateSamplingDistanceForZoom(true);
+      }
     });
   }
 
@@ -3203,6 +3404,11 @@
     fadeDuration: 500
   });
 
+  is3DViewEnabled = map.getPitch() > 5;
+  if (toggle3DButton) {
+    toggle3DButton.textContent = is3DViewEnabled ? 'Revenir en 2D' : 'Passer en 3D';
+  }
+
   map.on('render', () => {
     refreshDebugPanel();
   });
@@ -3210,6 +3416,10 @@
   if (HillshadeDebug && typeof HillshadeDebug.attachToMap === 'function') {
     HillshadeDebug.attachToMap(map, { sourceId: TERRAIN_SOURCE_ID, autoHookLayer: false });
   }
+
+  map.on('styledata', () => {
+    applyHQModeToSources();
+  });
 
   const originalSetTerrain = map.setTerrain.bind(map);
   const originalGetTerrain = typeof map.getTerrain === 'function'
@@ -3224,16 +3434,20 @@
       isTerrainFlattened = Number.isFinite(nextExaggeration)
         ? nextExaggeration <= TERRAIN_FLATTEN_EXAGGERATION
         : false;
+      if (Number.isFinite(nextExaggeration)) {
+        currentTerrainExaggeration = nextExaggeration;
+      }
       return originalSetTerrain(specification);
     }
     if (!lastTerrainSpecification || !lastTerrainSpecification.source) {
-      lastTerrainSpecification = { source: TERRAIN_SOURCE_ID, exaggeration: 1.0 };
+      lastTerrainSpecification = { source: TERRAIN_SOURCE_ID, exaggeration: TERRAIN_DEFAULT_EXAGGERATION };
     }
     isTerrainFlattened = true;
     const flattenedSpecification = {
       ...lastTerrainSpecification,
       exaggeration: TERRAIN_FLATTEN_EXAGGERATION
     };
+    currentTerrainExaggeration = TERRAIN_FLATTEN_EXAGGERATION;
     return originalSetTerrain(flattenedSpecification);
   };
 
@@ -3248,8 +3462,9 @@
   
   map.on('load', () => {
     console.log("Map loaded");
-    map.setTerrain({ source: TERRAIN_SOURCE_ID, exaggeration: 1.0 });
-    lastTerrainSpecification = { source: TERRAIN_SOURCE_ID, exaggeration: 1.0 };
+    map.setTerrain({ source: TERRAIN_SOURCE_ID, exaggeration: TERRAIN_DEFAULT_EXAGGERATION });
+    lastTerrainSpecification = { source: TERRAIN_SOURCE_ID, exaggeration: TERRAIN_DEFAULT_EXAGGERATION };
+    currentTerrainExaggeration = TERRAIN_DEFAULT_EXAGGERATION;
     isTerrainFlattened = false;
     const tileManager = getTerrainTileManager(map);
     if (tileManager && typeof tileManager.deltaZoom === 'number') {
@@ -3258,6 +3473,7 @@
     console.log("Terrain layer initialized");
     recomputeShadowTimeBounds();
     updateSamplingDistanceForZoom();
+    applyHQModeToSources();
     if (HillshadeDebug && typeof HillshadeDebug.attachToMap === 'function') {
       HillshadeDebug.attachToMap(map, {
         layerId: hillshadeMode === 'native' ? HILLSHADE_NATIVE_LAYER_ID : null,
@@ -3268,6 +3484,10 @@
       ensureNativeHillshadeLayer();
     } else if (hillshadeMode === 'custom' && currentMode) {
       ensureCustomTerrainLayer();
+    }
+    is3DViewEnabled = map.getPitch() > 5;
+    if (toggle3DButton) {
+      toggle3DButton.textContent = is3DViewEnabled ? 'Revenir en 2D' : 'Passer en 3D';
     }
     updateButtons();
   });
