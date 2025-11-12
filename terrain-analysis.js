@@ -190,6 +190,7 @@
   let gradientMaxValueEl = null;
   let gradientAutoButton = null;
   let terrainMeshBtn = null;
+  let terrainExportBtn = null;
   let terrainDebugBtn = null;
   let terrainMenuContainer = null;
   let terrainStatusEl = null;
@@ -217,6 +218,7 @@
   let terrainWireframeLoading = false;
   let terrainWireframeModelTransform = null;
   let supportsUint32IndexBuffer = false;
+  let terrainMeshMetadata = null;
 
   if (typeof window !== 'undefined' && window.maplibregl && !window.mapboxgl) {
     window.mapboxgl = window.maplibregl;
@@ -305,6 +307,34 @@
     return clamp(value, 0, 1);
   }
 
+  function formatExportFloat(value) {
+    if (!Number.isFinite(value)) {
+      return '0';
+    }
+    return value.toFixed(6).replace(/\.0+$/, '').replace(/(\.[0-9]*?)0+$/, '$1');
+  }
+
+  function updateTerrainExportButtonState() {
+    if (!terrainExportBtn) {
+      terrainExportBtn = document.getElementById('terrainExportBtn');
+    }
+    if (!terrainExportBtn) {
+      return;
+    }
+    const vertexCount = terrainMeshMetadata?.vertexCount || 0;
+    const hasMesh = Boolean(
+      terrainWireframeLayerVisible &&
+      terrainSolidMesh &&
+      terrainSolidMesh.geometry &&
+      vertexCount > 0
+    );
+    terrainExportBtn.disabled = !hasMesh;
+    const baseLabel = 'Export Mesh (.obj)';
+    terrainExportBtn.textContent = hasMesh
+      ? `${baseLabel} – ${vertexCount.toLocaleString()} verts`
+      : baseLabel;
+  }
+
   function setTerrainStatus(message) {
     if (!terrainStatusEl) {
       terrainStatusEl = document.getElementById('terrainStatus');
@@ -312,6 +342,7 @@
     if (terrainStatusEl) {
       terrainStatusEl.textContent = message;
     }
+    updateTerrainExportButtonState();
   }
 
   function syncTerrainDebugQueryFlag(enabled) {
@@ -542,6 +573,96 @@
     return mergedGeometry;
   }
 
+  function exportTerrainMeshAsOBJ() {
+    if (!terrainSolidMesh || !terrainSolidMesh.geometry) {
+      setTerrainStatus('No Three.js mesh available for export.');
+      return;
+    }
+    try {
+      const geometry = terrainSolidMesh.geometry;
+      const positionAttr = geometry.getAttribute('position');
+      if (!positionAttr) {
+        setTerrainStatus('Terrain mesh is missing position data.');
+        return;
+      }
+      const positions = positionAttr.array;
+      const normalAttr = geometry.getAttribute('normal');
+      const normals = normalAttr ? normalAttr.array : null;
+      const hasNormals = Boolean(normals && normalAttr.count === positionAttr.count);
+      const indexAttr = geometry.getIndex();
+      const indices = indexAttr ? indexAttr.array : null;
+      const lines = [];
+      lines.push('# MapLibre terrain mesh export');
+      lines.push('# Units are meters relative to the mesh origin.');
+      if (terrainMeshMetadata) {
+        lines.push(`# Vertex count: ${terrainMeshMetadata.vertexCount}`);
+        lines.push(`# Index count: ${terrainMeshMetadata.indexCount}`);
+        if (terrainMeshMetadata.originMercator) {
+          const origin = terrainMeshMetadata.originMercator;
+          lines.push(`# Origin (mercator meters): ${formatExportFloat(origin.x)}, ${formatExportFloat(origin.y)}`);
+        }
+        if (terrainMeshMetadata.modelTransform) {
+          const transform = terrainMeshMetadata.modelTransform;
+          lines.push(`# Map transform scale: ${formatExportFloat(transform.scale)}`);
+          lines.push(`# Map transform translate: ${formatExportFloat(transform.translateX)}, ${formatExportFloat(transform.translateY)}, ${formatExportFloat(transform.translateZ)}`);
+        }
+        if (terrainMeshMetadata.bounds) {
+          const { min, max } = terrainMeshMetadata.bounds;
+          lines.push(`# Bounds min: ${formatExportFloat(min.x)}, ${formatExportFloat(min.y)}, ${formatExportFloat(min.z)}`);
+          lines.push(`# Bounds max: ${formatExportFloat(max.x)}, ${formatExportFloat(max.y)}, ${formatExportFloat(max.z)}`);
+        }
+      }
+      for (let i = 0; i < positions.length; i += 3) {
+        lines.push(`v ${formatExportFloat(positions[i])} ${formatExportFloat(positions[i + 1])} ${formatExportFloat(positions[i + 2])}`);
+      }
+      if (hasNormals) {
+        for (let i = 0; i < normals.length; i += 3) {
+          lines.push(`vn ${formatExportFloat(normals[i])} ${formatExportFloat(normals[i + 1])} ${formatExportFloat(normals[i + 2])}`);
+        }
+      }
+      if (indices && indices.length >= 3) {
+        for (let i = 0; i < indices.length; i += 3) {
+          const a = indices[i] + 1;
+          const b = indices[i + 1] + 1;
+          const c = indices[i + 2] + 1;
+          if (hasNormals) {
+            lines.push(`f ${a}//${a} ${b}//${b} ${c}//${c}`);
+          } else {
+            lines.push(`f ${a} ${b} ${c}`);
+          }
+        }
+      } else {
+        for (let i = 0; i < positions.length / 3; i += 3) {
+          const a = i + 1;
+          const b = i + 2;
+          const c = i + 3;
+          if (hasNormals) {
+            lines.push(`f ${a}//${a} ${b}//${b} ${c}//${c}`);
+          } else {
+            lines.push(`f ${a} ${b} ${c}`);
+          }
+        }
+      }
+      const objContent = `${lines.join('\n')}\n`;
+      const blob = new Blob([objContent], { type: 'text/plain' });
+      const url = URL.createObjectURL(blob);
+      const timestamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\..*/, '');
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `terrain-mesh-${timestamp}.obj`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      setTerrainStatus('Exported terrain mesh as OBJ.');
+    } catch (error) {
+      if (terrainDebugEnabled) {
+        console.error('Failed to export terrain mesh', error);
+      }
+      setTerrainStatus('Failed to export terrain mesh.');
+    }
+  }
+
   async function rebuildTerrainWireframe() {
     logTerrainDebug('rebuildTerrainWireframe invoked', {
       layerVisible: terrainWireframeLayerVisible,
@@ -574,10 +695,13 @@
         terrainWireframeMesh = null;
       }
       terrainWireframeModelTransform = null;
+      terrainMeshMetadata = null;
       setTerrainStatus('No terrain tiles available.');
       return;
     }
     terrainWireframeLoading = true;
+    terrainMeshMetadata = null;
+    updateTerrainExportButtonState();
     logTerrainDebug('Building Three.js mesh for tiles', tiles.map((tile) => tile?.tileID?.key));
     setTerrainStatus('Building Three.js mesh…');
     try {
@@ -665,6 +789,7 @@
           terrainSolidMesh = null;
         }
         terrainWireframeModelTransform = null;
+        terrainMeshMetadata = null;
         setTerrainStatus('No geometry could be generated.');
         if (map) {
           map.triggerRepaint();
@@ -755,6 +880,27 @@
       };
       logTerrainDebug('Updated terrain wireframe transform', terrainWireframeModelTransform);
 
+      const boundingBox = mergedGeometry.boundingBox;
+      terrainMeshMetadata = {
+        vertexCount,
+        indexCount: mergedGeometry.getIndex().count,
+        originMercator: { x: globalMinX, y: globalMaxY },
+        modelTransform: terrainWireframeModelTransform
+          ? {
+            translateX: terrainWireframeModelTransform.translateX,
+            translateY: terrainWireframeModelTransform.translateY,
+            translateZ: terrainWireframeModelTransform.translateZ,
+            scale: terrainWireframeModelTransform.scale
+          }
+          : null,
+        bounds: boundingBox
+          ? {
+            min: { x: boundingBox.min.x, y: boundingBox.min.y, z: boundingBox.min.z },
+            max: { x: boundingBox.max.x, y: boundingBox.max.y, z: boundingBox.max.z }
+          }
+          : null
+      };
+
       if (terrainDirectionalLight && terrainDirectionalLightTarget && mergedGeometry.boundingSphere) {
         const { center, radius } = mergedGeometry.boundingSphere;
         terrainDirectionalLightTarget.position.copy(center);
@@ -801,6 +947,7 @@
       }
     } finally {
       terrainWireframeLoading = false;
+      updateTerrainExportButtonState();
       logTerrainDebug('Terrain mesh rebuild finished', { loading: terrainWireframeLoading });
     }
   }
@@ -947,6 +1094,7 @@
         terrainDirectionalLight = null;
         terrainDirectionalLightTarget = null;
         terrainWireframeModelTransform = null;
+        terrainMeshMetadata = null;
         terrainWireframeLayer = null;
         if (this.renderer && typeof this.renderer.resetState === 'function') {
           this.renderer.resetState();
@@ -1023,6 +1171,7 @@
       terrainDirectionalLight = null;
       terrainDirectionalLightTarget = null;
       terrainWireframeModelTransform = null;
+      terrainMeshMetadata = null;
       setTerrainStatus('Mesh hidden.');
       logTerrainDebug('Terrain wireframe visibility disabled.');
     }
@@ -1802,6 +1951,7 @@
     if (terrainMenuContainer) {
       terrainMenuContainer.style.display = terrainWireframeLayerVisible ? 'flex' : 'none';
     }
+    updateTerrainExportButtonState();
     if (!terrainStatusEl) {
       terrainStatusEl = document.getElementById('terrainStatus');
     }
@@ -1853,6 +2003,7 @@
   gradientMaxValueEl = document.getElementById('gradientMaxValue');
   gradientAutoButton = document.getElementById('gradientAutoButton');
   terrainMeshBtn = document.getElementById('terrainMeshBtn');
+  terrainExportBtn = document.getElementById('terrainExportBtn');
   terrainDebugBtn = document.getElementById('terrainDebugBtn');
   terrainMenuContainer = document.getElementById('terrainMenu');
   terrainStatusEl = document.getElementById('terrainStatus');
@@ -3242,6 +3393,12 @@
   if (terrainMeshBtn) {
     terrainMeshBtn.addEventListener('click', () => {
       setTerrainWireframeVisibility(!terrainWireframeLayerVisible);
+    });
+  }
+
+  if (terrainExportBtn) {
+    terrainExportBtn.addEventListener('click', () => {
+      exportTerrainMeshAsOBJ();
     });
   }
 
