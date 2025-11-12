@@ -178,26 +178,25 @@
   let terrainMeshBtn = null;
   let terrainMenuContainer = null;
   let terrainStatusEl = null;
-  let terrainWireframeToggle = null;
-  let terrainTextureToggle = null;
 
   const gradientPreparer = TerrainGradientPreparer.create();
   const EARTH_CIRCUMFERENCE_METERS = 40075016.68557849;
   const MIN_METERS_PER_PIXEL = 1e-6;
-  const TERRAIN_ELEVATION_URL_TEMPLATE = 'https://tiles.mapterhorn.com/{z}/{x}/{y}.webp';
   const TERRAIN_ELEVATION_TILE_SIZE = 512;
-  const TERRAIN_TEXTURE_URL_TEMPLATE = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
-  const TERRAIN_ELEVATION_DECODER = Object.freeze({
-    rScale: 256,
-    gScale: 1,
-    bScale: 1 / 256,
-    offset: -32768
+  const TERRAIN_MESH_CONFIG = Object.freeze({
+    extent: 8192,
+    defaultDemDimension: 256,
+    verticalScale: 1,
+    verticalOffset: 0
   });
-  const DECK_TERRAIN_WORLD_BOUNDS = Object.freeze([-180, -85.051129, 180, 85.051129]);
-  let deckOverlay = null;
-  let deckTerrainVisible = false;
-  let deckTerrainWireframe = true;
-  let deckTerrainShowImagery = false;
+  const EARTH_RADIUS_METERS = 6378137;
+  const TERRAIN_WIREFRAME_LAYER_ID = 'terrain-wireframe';
+  let terrainWireframeLayerVisible = false;
+  let terrainWireframeLayer = null;
+  let terrainWireframeScene = null;
+  let terrainWireframeMesh = null;
+  let terrainWireframeLoading = false;
+  let terrainWireframeModelTransform = null;
 
   if (typeof window !== 'undefined' && window.maplibregl && !window.mapboxgl) {
     window.mapboxgl = window.maplibregl;
@@ -286,175 +285,426 @@
     return clamp(value, 0, 1);
   }
 
-  function getDeckGlobal() {
-    if (typeof window === 'undefined') {
-      return null;
-    }
-    const deckGlobal = window.deck || null;
-    if (!deckGlobal) {
-      return null;
-    }
-
-    const mapboxOverlay = deckGlobal.MapboxOverlay
-      || deckGlobal.mapbox?.MapboxOverlay
-      || deckGlobal.mapbox?.MapboxOverlay2
-      || null;
-
-    const terrainLayer = deckGlobal.TerrainLayer
-      || deckGlobal.layers?.TerrainLayer
-      || null;
-
-    if (!mapboxOverlay && !terrainLayer) {
-      return deckGlobal;
-    }
-
-    return {
-      ...deckGlobal,
-      MapboxOverlay: mapboxOverlay || deckGlobal.MapboxOverlay,
-      TerrainLayer: terrainLayer || deckGlobal.TerrainLayer
-    };
-  }
-
-  function bringDeckOverlayToFront() {
-    if (!map || !deckOverlay || typeof map.moveLayer !== 'function') {
-      return;
-    }
-    const mapboxLayer = deckOverlay._mapboxLayer;
-    if (!mapboxLayer || !mapboxLayer.id) {
-      return;
-    }
-    try {
-      map.moveLayer(mapboxLayer.id);
-    } catch (error) {
-      if (DEBUG) {
-        console.warn('Failed to move deck.gl overlay to top', error);
-      }
-    }
-  }
-
-  function ensureDeckOverlay() {
-    if (!map) {
-      return null;
-    }
-    if (deckOverlay) {
-      bringDeckOverlayToFront();
-      return deckOverlay;
-    }
-    const deckGlobal = getDeckGlobal();
-    if (!deckGlobal || typeof deckGlobal.MapboxOverlay !== 'function') {
-      return null;
-    }
-    try {
-      deckOverlay = new deckGlobal.MapboxOverlay({ interleaved: true, layers: [] });
-      map.addControl(deckOverlay);
-      bringDeckOverlayToFront();
-    } catch (error) {
-      if (DEBUG) {
-        console.warn('Failed to create deck.gl overlay', error);
-      }
-      deckOverlay = null;
-      return null;
-    }
-    return deckOverlay;
-  }
-
-  function destroyDeckOverlay() {
-    if (deckOverlay && map && typeof map.removeControl === 'function') {
-      try {
-        map.removeControl(deckOverlay);
-      } catch (error) {
-        if (DEBUG) {
-          console.warn('Failed to remove deck.gl overlay', error);
-        }
-      }
-    }
-    deckOverlay = null;
-  }
-
-  function createDeckTerrainLayer() {
-    const deckGlobal = getDeckGlobal();
-    if (!deckGlobal || typeof deckGlobal.TerrainLayer !== 'function') {
-      return null;
-    }
-    const TerrainLayer = deckGlobal.TerrainLayer;
-    return new TerrainLayer({
-      id: 'deck-terrain-layer',
-      minZoom: 0,
-      maxZoom: 17,
-      tileSize: TERRAIN_ELEVATION_TILE_SIZE,
-      strategy: 'no-overlap',
-      elevationDecoder: TERRAIN_ELEVATION_DECODER,
-      elevationData: TERRAIN_ELEVATION_URL_TEMPLATE,
-      texture: deckTerrainShowImagery ? TERRAIN_TEXTURE_URL_TEMPLATE : null,
-      color: deckTerrainShowImagery ? null : [210, 210, 210],
-      wireframe: deckTerrainWireframe,
-      material: deckTerrainShowImagery ? undefined : { ambient: 0.8, diffuse: 0.4, shininess: 2.5 },
-      bounds: DECK_TERRAIN_WORLD_BOUNDS,
-      pickable: false
-    });
-  }
-
-  function describeDeckTerrainMode() {
-    if (deckTerrainWireframe && deckTerrainShowImagery) {
-      return 'wireframe with imagery';
-    }
-    if (deckTerrainWireframe) {
-      return 'wireframe';
-    }
-    if (deckTerrainShowImagery) {
-      return 'textured surface';
-    }
-    return 'shaded surface';
-  }
-
-  function updateDeckTerrainLayer() {
+  function setTerrainStatus(message) {
     if (!terrainStatusEl) {
       terrainStatusEl = document.getElementById('terrainStatus');
     }
-    const deckGlobal = getDeckGlobal();
-    if (!deckGlobal || typeof deckGlobal.MapboxOverlay !== 'function' || typeof deckGlobal.TerrainLayer !== 'function') {
-      if (deckOverlay) {
-        deckOverlay.setProps({ layers: [] });
-      }
-      if (terrainStatusEl) {
-        terrainStatusEl.textContent = 'deck.gl TerrainLayer unavailable (missing MapboxOverlay or TerrainLayer exports).';
-      }
-      return;
-    }
-    if (!deckTerrainVisible) {
-      if (deckOverlay) {
-        deckOverlay.setProps({ layers: [] });
-      }
-      if (terrainStatusEl) {
-        terrainStatusEl.textContent = 'Mesh hidden.';
-      }
-      return;
-    }
-    const overlay = ensureDeckOverlay();
-    if (!overlay) {
-      if (terrainStatusEl) {
-        terrainStatusEl.textContent = 'Unable to attach deck.gl overlay.';
-      }
-      return;
-    }
-    const terrainLayer = createDeckTerrainLayer();
-    if (!terrainLayer) {
-      overlay.setProps({ layers: [] });
-      if (terrainStatusEl) {
-        terrainStatusEl.textContent = 'Unable to create terrain mesh.';
-      }
-      return;
-    }
-    overlay.setProps({ layers: [terrainLayer] });
-    bringDeckOverlayToFront();
     if (terrainStatusEl) {
-      terrainStatusEl.textContent = `Streaming global terrain mesh (${describeDeckTerrainMode()}).`;
+      terrainStatusEl.textContent = message;
     }
   }
 
-  function setDeckTerrainVisibility(visible) {
-    deckTerrainVisible = Boolean(visible);
-    updateDeckTerrainLayer();
+  function getRenderableTerrainTiles() {
+    const sourceCache = map?.terrain?.sourceCache;
+    if (!sourceCache || typeof sourceCache.getRenderableTiles !== 'function') {
+      return [];
+    }
+    try {
+      const tiles = sourceCache.getRenderableTiles();
+      return Array.isArray(tiles) ? tiles : [];
+    } catch (error) {
+      if (DEBUG) {
+        console.warn('Failed to access terrain tiles', error);
+      }
+      return [];
+    }
+  }
+
+  function tileToLngLat(x, y, z) {
+    const n = Math.pow(2, z);
+    const lng = (x / n) * 360 - 180;
+    const lat = Math.atan(Math.sinh(Math.PI * (1 - (2 * y) / n))) * 180 / Math.PI;
+    return { lng, lat };
+  }
+
+  function lngLatToMercator(lng, lat) {
+    const x = EARTH_RADIUS_METERS * THREE.MathUtils.degToRad(lng);
+    const y = EARTH_RADIUS_METERS * Math.log(Math.tan(Math.PI / 4 + THREE.MathUtils.degToRad(lat) / 2));
+    return { x, y };
+  }
+
+  function tileToMercator(x, y, z) {
+    const { lng, lat } = tileToLngLat(x, y, z);
+    return lngLatToMercator(lng, lat);
+  }
+
+  function mercatorToLngLat(x, y) {
+    const lng = THREE.MathUtils.radToDeg(x / EARTH_RADIUS_METERS);
+    const lat = THREE.MathUtils.radToDeg(2 * Math.atan(Math.exp(y / EARTH_RADIUS_METERS)) - Math.PI / 2);
+    return { lng, lat };
+  }
+
+  function getTerrainDemUrl(tile) {
+    if (!map || typeof map.getStyle !== 'function') {
+      return null;
+    }
+    const style = map.getStyle();
+    const demSource = style?.sources?.terrain;
+    if (!demSource || !Array.isArray(demSource.tiles) || !demSource.tiles.length) {
+      return null;
+    }
+    const urlTemplate = demSource.tiles[0];
+    const { z, x, y } = tile.tileID.canonical;
+    return urlTemplate.replace('{z}', z).replace('{x}', x).replace('{y}', y);
+  }
+
+  async function loadDemTileForWireframe(tile, terrainData) {
+    const url = getTerrainDemUrl(tile);
+    if (!url) {
+      throw new Error('DEM URL unavailable for tile');
+    }
+    const demDim = terrainData?.u_terrain_dim || TERRAIN_MESH_CONFIG.defaultDemDimension;
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.crossOrigin = 'Anonymous';
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = demDim;
+        canvas.height = demDim;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, demDim, demDim);
+        const imageData = ctx.getImageData(0, 0, demDim, demDim);
+        const data = imageData.data;
+        const elevations = new Float32Array(demDim * demDim);
+        for (let i = 0; i < demDim * demDim; i++) {
+          const r = data[i * 4];
+          const g = data[i * 4 + 1];
+          const b = data[i * 4 + 2];
+          const elevation = -32768 + (r * 256) + g + (b / 256);
+          elevations[i] = elevation;
+        }
+        resolve({ elevations, demDim });
+      };
+      img.onerror = () => reject(new Error(`Failed to load DEM tile: ${url}`));
+      img.src = url;
+    });
+  }
+
+  function createTileGeometryForWireframe(tile, elevations, demDim) {
+    if (typeof maplibregl?.createTileMesh !== 'function') {
+      return null;
+    }
+    const meshBuffers = maplibregl.createTileMesh({
+      granularity: 128,
+      generateBorders: false,
+      extent: TERRAIN_MESH_CONFIG.extent
+    }, '16bit');
+    const vertices = new Int16Array(meshBuffers.vertices);
+    const indices = new Int16Array(meshBuffers.indices);
+    const vertexCount = vertices.length / 2;
+    const positions = new Float32Array(vertexCount * 3);
+    const extent = TERRAIN_MESH_CONFIG.extent;
+    for (let i = 0; i < vertexCount; i++) {
+      const x = vertices[i * 2];
+      const y = vertices[i * 2 + 1];
+      const sampleX = Math.min(demDim - 1, Math.max(0, Math.floor((x / extent) * (demDim - 1))));
+      const sampleY = Math.min(demDim - 1, Math.max(0, Math.floor((y / extent) * (demDim - 1))));
+      const elevation = elevations[sampleY * demDim + sampleX] || 0;
+      positions[i * 3] = x;
+      positions[i * 3 + 1] = y;
+      positions[i * 3 + 2] = elevation * TERRAIN_MESH_CONFIG.verticalScale + TERRAIN_MESH_CONFIG.verticalOffset;
+    }
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geometry.setIndex(new THREE.BufferAttribute(new Uint16Array(indices), 1));
+    return geometry;
+  }
+
+  function mergeBufferGeometries(geometries) {
+    let vertexCount = 0;
+    let indexCount = 0;
+    geometries.forEach((geometry) => {
+      vertexCount += geometry.getAttribute('position').count;
+      indexCount += geometry.getIndex().count;
+    });
+    const mergedPositions = new Float32Array(vertexCount * 3);
+    const mergedIndices = new Uint32Array(indexCount);
+    let vertexOffset = 0;
+    let indexOffset = 0;
+    geometries.forEach((geometry) => {
+      const positions = geometry.getAttribute('position').array;
+      const indices = geometry.getIndex().array;
+      mergedPositions.set(positions, vertexOffset * 3);
+      for (let i = 0; i < indices.length; i++) {
+        mergedIndices[indexOffset + i] = indices[i] + vertexOffset;
+      }
+      vertexOffset += positions.length / 3;
+      indexOffset += indices.length;
+    });
+    const mergedGeometry = new THREE.BufferGeometry();
+    mergedGeometry.setAttribute('position', new THREE.BufferAttribute(mergedPositions, 3));
+    mergedGeometry.setIndex(new THREE.BufferAttribute(mergedIndices, 1));
+    return mergedGeometry;
+  }
+
+  async function rebuildTerrainWireframe() {
+    if (!terrainWireframeLayerVisible || !terrainWireframeScene) {
+      return;
+    }
+    if (terrainWireframeLoading) {
+      return;
+    }
+    if (typeof THREE === 'undefined') {
+      setTerrainStatus('THREE.js is required for the wireframe mesh.');
+      return;
+    }
+    const tiles = getRenderableTerrainTiles();
+    if (!tiles.length) {
+      if (terrainWireframeMesh && terrainWireframeScene) {
+        terrainWireframeScene.remove(terrainWireframeMesh);
+        terrainWireframeMesh.geometry.dispose();
+        if (terrainWireframeMesh.material) {
+          terrainWireframeMesh.material.dispose();
+        }
+        terrainWireframeMesh = null;
+      }
+      terrainWireframeModelTransform = null;
+      setTerrainStatus('No terrain tiles available.');
+      return;
+    }
+    terrainWireframeLoading = true;
+    setTerrainStatus('Building wireframe mesh…');
+    try {
+      const mercatorPositions = tiles.map((tile) => {
+        const { x, y, z } = tile.tileID.canonical;
+        return tileToMercator(x, y, z);
+      });
+      let globalMinX = Infinity;
+      let globalMaxY = -Infinity;
+      mercatorPositions.forEach((pos) => {
+        if (pos.x < globalMinX) globalMinX = pos.x;
+        if (pos.y > globalMaxY) globalMaxY = pos.y;
+      });
+      if (!Number.isFinite(globalMinX) || !Number.isFinite(globalMaxY)) {
+        setTerrainStatus('Unable to determine mesh bounds.');
+        return;
+      }
+
+      const geometries = [];
+      for (const tile of tiles) {
+        const terrainData = map?.terrain?.getTerrainData?.(tile.tileID) || null;
+        let elevations;
+        let demDim;
+        if (terrainData?.elevations) {
+          elevations = terrainData.elevations;
+          demDim = terrainData.u_terrain_dim || TERRAIN_MESH_CONFIG.defaultDemDimension;
+        } else {
+          try {
+            const result = await loadDemTileForWireframe(tile, terrainData);
+            elevations = result.elevations;
+            demDim = result.demDim;
+          } catch (error) {
+            if (DEBUG) {
+              console.warn('Failed to load DEM tile for mesh', tile.tileID, error);
+            }
+            continue;
+          }
+        }
+        if (!elevations || !demDim) {
+          continue;
+        }
+        const geometry = createTileGeometryForWireframe(tile, elevations, demDim);
+        if (!geometry) {
+          continue;
+        }
+        const { x, y, z } = tile.tileID.canonical;
+        const tileMercatorTL = tileToMercator(x, y, z);
+        const tileMercatorBR = tileToMercator(x + 1, y + 1, z);
+        const tileSizeMeters = tileMercatorBR.x - tileMercatorTL.x;
+        const scaleFactor = tileSizeMeters / TERRAIN_MESH_CONFIG.extent;
+        geometry.scale(scaleFactor, scaleFactor, 1);
+        geometry.translate(tileMercatorTL.x - globalMinX, globalMaxY - tileMercatorTL.y, 0);
+        geometries.push(geometry);
+      }
+
+      if (!geometries.length) {
+        if (terrainWireframeMesh && terrainWireframeScene) {
+          terrainWireframeScene.remove(terrainWireframeMesh);
+          terrainWireframeMesh.geometry.dispose();
+          if (terrainWireframeMesh.material) {
+            terrainWireframeMesh.material.dispose();
+          }
+          terrainWireframeMesh = null;
+        }
+        terrainWireframeModelTransform = null;
+        setTerrainStatus('No geometry could be generated.');
+        if (map) {
+          map.triggerRepaint();
+        }
+        return;
+      }
+
+      const mergedGeometry = mergeBufferGeometries(geometries);
+      geometries.forEach((geometry) => geometry.dispose());
+      mergedGeometry.computeBoundingBox();
+      mergedGeometry.computeBoundingSphere();
+      const vertexCount = mergedGeometry.getAttribute('position').count;
+
+      if (terrainWireframeMesh && terrainWireframeScene) {
+        terrainWireframeScene.remove(terrainWireframeMesh);
+        terrainWireframeMesh.geometry.dispose();
+        if (terrainWireframeMesh.material) {
+          terrainWireframeMesh.material.dispose();
+        }
+        terrainWireframeMesh = null;
+      }
+
+      const wireframeGeometry = new THREE.WireframeGeometry(mergedGeometry);
+      mergedGeometry.dispose();
+      const material = new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.65 });
+      terrainWireframeMesh = new THREE.LineSegments(wireframeGeometry, material);
+      terrainWireframeMesh.frustumCulled = false;
+      if (terrainWireframeScene) {
+        terrainWireframeScene.add(terrainWireframeMesh);
+      }
+
+      const originLngLat = mercatorToLngLat(globalMinX, globalMaxY);
+      const originCoord = maplibregl.MercatorCoordinate.fromLngLat(originLngLat, 0);
+      const metersInUnits = originCoord.meterInMercatorCoordinateUnits();
+      terrainWireframeModelTransform = {
+        translateX: originCoord.x,
+        translateY: originCoord.y,
+        translateZ: originCoord.z,
+        scale: metersInUnits
+      };
+
+      setTerrainStatus(`Wireframe mesh ready (${vertexCount} vertices).`);
+      if (map) {
+        map.triggerRepaint();
+      }
+    } finally {
+      terrainWireframeLoading = false;
+    }
+  }
+
+  function ensureTerrainWireframeLayer() {
+    if (!map) {
+      return null;
+    }
+    if (terrainWireframeLayer) {
+      return terrainWireframeLayer;
+    }
+    if (typeof THREE === 'undefined') {
+      setTerrainStatus('THREE.js is required for the wireframe mesh.');
+      return null;
+    }
+    terrainWireframeLayer = {
+      id: TERRAIN_WIREFRAME_LAYER_ID,
+      type: 'custom',
+      renderingMode: '3d',
+      onAdd(mapInstance, gl) {
+        this.map = mapInstance;
+        this.camera = new THREE.Camera();
+        this.renderer = new THREE.WebGLRenderer({
+          canvas: mapInstance.getCanvas(),
+          context: gl
+        });
+        this.renderer.autoClear = false;
+        terrainWireframeScene = new THREE.Scene();
+        rebuildTerrainWireframe();
+      },
+      render(gl, matrix) {
+        if (!terrainWireframeScene || !terrainWireframeModelTransform) {
+          if (this.map) {
+            this.map.triggerRepaint();
+          }
+          return;
+        }
+        const camera = this.camera;
+        const renderer = this.renderer;
+        const projectionMatrix = new THREE.Matrix4().fromArray(matrix);
+        const transform = new THREE.Matrix4()
+          .makeTranslation(
+            terrainWireframeModelTransform.translateX,
+            terrainWireframeModelTransform.translateY,
+            terrainWireframeModelTransform.translateZ
+          )
+          .scale(new THREE.Vector3(
+            terrainWireframeModelTransform.scale,
+            -terrainWireframeModelTransform.scale,
+            terrainWireframeModelTransform.scale
+          ));
+        camera.projectionMatrix = projectionMatrix.multiply(transform);
+        if (typeof renderer.resetState === 'function') {
+          renderer.resetState();
+        }
+        renderer.render(terrainWireframeScene, camera);
+        if (this.map) {
+          this.map.triggerRepaint();
+        }
+      },
+      onRemove() {
+        if (terrainWireframeScene && terrainWireframeMesh) {
+          terrainWireframeScene.remove(terrainWireframeMesh);
+          terrainWireframeMesh.geometry.dispose();
+          if (terrainWireframeMesh.material) {
+            terrainWireframeMesh.material.dispose();
+          }
+        }
+        terrainWireframeScene = null;
+        terrainWireframeMesh = null;
+        terrainWireframeModelTransform = null;
+        terrainWireframeLayer = null;
+        if (this.renderer && typeof this.renderer.resetState === 'function') {
+          this.renderer.resetState();
+        }
+        this.renderer = null;
+        this.camera = null;
+        this.map = null;
+      }
+    };
+    return terrainWireframeLayer;
+  }
+
+  async function setTerrainWireframeVisibility(visible) {
+    const shouldShow = Boolean(visible);
+    if (terrainWireframeLayerVisible === shouldShow) {
+      return;
+    }
+    terrainWireframeLayerVisible = shouldShow;
+    if (!map) {
+      updateButtons();
+      return;
+    }
+    if (shouldShow) {
+      const layer = ensureTerrainWireframeLayer();
+      if (!layer) {
+        terrainWireframeLayerVisible = false;
+        updateButtons();
+        return;
+      }
+      const existing = typeof map.getLayer === 'function' ? map.getLayer(TERRAIN_WIREFRAME_LAYER_ID) : null;
+      if (!existing) {
+        try {
+          map.addLayer(layer);
+        } catch (error) {
+          if (DEBUG) {
+            console.warn('Failed to add terrain wireframe layer', error);
+          }
+          terrainWireframeLayerVisible = false;
+          terrainWireframeLayer = null;
+          setTerrainStatus('Unable to add wireframe layer.');
+          updateButtons();
+          return;
+        }
+      }
+      await rebuildTerrainWireframe();
+    } else {
+      if (typeof map.getLayer === 'function' && map.getLayer(TERRAIN_WIREFRAME_LAYER_ID)) {
+        try {
+          map.removeLayer(TERRAIN_WIREFRAME_LAYER_ID);
+        } catch (error) {
+          if (DEBUG) {
+            console.warn('Failed to remove terrain wireframe layer', error);
+          }
+        }
+      }
+      terrainWireframeLayer = null;
+      terrainWireframeScene = null;
+      terrainWireframeMesh = null;
+      terrainWireframeModelTransform = null;
+      setTerrainStatus('Mesh hidden.');
+    }
     updateButtons();
   }
 
@@ -1162,25 +1412,13 @@
       terrainMeshBtn = document.getElementById('terrainMeshBtn');
     }
     if (terrainMeshBtn) {
-      terrainMeshBtn.classList.toggle('active', deckTerrainVisible);
+      terrainMeshBtn.classList.toggle('active', terrainWireframeLayerVisible);
     }
     if (!terrainMenuContainer) {
       terrainMenuContainer = document.getElementById('terrainMenu');
     }
     if (terrainMenuContainer) {
-      terrainMenuContainer.style.display = deckTerrainVisible ? 'flex' : 'none';
-    }
-    if (!terrainWireframeToggle) {
-      terrainWireframeToggle = document.getElementById('terrainWireframeToggle');
-    }
-    if (terrainWireframeToggle) {
-      terrainWireframeToggle.checked = deckTerrainWireframe;
-    }
-    if (!terrainTextureToggle) {
-      terrainTextureToggle = document.getElementById('terrainTextureToggle');
-    }
-    if (terrainTextureToggle) {
-      terrainTextureToggle.checked = deckTerrainShowImagery;
+      terrainMenuContainer.style.display = terrainWireframeLayerVisible ? 'flex' : 'none';
     }
     if (!terrainStatusEl) {
       terrainStatusEl = document.getElementById('terrainStatus');
@@ -1235,8 +1473,6 @@
   terrainMeshBtn = document.getElementById('terrainMeshBtn');
   terrainMenuContainer = document.getElementById('terrainMenu');
   terrainStatusEl = document.getElementById('terrainStatus');
-  terrainWireframeToggle = document.getElementById('terrainWireframeToggle');
-  terrainTextureToggle = document.getElementById('terrainTextureToggle');
 
   const debugPanelEl = document.getElementById('debugPanel');
   const debugContentEl = document.getElementById('debugContent');
@@ -1308,6 +1544,11 @@
       ? (lastRender.isSamplingDistanceManual ? 'manual' : 'auto')
       : (isSamplingDistanceManual ? 'manual' : 'auto');
     lines.push(`Gradient sampling: ${samplingLabel} (${samplingMode})`);
+
+    const meshStateLabel = terrainWireframeLayerVisible
+      ? (terrainWireframeLoading ? 'visible (building)' : 'visible')
+      : 'hidden';
+    lines.push(`Wireframe mesh: ${meshStateLabel}`);
 
     if (lastRender && lastRender.debugMetrics) {
       const metrics = lastRender.debugMetrics;
@@ -2489,6 +2730,12 @@
     }
   });
 
+  map.on('moveend', () => {
+    if (terrainWireframeLayerVisible) {
+      rebuildTerrainWireframe();
+    }
+  });
+
   map.on('terrain', () => {
     const previousTerrain = cachedTerrainInterface;
     cachedTerrainInterface = null;
@@ -2505,6 +2752,9 @@
     if (map.getLayer('terrain-normal')) {
       terrainNormalLayer.frameCount = 0;
       map.triggerRepaint();
+    }
+    if (terrainWireframeLayerVisible) {
+      rebuildTerrainWireframe();
     }
   });
   
@@ -2593,31 +2843,10 @@
 
   if (terrainMeshBtn) {
     terrainMeshBtn.addEventListener('click', () => {
-      setDeckTerrainVisibility(!deckTerrainVisible);
+      setTerrainWireframeVisibility(!terrainWireframeLayerVisible);
     });
   }
 
-  if (terrainWireframeToggle) {
-    terrainWireframeToggle.checked = deckTerrainWireframe;
-    terrainWireframeToggle.addEventListener('change', (event) => {
-      deckTerrainWireframe = Boolean(event.target.checked);
-      if (deckTerrainVisible) {
-        updateDeckTerrainLayer();
-      }
-    });
-  }
-
-  if (terrainTextureToggle) {
-    terrainTextureToggle.checked = deckTerrainShowImagery;
-    terrainTextureToggle.addEventListener('change', (event) => {
-      deckTerrainShowImagery = Boolean(event.target.checked);
-      if (deckTerrainVisible) {
-        updateDeckTerrainLayer();
-      }
-    });
-  }
-
-  updateDeckTerrainLayer();
   updateButtons();
 
   window.addEventListener('unload', () => {
@@ -2625,7 +2854,15 @@
     if (sunlightEngine && typeof sunlightEngine.destroy === 'function') {
       sunlightEngine.destroy();
     }
-    destroyDeckOverlay();
+    if (map && typeof map.getLayer === 'function' && map.getLayer(TERRAIN_WIREFRAME_LAYER_ID)) {
+      try {
+        map.removeLayer(TERRAIN_WIREFRAME_LAYER_ID);
+      } catch (error) {
+        if (DEBUG) {
+          console.warn('Failed to remove wireframe layer during unload', error);
+        }
+      }
+    }
   });
 
 })();
