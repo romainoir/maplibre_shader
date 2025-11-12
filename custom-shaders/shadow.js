@@ -133,7 +133,7 @@
           float warmMix = clamp(u_sunWarmIntensity, 0.0, 1.0) * shadowIntensity;
           vec3 warmTint = mix(vec3(1.0), clamp(u_sunWarmColor, 0.0, 1.0), warmMix);
           vec3 finalColor = baseBrightness * warmTint;
-          fragColor = vec4(finalColor, 1.0);
+          fragColor = vec4(finalColor, shadowIntensity);
         }`;
   };
 })();

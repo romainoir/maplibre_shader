@@ -2783,11 +2783,13 @@
     renderingMode: '3d',
     shaderMap: new Map(),
     frameCount: 0,
+    terrainTextureCache: new Map(),
     
     onAdd(mapInstance, gl) {
       this.map = mapInstance;
       this.gl = gl;
       this.frameCount = 0;
+      this.terrainTextureCache = new Map();
       gradientPreparer.initialize(gl);
       ensureSunlightEngine(gl);
     },
@@ -3339,20 +3341,51 @@
       const terrainDataCache = new Map();
       const textureCache = new Map();
       const metersPerPixelCache = new Map();
+      const persistentTextureCache = this.terrainTextureCache || (this.terrainTextureCache = new Map());
       for (const tile of renderableTiles) {
         const sourceTile = tileManager.getSourceTile(tile.tileID, true);
         if (!sourceTile || sourceTile.tileID.key !== tile.tileID.key) continue;
-        const terrainData = terrainInterface && terrainInterface.getTerrainData
-          ? terrainInterface.getTerrainData(tile.tileID)
-          : null;
-        if (!terrainData || !terrainData.texture || terrainData.fallback) continue;
+        const tileKey = tile.tileID && tile.tileID.key ? tile.tileID.key : null;
         const cacheKey = getTileCacheKey(tile.tileID);
-        terrainDataCache.set(tile.tileID.key, terrainData);
-        textureCache.set(cacheKey, terrainData.texture);
         const canonical = tile.tileID.canonical;
         const tileSize = sourceTile.dem && sourceTile.dem.dim ? sourceTile.dem.dim : TILE_SIZE;
-        const metersPerPixel = computeMetersPerPixelForTile(canonical, tileSize);
-        metersPerPixelCache.set(cacheKey, metersPerPixel);
+        let terrainData = terrainInterface && terrainInterface.getTerrainData
+          ? terrainInterface.getTerrainData(tile.tileID)
+          : null;
+        let terrainTexture = terrainData && terrainData.texture ? terrainData.texture : null;
+        let isFallbackTexture = Boolean(terrainData && terrainData.fallback);
+
+        if (terrainTexture && !isFallbackTexture && tileKey) {
+          persistentTextureCache.set(tileKey, terrainTexture);
+        }
+
+        if ((!terrainTexture || (isFallbackTexture && isTerrainFlattened)) && tileKey && persistentTextureCache.has(tileKey)) {
+          terrainTexture = persistentTextureCache.get(tileKey);
+          isFallbackTexture = false;
+        }
+
+        if (!terrainTexture) {
+          continue;
+        }
+
+        if (isFallbackTexture && !isTerrainFlattened) {
+          continue;
+        }
+
+        if (!terrainData) {
+          terrainData = { texture: terrainTexture, fallback: false };
+        } else if (terrainData.texture !== terrainTexture || terrainData.fallback) {
+          terrainData = { ...terrainData, texture: terrainTexture, fallback: false };
+        }
+
+        if (tileKey) {
+          terrainDataCache.set(tileKey, terrainData);
+        }
+        if (cacheKey) {
+          textureCache.set(cacheKey, terrainTexture);
+          const metersPerPixel = computeMetersPerPixelForTile(canonical, tileSize);
+          metersPerPixelCache.set(cacheKey, metersPerPixel);
+        }
       }
 
       updateSamplingDistanceForZoom();
