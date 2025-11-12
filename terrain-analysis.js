@@ -3562,34 +3562,10 @@
         }
       },
       layers: [
+        { id: 'background', type: 'background', paint: { 'background-color': '#ffffff' } },
         { id: 'swisstopo', type: 'raster', source: 'swisstopo', paint: {'raster-opacity': 1.0} }
       ],
-      terrain: { source: TERRAIN_SOURCE_ID, exaggeration: 1.0 },
-      background: { paint: { "background-color": "#ffffff" } },
-      sky: {
-        type: 'gradient',
-        paint: {
-          "sky-color": "#199EF3",
-          "sky-horizon-blend": 0.7,
-          "horizon-color": "#f0f8ff",
-          "horizon-fog-blend": 0.8,
-          "fog-color": "#2c7fb8",
-          "fog-ground-blend": 0.9,
-          "atmosphere-blend": [
-            "interpolate",
-            [
-              "linear"
-            ],
-            [
-              "zoom"
-            ],
-            0,
-            1,
-            12,
-            0
-          ]
-        }
-      }
+      terrain: { source: TERRAIN_SOURCE_ID, exaggeration: 1.0 }
     },
     zoom: 14,
     center: [7.73044, 46.09915],
@@ -3600,6 +3576,23 @@
     minZoom: 2,
     fadeDuration: 500
   });
+
+  const applySkySettings = () => {
+    if (!map) {
+      return;
+    }
+    const zoom = map.getZoom();
+    const blend = Math.max(0, Math.min(1, 1 - zoom / 12));
+    map.setSky({
+      'sky-color': '#199EF3',
+      'sky-horizon-blend': 0.7,
+      'horizon-color': '#f0f8ff',
+      'horizon-fog-blend': 0.8,
+      'fog-color': '#2c7fb8',
+      'fog-ground-blend': 0.9,
+      'atmosphere-blend': blend
+    });
+  };
 
   is3DViewEnabled = map.getPitch() > 5;
   if (toggle3DButton) {
@@ -3616,6 +3609,7 @@
 
   map.on('styledata', () => {
     applyHQModeToSources();
+    applySkySettings();
   });
 
   const originalSetTerrain = map.setTerrain.bind(map);
@@ -3659,6 +3653,8 @@
   
   map.on('load', () => {
     console.log("Map loaded");
+    applySkySettings();
+    map.on('zoom', applySkySettings);
     map.setTerrain({ source: TERRAIN_SOURCE_ID, exaggeration: TERRAIN_DEFAULT_EXAGGERATION });
     lastTerrainSpecification = { source: TERRAIN_SOURCE_ID, exaggeration: TERRAIN_DEFAULT_EXAGGERATION };
     currentTerrainExaggeration = TERRAIN_DEFAULT_EXAGGERATION;
