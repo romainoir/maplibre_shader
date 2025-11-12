@@ -855,7 +855,27 @@
     return { dirX, dirY, altitude, sunSlope, warmColor, warmIntensity };
   }
 
+  const MINIMUM_TERRAIN_FRAME_DELTA_METERS = 30;
+
   let cachedTerrainInterface = null;
+
+  function clampTerrainMeshFrameDelta(terrainInterface) {
+    if (!terrainInterface || typeof terrainInterface.getMeshFrameDelta !== 'function') {
+      return;
+    }
+    if (terrainInterface.__minFrameDeltaClampApplied) {
+      return;
+    }
+    const originalGetMeshFrameDelta = terrainInterface.getMeshFrameDelta.bind(terrainInterface);
+    terrainInterface.getMeshFrameDelta = function patchedGetMeshFrameDelta(zoom) {
+      const baseDelta = originalGetMeshFrameDelta(zoom);
+      if (!Number.isFinite(baseDelta)) {
+        return baseDelta;
+      }
+      return Math.max(baseDelta, MINIMUM_TERRAIN_FRAME_DELTA_METERS);
+    };
+    terrainInterface.__minFrameDeltaClampApplied = true;
+  }
 
   function getTerrainInterface(mapInstance) {
     if (!mapInstance) {
@@ -867,12 +887,14 @@
     const fromPublicAPI = mapInstance.terrain;
     if (fromPublicAPI && fromPublicAPI.tileManager) {
       cachedTerrainInterface = fromPublicAPI;
+      clampTerrainMeshFrameDelta(cachedTerrainInterface);
       return fromPublicAPI;
     }
 
     const painterTerrain = mapInstance.painter && mapInstance.painter.terrain;
     if (painterTerrain && painterTerrain.tileManager) {
       cachedTerrainInterface = painterTerrain;
+      clampTerrainMeshFrameDelta(cachedTerrainInterface);
       return painterTerrain;
     }
 
@@ -890,9 +912,11 @@
       return null;
     }
 
-    return cachedTerrainInterface && cachedTerrainInterface.tileManager
-      ? cachedTerrainInterface
-      : null;
+    if (cachedTerrainInterface && cachedTerrainInterface.tileManager) {
+      clampTerrainMeshFrameDelta(cachedTerrainInterface);
+      return cachedTerrainInterface;
+    }
+    return null;
   }
 
   function getTerrainTileManager(mapInstance) {
@@ -2244,6 +2268,7 @@
     const refreshedTerrain = getTerrainInterface(map);
     if (!refreshedTerrain && previousTerrain && previousTerrain.tileManager && isTerrainFlattened) {
       cachedTerrainInterface = previousTerrain;
+      clampTerrainMeshFrameDelta(cachedTerrainInterface);
     }
     gradientPreparer.invalidateAll();
     terrainNormalLayer.shaderMap.clear();

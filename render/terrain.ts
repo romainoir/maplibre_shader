@@ -21,6 +21,8 @@ import {Mesh} from './mesh';
 import {isInBoundsForZoomLngLat} from '../util/world_bounds';
 import {NORTH_POLE_Y, SOUTH_POLE_Y} from './subdivision';
 
+const MINIMUM_MESH_FRAME_DELTA_METERS = 30;
+
 /**
  * @internal
  * A terrain GPU related object
@@ -451,7 +453,9 @@ export class Terrain {
      */
     getMeshFrameDelta(zoom: number): number {
         // divide by 5 is evaluated by trial & error to get a frame in the right height
-        return 2 * Math.PI * earthRadius / Math.pow(2, Math.max(zoom, 0)) / 5;
+        // and we clamp to a minimum to ensure a visible boundary wall on very detailed zooms.
+        const baseDelta = 2 * Math.PI * earthRadius / Math.pow(2, Math.max(zoom, 0)) / 5;
+        return Math.max(baseDelta, MINIMUM_MESH_FRAME_DELTA_METERS);
     }
 
     getMinTileElevationForLngLatZoom(lnglat: LngLat, zoom: number) {
