@@ -1,6 +1,19 @@
 /* terrain-analysis.js */
 (function() {
-  const DEBUG = false;
+  const DEBUG = (() => {
+    try {
+      const searchParams = new URLSearchParams(window.location.search || '');
+      if (searchParams.has('terrainDebug')) {
+        return true;
+      }
+      if (typeof window.location.hash === 'string' && window.location.hash.includes('terrainDebug')) {
+        return true;
+      }
+    } catch (error) {
+      console.warn('Failed to evaluate terrain debug flag', error);
+    }
+    return false;
+  })();
   const HillshadeDebug = window.__MapLibreHillshadeDebug || null;
   const hillshadeDebugEnabled = (() => {
     try {
@@ -489,18 +502,28 @@
   }
 
   async function rebuildTerrainWireframe() {
+    logTerrainDebug('rebuildTerrainWireframe invoked', {
+      layerVisible: terrainWireframeLayerVisible,
+      hasScene: !!terrainWireframeScene,
+      loading: terrainWireframeLoading
+    });
+
     if (!terrainWireframeLayerVisible || !terrainWireframeScene) {
+      logTerrainDebug('Skipping rebuild: terrain wireframe layer not ready.');
       return;
     }
     if (terrainWireframeLoading) {
+      logTerrainDebug('Skipping rebuild: a rebuild is already in progress.');
       return;
     }
     if (typeof THREE === 'undefined') {
+      logTerrainDebug('Skipping rebuild: THREE.js is not available.');
       setTerrainStatus('Three.js is required for the mesh layer.');
       return;
     }
     const tiles = getRenderableTerrainTiles();
     if (!tiles.length) {
+      logTerrainDebug('Skipping rebuild: no renderable terrain tiles.');
       if (terrainWireframeMesh && terrainWireframeScene) {
         terrainWireframeScene.remove(terrainWireframeMesh);
         terrainWireframeMesh.geometry.dispose();
@@ -514,6 +537,7 @@
       return;
     }
     terrainWireframeLoading = true;
+    logTerrainDebug('Building Three.js mesh for tiles', tiles.map((tile) => tile?.tileID?.key));
     setTerrainStatus('Building Three.js mesh…');
     try {
       const mercatorPositions = tiles.map((tile) => {
@@ -527,35 +551,48 @@
         if (pos.y > globalMaxY) globalMaxY = pos.y;
       });
       if (!Number.isFinite(globalMinX) || !Number.isFinite(globalMaxY)) {
+        logTerrainDebug('Unable to determine mesh bounds from tiles', {
+          globalMinX,
+          globalMaxY
+        });
         setTerrainStatus('Unable to determine mesh bounds.');
         return;
       }
 
       const geometries = [];
       for (const tile of tiles) {
+        logTerrainDebug('Processing tile for terrain mesh', tile.tileID);
         const terrainData = map?.terrain?.getTerrainData?.(tile.tileID) || null;
         let elevations;
         let demDim;
         if (terrainData?.elevations) {
+          logTerrainDebug('Using cached terrain data for tile', tile.tileID);
           elevations = terrainData.elevations;
           demDim = terrainData.u_terrain_dim || TERRAIN_MESH_CONFIG.defaultDemDimension;
         } else {
           try {
             const result = await loadDemTileForWireframe(tile, terrainData);
+            logTerrainDebug('Loaded DEM tile for mesh', {
+              tileID: tile.tileID,
+              demDimension: result.demDim
+            });
             elevations = result.elevations;
             demDim = result.demDim;
           } catch (error) {
             if (DEBUG) {
               console.warn('Failed to load DEM tile for mesh', tile.tileID, error);
             }
+            logTerrainDebug('Skipping tile due to DEM loading failure', tile.tileID);
             continue;
           }
         }
         if (!elevations || !demDim) {
+          logTerrainDebug('Skipping tile: no elevation data available', tile.tileID);
           continue;
         }
         const geometry = createTileGeometryForWireframe(tile, elevations, demDim);
         if (!geometry) {
+          logTerrainDebug('Skipping tile: failed to create geometry', tile.tileID);
           continue;
         }
         const { x, y, z } = tile.tileID.canonical;
@@ -569,6 +606,7 @@
       }
 
       if (!geometries.length) {
+        logTerrainDebug('No geometries produced for terrain mesh rebuild.');
         if (terrainWireframeMesh && terrainWireframeScene) {
           terrainWireframeScene.remove(terrainWireframeMesh);
           terrainWireframeMesh.geometry.dispose();
@@ -594,6 +632,11 @@
       }
 
       const mergedGeometry = mergeBufferGeometries(geometries);
+      logTerrainDebug('Merged terrain geometry created', {
+        geometryCount: geometries.length,
+        vertexCount: mergedGeometry.getAttribute('position').count,
+        indexCount: mergedGeometry.getIndex().count
+      });
       geometries.forEach((geometry) => geometry.dispose());
       mergedGeometry.computeBoundingBox();
       mergedGeometry.computeBoundingSphere();
@@ -628,6 +671,11 @@
       });
       terrainWireframeMesh = new THREE.LineSegments(wireframeGeometry, material);
       terrainWireframeMesh.frustumCulled = false;
+      logTerrainDebug('Wireframe mesh ready', {
+        vertexCount,
+        boundingBox: mergedGeometry.boundingBox,
+        boundingSphere: mergedGeometry.boundingSphere
+      });
       if (terrainWireframeScene) {
         terrainWireframeScene.add(terrainWireframeMesh);
       }
@@ -642,6 +690,14 @@
       terrainSolidMesh.frustumCulled = false;
       terrainSolidMesh.castShadow = true;
       terrainSolidMesh.receiveShadow = true;
+      logTerrainDebug('Solid mesh ready', {
+        vertexCount,
+        materialSettings: {
+          color: meshMaterial.color?.getHex?.(),
+          metalness: meshMaterial.metalness,
+          roughness: meshMaterial.roughness
+        }
+      });
       if (terrainWireframeScene) {
         terrainWireframeScene.add(terrainSolidMesh);
       }
@@ -655,6 +711,7 @@
         translateZ: originCoord.z,
         scale: metersInUnits
       };
+      logTerrainDebug('Updated terrain wireframe transform', terrainWireframeModelTransform);
 
       if (terrainDirectionalLight && terrainDirectionalLightTarget && mergedGeometry.boundingSphere) {
         const { center, radius } = mergedGeometry.boundingSphere;
@@ -678,25 +735,39 @@
           shadowCamera.far = Math.max(range * 3, radius * 4);
           shadowCamera.updateProjectionMatrix();
         }
+        logTerrainDebug('Updated terrain lighting for mesh', {
+          lightPosition: terrainDirectionalLight.position.clone?.(),
+          targetPosition: terrainDirectionalLightTarget.position.clone?.(),
+          boundingSphere: mergedGeometry.boundingSphere
+        });
       }
 
       setTerrainStatus(`Three.js mesh ready (${vertexCount} vertices).`);
+      logTerrainDebug('Terrain mesh rebuild completed successfully.');
       if (map) {
         map.triggerRepaint();
       }
     } finally {
       terrainWireframeLoading = false;
+      logTerrainDebug('Terrain mesh rebuild finished', { loading: terrainWireframeLoading });
     }
   }
 
   function ensureTerrainWireframeLayer() {
+    logTerrainDebug('ensureTerrainWireframeLayer called', {
+      hasMap: !!map,
+      hasLayer: !!terrainWireframeLayer
+    });
     if (!map) {
+      logTerrainDebug('Cannot create terrain wireframe layer: map unavailable.');
       return null;
     }
     if (terrainWireframeLayer) {
+      logTerrainDebug('Reusing existing terrain wireframe layer instance.');
       return terrainWireframeLayer;
     }
     if (typeof THREE === 'undefined') {
+      logTerrainDebug('Cannot create terrain wireframe layer: THREE.js is not available.');
       setTerrainStatus('Three.js is required for the mesh layer.');
       return null;
     }
@@ -705,6 +776,10 @@
       type: 'custom',
       renderingMode: '3d',
       onAdd(mapInstance, gl) {
+        logTerrainDebug('terrainWireframeLayer.onAdd invoked', {
+          hasGLContext: !!gl,
+          mapId: mapInstance?._id
+        });
         this.map = mapInstance;
         this.camera = new THREE.Camera();
         this.renderer = new THREE.WebGLRenderer({
@@ -727,6 +802,10 @@
         terrainWireframeScene.add(terrainDirectionalLight);
         terrainWireframeScene.add(terrainDirectionalLightTarget);
         terrainDirectionalLight.target = terrainDirectionalLightTarget;
+        logTerrainDebug('Terrain wireframe scene initialized', {
+          ambientLightIntensity: terrainAmbientLight.intensity,
+          directionalLightIntensity: terrainDirectionalLight.intensity
+        });
         rebuildTerrainWireframe();
       },
       render(gl, matrixOrArgs) {
@@ -767,6 +846,7 @@
         }
       },
       onRemove() {
+        logTerrainDebug('terrainWireframeLayer.onRemove invoked');
         if (terrainWireframeScene && terrainWireframeMesh) {
           terrainWireframeScene.remove(terrainWireframeMesh);
           terrainWireframeMesh.geometry.dispose();
@@ -806,16 +886,23 @@
         this.map = null;
       }
     };
+    logTerrainDebug('Created new terrain wireframe layer instance.');
     return terrainWireframeLayer;
   }
 
   async function setTerrainWireframeVisibility(visible) {
     const shouldShow = Boolean(visible);
+    logTerrainDebug('setTerrainWireframeVisibility called', {
+      requestedVisibility: shouldShow,
+      currentVisibility: terrainWireframeLayerVisible
+    });
     if (terrainWireframeLayerVisible === shouldShow) {
+      logTerrainDebug('Terrain wireframe visibility unchanged.');
       return;
     }
     terrainWireframeLayerVisible = shouldShow;
     if (!map) {
+      logTerrainDebug('Cannot toggle terrain wireframe: map unavailable.');
       updateButtons();
       return;
     }
@@ -831,6 +918,7 @@
         try {
           map.addLayer(layer);
           pushTerrainWireframeLayerToFront();
+          logTerrainDebug('Terrain wireframe layer added to map.');
         } catch (error) {
           if (DEBUG) {
             console.warn('Failed to add terrain Three.js mesh layer', error);
@@ -843,11 +931,13 @@
         }
       }
       await rebuildTerrainWireframe();
+      logTerrainDebug('Terrain wireframe rebuild awaited after enabling visibility.');
       pushTerrainWireframeLayerToFront();
     } else {
       if (typeof map.getLayer === 'function' && map.getLayer(TERRAIN_WIREFRAME_LAYER_ID)) {
         try {
           map.removeLayer(TERRAIN_WIREFRAME_LAYER_ID);
+          logTerrainDebug('Terrain wireframe layer removed from map.');
         } catch (error) {
           if (DEBUG) {
             console.warn('Failed to remove terrain Three.js mesh layer', error);
@@ -863,19 +953,23 @@
       terrainDirectionalLightTarget = null;
       terrainWireframeModelTransform = null;
       setTerrainStatus('Mesh hidden.');
+      logTerrainDebug('Terrain wireframe visibility disabled.');
     }
     updateButtons();
   }
 
   function pushTerrainWireframeLayerToFront() {
     if (!map || typeof map.moveLayer !== 'function' || typeof map.getLayer !== 'function') {
+      logTerrainDebug('Cannot move terrain wireframe layer: map capabilities missing.');
       return;
     }
     if (!map.getLayer(TERRAIN_WIREFRAME_LAYER_ID)) {
+      logTerrainDebug('Cannot move terrain wireframe layer: layer not found.');
       return;
     }
     try {
       map.moveLayer(TERRAIN_WIREFRAME_LAYER_ID);
+      logTerrainDebug('Terrain wireframe layer moved to front.');
     } catch (error) {
       if (DEBUG) {
         console.warn('Failed to move terrain Three.js mesh layer to the front', error);
@@ -3039,5 +3133,16 @@
       }
     }
   });
+
+  function logTerrainDebug(message, details) {
+    if (!DEBUG) {
+      return;
+    }
+    if (details !== undefined) {
+      console.debug(`[TerrainDebug] ${message}`, details);
+    } else {
+      console.debug(`[TerrainDebug] ${message}`);
+    }
+  }
 
 })();
