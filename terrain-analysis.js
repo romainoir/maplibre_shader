@@ -3524,6 +3524,9 @@
     if (sunlightEngine && typeof sunlightEngine.invalidateAll === 'function') {
       sunlightEngine.invalidateAll();
     }
+    if (hillshadeMode === 'custom') {
+      ensureCustomTerrainLayer();
+    }
     if (map.getLayer('terrain-normal')) {
       terrainNormalLayer.frameCount = 0;
       map.triggerRepaint();
