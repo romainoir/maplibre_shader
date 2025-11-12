@@ -135,6 +135,7 @@
 
   // Global state variables
   const CUSTOM_LAYER_ORDER = Object.freeze(['hillshade', 'normal', 'avalanche', 'slope', 'aspect', 'snow', 'shadow', 'daylight']);
+  const SKY_LAYER_ID = 'dynamic-sky';
   const activeCustomModes = new Set();
   let currentMode = '';
   let hillshadeMode = 'none'; // "none", "native", or "custom"
@@ -152,6 +153,8 @@
   let shadowRayStepMultiplier = 1.0;
   let shadowSlopeBias = 0.03;
   let shadowPixelBias = 0.15;
+  let pendingCustomLayerEnsure = false;
+  let skyNeedsUpdate = false;
   function isModeActive(mode) {
     return activeCustomModes.has(mode);
   }
@@ -1710,6 +1713,7 @@
       }
       if (timeValue) timeValue.textContent = isoTime;
       if (map && (isModeActive('shadow') || isModeActive('daylight'))) map.triggerRepaint();
+      requestSkyUpdate();
     };
 
     const updateShadowTimeBounds = (preferredMinutes = null) => {
@@ -1767,6 +1771,7 @@
       if (dateValue) dateValue.textContent = isoDate;
       updateShadowTimeBounds();
       if (map && (isModeActive('shadow') || isModeActive('daylight'))) map.triggerRepaint();
+      requestSkyUpdate();
     };
 
     if (dateSlider) {
@@ -1801,6 +1806,87 @@
     }
     const t = clamp((x - edge0) / (edge1 - edge0), 0, 1);
     return t * t * (3 - 2 * t);
+  }
+
+  function mixColors(colorA, colorB, factor) {
+    const t = clamp(Number.isFinite(factor) ? factor : 0, 0, 1);
+    return [
+      colorA[0] + (colorB[0] - colorA[0]) * t,
+      colorA[1] + (colorB[1] - colorA[1]) * t,
+      colorA[2] + (colorB[2] - colorA[2]) * t
+    ];
+  }
+
+  function colorArrayToRgbaString(color, alpha = 1) {
+    const r = clamp(Math.round(color[0] * 255), 0, 255);
+    const g = clamp(Math.round(color[1] * 255), 0, 255);
+    const b = clamp(Math.round(color[2] * 255), 0, 255);
+    const a = clamp(alpha, 0, 1);
+    return `rgba(${r}, ${g}, ${b}, ${a})`;
+  }
+
+  const SKY_ZENITH_DAY = [0.20, 0.45, 0.85];
+  const SKY_ZENITH_NIGHT = [0.02, 0.05, 0.10];
+  const SKY_HORIZON_DAY = [0.76, 0.80, 0.92];
+  const SKY_HORIZON_NIGHT = [0.12, 0.16, 0.24];
+
+  function updateSkyLayer() {
+    if (!map || !map.getLayer(SKY_LAYER_ID)) {
+      return;
+    }
+
+    let center;
+    try {
+      center = map.getCenter();
+    } catch (error) {
+      center = { lat: 0, lng: 0 };
+    }
+
+    const sunDate = getShadowDateTime();
+    const sunPos = SunCalc.getPosition(sunDate, center.lat, center.lng);
+    const altitudeDeg = sunPos.altitude * (180 / Math.PI);
+    const azimuthDeg = ((sunPos.azimuth * (180 / Math.PI)) + 180 + 360) % 360;
+    const sunParams = computeSunParameters(map);
+    const warmColor = sunParams ? sunParams.warmColor : [1, 1, 1];
+    const warmIntensity = sunParams ? sunParams.warmIntensity : 0;
+    const dayFactor = smoothstep(-6, 12, altitudeDeg);
+    const horizonWarm = mixColors(SKY_HORIZON_DAY, warmColor, warmIntensity);
+    const zenithWarm = mixColors(SKY_ZENITH_DAY, warmColor, warmIntensity * 0.5);
+    const horizonColor = mixColors(horizonWarm, SKY_HORIZON_NIGHT, 1 - dayFactor);
+    const zenithColor = mixColors(zenithWarm, SKY_ZENITH_NIGHT, 1 - dayFactor);
+    const sunIntensity = 0.35 + dayFactor * (5.5 + warmIntensity * 2.5);
+
+    map.setPaintProperty(SKY_LAYER_ID, 'sky-atmosphere-sun', [azimuthDeg, clamp(altitudeDeg, -90, 90)]);
+    map.setPaintProperty(SKY_LAYER_ID, 'sky-atmosphere-sun-intensity', Math.max(0.1, sunIntensity));
+    map.setPaintProperty(SKY_LAYER_ID, 'sky-atmosphere-color', colorArrayToRgbaString(zenithColor));
+    map.setPaintProperty(SKY_LAYER_ID, 'sky-atmosphere-halo-color', colorArrayToRgbaString(horizonColor));
+  }
+
+  function requestSkyUpdate() {
+    if (!map) {
+      return;
+    }
+    if (skyNeedsUpdate) {
+      return;
+    }
+    skyNeedsUpdate = true;
+
+    const invokeUpdate = () => {
+      skyNeedsUpdate = false;
+      try {
+        updateSkyLayer();
+      } catch (error) {
+        if (terrainDebugEnabled) {
+          console.warn('Failed to update sky layer', error);
+        }
+      }
+    };
+
+    if (typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(invokeUpdate);
+    } else {
+      invokeUpdate();
+    }
   }
 
   function colorTemperatureToRgb(cct) {
@@ -1870,7 +1956,7 @@
       warmIntensity = clamp(1 - transmittance + sunriseBoost * 0.25, 0, 1);
     }
 
-    return { dirX, dirY, altitude, sunSlope, warmColor, warmIntensity };
+    return { dirX, dirY, altitude, sunSlope, warmColor, warmIntensity, azimuth };
   }
 
   const MINIMUM_TERRAIN_FRAME_DELTA_METERS = 30;
@@ -2179,6 +2265,7 @@
     if (toggle3DButton) {
       toggle3DButton.textContent = 'Revenir en 2D';
     }
+    requestSkyUpdate();
   }
 
   function enter2DView() {
@@ -2195,6 +2282,7 @@
     if (toggle3DButton) {
       toggle3DButton.textContent = 'Passer en 3D';
     }
+    requestSkyUpdate();
   }
 
   if (hqModeCheckbox) {
@@ -2537,8 +2625,27 @@
     return true;
   }
 
+  function scheduleEnsureCustomLayer() {
+    if (!map || pendingCustomLayerEnsure) return;
+    pendingCustomLayerEnsure = true;
+    const retry = () => {
+      pendingCustomLayerEnsure = false;
+      ensureCustomTerrainLayer();
+    };
+    if (typeof map.once === 'function') {
+      map.once('idle', retry);
+    } else {
+      setTimeout(retry, 0);
+    }
+  }
+
   function ensureCustomTerrainLayer() {
-    if (!canModifyStyle() || !activeCustomModes.size) return;
+    pendingCustomLayerEnsure = false;
+    if (!map || !activeCustomModes.size) return;
+    if (!canModifyStyle()) {
+      scheduleEnsureCustomLayer();
+      return;
+    }
     if (map.getLayer('terrain-normal')) return;
     terrainNormalLayer.frameCount = 0;
     map.addLayer(terrainNormalLayer);
@@ -3534,6 +3641,17 @@
         }
       },
       layers: [
+        {
+          id: SKY_LAYER_ID,
+          type: 'sky',
+          paint: {
+            'sky-type': 'atmosphere',
+            'sky-atmosphere-sun': [0, 0],
+            'sky-atmosphere-sun-intensity': 0.5,
+            'sky-atmosphere-color': colorArrayToRgbaString(SKY_ZENITH_DAY),
+            'sky-atmosphere-halo-color': colorArrayToRgbaString(SKY_HORIZON_DAY)
+          }
+        },
         { id: 'swisstopo', type: 'raster', source: 'swisstopo', paint: {'raster-opacity': 1.0} }
       ],
       terrain: { source: TERRAIN_SOURCE_ID, exaggeration: 1.0 },
@@ -3543,7 +3661,7 @@
     center: [7.73044, 46.09915],
     pitch: 45,
     hash: true,
-    maxPitch: 65,
+    maxPitch: 85,
     maxZoom: 16,
     minZoom: 2,
     fadeDuration: 500
@@ -3635,12 +3753,14 @@
       toggle3DButton.textContent = is3DViewEnabled ? 'Revenir en 2D' : 'Passer en 3D';
     }
     updateButtons();
+    requestSkyUpdate();
   });
 
   initializeShadowDateTimeControls();
 
   map.on('moveend', () => {
     recomputeShadowTimeBounds();
+    requestSkyUpdate();
   });
 
   map.on('zoomend', () => {
@@ -3648,6 +3768,15 @@
     if (isModeActive('shadow') || isModeActive('daylight')) {
       map.triggerRepaint();
     }
+    requestSkyUpdate();
+  });
+
+  map.on('pitchend', () => {
+    requestSkyUpdate();
+  });
+
+  map.on('rotateend', () => {
+    requestSkyUpdate();
   });
 
   map.on('moveend', () => {
