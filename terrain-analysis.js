@@ -185,6 +185,7 @@
   const EARTH_CIRCUMFERENCE_METERS = 40075016.68557849;
   const MIN_METERS_PER_PIXEL = 1e-6;
   const TERRAIN_ELEVATION_URL_TEMPLATE = 'https://tiles.mapterhorn.com/{z}/{x}/{y}.webp';
+  const TERRAIN_ELEVATION_TILE_SIZE = 512;
   const TERRAIN_TEXTURE_URL_TEMPLATE = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
   const TERRAIN_ELEVATION_DECODER = Object.freeze({
     rScale: 256,
@@ -353,7 +354,8 @@
     return new TerrainLayer({
       id: 'deck-terrain-layer',
       minZoom: 0,
-      maxZoom: 14,
+      maxZoom: 17,
+      tileSize: TERRAIN_ELEVATION_TILE_SIZE,
       strategy: 'no-overlap',
       elevationDecoder: TERRAIN_ELEVATION_DECODER,
       elevationData: TERRAIN_ELEVATION_URL_TEMPLATE,
@@ -2358,7 +2360,7 @@
         [TERRAIN_SOURCE_ID]: {
           type: 'raster-dem',
           tiles: ['https://tiles.mapterhorn.com/{z}/{x}/{y}.webp'],
-          tileSize: 512,
+          tileSize: TERRAIN_ELEVATION_TILE_SIZE,
           maxzoom: 17,
           encoding: 'terrarium'
         }
