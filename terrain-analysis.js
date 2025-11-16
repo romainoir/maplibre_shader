@@ -3604,7 +3604,6 @@
         { id: 'background', type: 'background', paint: { 'background-color': '#000000' } },
         { id: 'satellite-base-layer', type: 'raster', source: 'satellite-base', minzoom: 0, maxzoom: 22 }
       ],
-      sky: getSkyPaintProperties(),
       terrain: { source: TERRAIN_SOURCE_ID, exaggeration: 1.0 }
     },
     zoom: 14,
@@ -3764,25 +3763,14 @@
       return;
     }
     const paintProperties = getSkyPaintProperties();
-    if (typeof map.setSkyProperty === 'function') {
-      Object.entries(paintProperties).forEach(([property, value]) => {
-        try {
-          map.setSkyProperty(property, value);
-        } catch (error) {
-          if (terrainDebugEnabled) {
-            console.warn(`Failed to update sky property ${property}`, error);
-          }
-        }
-      });
+    if (!detectSkyLayerSupport()) {
       return;
     }
-    if (detectSkyLayerSupport()) {
-      const addedSky = ensureSkyLayer(paintProperties);
-      if (!addedSky) {
-        updateSkyLayerPaint(paintProperties);
-      }
-      ensureSkyLayerOrder();
+    const addedSky = ensureSkyLayer(paintProperties);
+    if (!addedSky) {
+      updateSkyLayerPaint(paintProperties);
     }
+    ensureSkyLayerOrder();
   };
 
   is3DViewEnabled = map.getPitch() > 5;
