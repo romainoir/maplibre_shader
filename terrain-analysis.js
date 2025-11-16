@@ -1,20 +1,6 @@
 /* terrain-analysis.js */
 (function() {
-  const initialTerrainDebugEnabled = (() => {
-    try {
-      const searchParams = new URLSearchParams(window.location.search || '');
-      if (searchParams.has('terrainDebug')) {
-        return true;
-      }
-      if (typeof window.location.hash === 'string' && window.location.hash.includes('terrainDebug')) {
-        return true;
-      }
-    } catch (error) {
-      console.warn('Failed to evaluate terrain debug flag', error);
-    }
-    return false;
-  })();
-  let terrainDebugEnabled = initialTerrainDebugEnabled;
+  const terrainDebugEnabled = false;
   const HillshadeDebug = window.__MapLibreHillshadeDebug || null;
   const hillshadeDebugEnabled = (() => {
     try {
@@ -216,6 +202,7 @@
   };
   let samplingDistance = gradientParameters.baseDistance;
   let isSamplingDistanceManual = false;
+  let useProposedGradient = false;
   let gradientAutoScaleKey = '0.1';
   let gradientAutoScale = parseFloat(gradientAutoScaleKey);
   let shadowDateValue = null;
@@ -231,10 +218,10 @@
   let gradientMaxSlider = null;
   let gradientMaxValueEl = null;
   let gradientAutoButton = null;
+  let gradientProposedButton = null;
   let gradientAutoScaleSelect = null;
   let terrainMeshBtn = null;
   let terrainExportBtn = null;
-  let terrainDebugBtn = null;
   let terrainMenuContainer = null;
   let terrainStatusEl = null;
   let layersPanelEl = null;
@@ -248,26 +235,6 @@
   const EARTH_CIRCUMFERENCE_METERS = 40075016.68557849;
   const MIN_METERS_PER_PIXEL = 1e-6;
   const TERRAIN_ELEVATION_TILE_SIZE = 512;
-  const TERRAIN_MESH_CONFIG = Object.freeze({
-    extent: 8192,
-    defaultDemDimension: 256,
-    verticalScale: 1,
-    verticalOffset: 0
-  });
-  const EARTH_RADIUS_METERS = 6378137;
-  const TERRAIN_WIREFRAME_LAYER_ID = 'terrain-wireframe';
-  let terrainWireframeLayerVisible = false;
-  let terrainWireframeLayer = null;
-  let terrainWireframeScene = null;
-  let terrainWireframeMesh = null;
-  let terrainSolidMesh = null;
-  let terrainAmbientLight = null;
-  let terrainDirectionalLight = null;
-  let terrainDirectionalLightTarget = null;
-  let terrainWireframeLoading = false;
-  let terrainWireframeModelTransform = null;
-  let supportsUint32IndexBuffer = false;
-  let terrainMeshMetadata = null;
 
   if (typeof window !== 'undefined' && window.maplibregl && !window.mapboxgl) {
     window.mapboxgl = window.maplibregl;
@@ -392,38 +359,6 @@
       terrainStatusEl.textContent = message;
     }
     updateTerrainExportButtonState();
-  }
-
-  function syncTerrainDebugQueryFlag(enabled) {
-    if (typeof window === 'undefined' || !window.history || typeof window.history.replaceState !== 'function') {
-      return;
-    }
-    try {
-      const url = new URL(window.location.href);
-      if (enabled) {
-        url.searchParams.set('terrainDebug', '1');
-      } else {
-        url.searchParams.delete('terrainDebug');
-      }
-      window.history.replaceState({}, '', url.toString());
-    } catch (error) {
-      if (terrainDebugEnabled) {
-        console.warn('Failed to update terrain debug flag in URL', error);
-      }
-    }
-  }
-
-  function setTerrainDebugEnabled(enabled, options = {}) {
-    const nextEnabled = Boolean(enabled);
-    if (terrainDebugEnabled === nextEnabled) {
-      return terrainDebugEnabled;
-    }
-    terrainDebugEnabled = nextEnabled;
-    if (options.updateUrl) {
-      syncTerrainDebugQueryFlag(nextEnabled);
-    }
-    updateButtons();
-    return terrainDebugEnabled;
   }
 
   function getRenderableTerrainTiles() {
@@ -1485,6 +1420,15 @@
     return clamp(scaled, minDistance, maxDistance);
   }
 
+  function computeProposedSamplingDistance() {
+    sanitizeGradientParameters();
+    const minDistance = gradientParameters.minDistance;
+    const maxDistance = gradientParameters.maxDistance;
+    const baseDistance = clamp(gradientParameters.baseDistance, minDistance, maxDistance);
+    const scaled = baseDistance * gradientAutoScale;
+    return clamp(scaled, minDistance, maxDistance);
+  }
+
   function updateSamplingDistanceForZoom(forceInvalidate = false) {
     if (!map) return;
     if (isSamplingDistanceManual) {
@@ -2006,12 +1950,6 @@
     if (daylightBtn) {
       daylightBtn.classList.toggle('active', isCustomActive && isModeActive('daylight'));
     }
-    if (!terrainDebugBtn) {
-      terrainDebugBtn = document.getElementById('terrainDebugBtn');
-    }
-    if (terrainDebugBtn) {
-      terrainDebugBtn.classList.toggle('active', terrainDebugEnabled);
-    }
     if (!terrainMeshBtn) {
       terrainMeshBtn = document.getElementById('terrainMeshBtn');
     }
@@ -2075,10 +2013,10 @@
   gradientMaxSlider = document.getElementById('gradientMaxSlider');
   gradientMaxValueEl = document.getElementById('gradientMaxValue');
   gradientAutoButton = document.getElementById('gradientAutoButton');
+  gradientProposedButton = document.getElementById('gradientProposedButton');
   gradientAutoScaleSelect = document.getElementById('gradientAutoScaleSelect');
   terrainMeshBtn = document.getElementById('terrainMeshBtn');
   terrainExportBtn = document.getElementById('terrainExportBtn');
-  terrainDebugBtn = document.getElementById('terrainDebugBtn');
   terrainMenuContainer = document.getElementById('terrainMenu');
   terrainStatusEl = document.getElementById('terrainStatus');
   layersPanelEl = document.getElementById('layersPanel');
@@ -2246,7 +2184,10 @@
 
   function publishRenderDebugInfo(info) {
     if (info) {
-      debugState.lastRender = { ...info, timestamp: Date.now() };
+      const samplingModeLabel = !isSamplingDistanceManual
+        ? 'auto'
+        : (useProposedGradient ? 'proposed' : 'manual');
+      debugState.lastRender = { ...info, timestamp: Date.now(), samplingMode: samplingModeLabel };
     } else {
       debugState.lastRender = null;
     }
@@ -2311,9 +2252,9 @@
     const samplingLabel = Number.isFinite(samplingCandidate)
       ? formatGradientDistanceLabel(samplingCandidate)
       : 'n/a';
-    const samplingMode = lastRender && typeof lastRender.isSamplingDistanceManual === 'boolean'
-      ? (lastRender.isSamplingDistanceManual ? 'manual' : 'auto')
-      : (isSamplingDistanceManual ? 'manual' : 'auto');
+    const samplingMode = lastRender && typeof lastRender.samplingMode === 'string'
+      ? lastRender.samplingMode
+      : (!isSamplingDistanceManual ? 'auto' : (useProposedGradient ? 'proposed' : 'manual'));
     lines.push(`Gradient sampling: ${samplingLabel} (${samplingMode})`);
     lines.push(`Auto sampling scale: ${formatAutoSamplingScaleLabel(gradientAutoScale)}`);
 
@@ -2385,7 +2326,10 @@
       }
     }
     if (gradientSamplingValueEl) {
-      const modeLabel = isSamplingDistanceManual ? 'manual' : 'auto';
+      let modeLabel = 'auto';
+      if (isSamplingDistanceManual) {
+        modeLabel = useProposedGradient ? 'proposed' : 'manual';
+      }
       gradientSamplingValueEl.textContent = `${formatGradientDistance(samplingDistance)} m (${modeLabel})`;
     }
     if (gradientBaseSlider) {
@@ -2423,6 +2367,9 @@
     if (gradientAutoButton) {
       gradientAutoButton.disabled = !isSamplingDistanceManual;
     }
+    if (gradientProposedButton) {
+      gradientProposedButton.disabled = useProposedGradient;
+    }
     if (gradientAutoScaleSelect && gradientAutoScaleSelect.value !== gradientAutoScaleKey) {
       gradientAutoScaleSelect.value = gradientAutoScaleKey;
     }
@@ -2440,6 +2387,7 @@
       sanitizeGradientParameters();
       samplingDistance = clamp(value, gradientParameters.minDistance, gradientParameters.maxDistance);
       isSamplingDistanceManual = true;
+      useProposedGradient = false;
       gradientPreparer.invalidateAll();
       refreshGradientUI();
       if (map) map.triggerRepaint();
@@ -2452,7 +2400,9 @@
       if (!Number.isFinite(value)) return;
       gradientParameters.baseDistance = value;
       sanitizeGradientParameters();
-      if (isSamplingDistanceManual) {
+      if (useProposedGradient) {
+        samplingDistance = computeProposedSamplingDistance();
+      } else if (isSamplingDistanceManual) {
         clampSamplingDistanceToRange();
       } else {
         const zoom = map ? map.getZoom() : undefined;
@@ -2473,7 +2423,9 @@
       if (!Number.isFinite(value)) return;
       gradientParameters.minDistance = value;
       sanitizeGradientParameters();
-      if (isSamplingDistanceManual) {
+      if (useProposedGradient) {
+        samplingDistance = computeProposedSamplingDistance();
+      } else if (isSamplingDistanceManual) {
         clampSamplingDistanceToRange();
       } else {
         const zoom = map ? map.getZoom() : undefined;
@@ -2494,7 +2446,9 @@
       if (!Number.isFinite(value)) return;
       gradientParameters.maxDistance = value;
       sanitizeGradientParameters();
-      if (isSamplingDistanceManual) {
+      if (useProposedGradient) {
+        samplingDistance = computeProposedSamplingDistance();
+      } else if (isSamplingDistanceManual) {
         clampSamplingDistanceToRange();
       } else {
         const zoom = map ? map.getZoom() : undefined;
@@ -2512,6 +2466,7 @@
   if (gradientAutoButton) {
     gradientAutoButton.addEventListener('click', () => {
       if (!isSamplingDistanceManual) return;
+      useProposedGradient = false;
       isSamplingDistanceManual = false;
       clampSamplingDistanceToRange();
       if (map) {
@@ -2523,6 +2478,21 @@
         }
         gradientPreparer.invalidateAll();
       }
+      refreshGradientUI();
+      if (map) map.triggerRepaint();
+    });
+  }
+
+  if (gradientProposedButton) {
+    gradientProposedButton.addEventListener('click', () => {
+      const proposedDistance = computeProposedSamplingDistance();
+      if (!Number.isFinite(proposedDistance)) {
+        return;
+      }
+      samplingDistance = proposedDistance;
+      isSamplingDistanceManual = true;
+      useProposedGradient = true;
+      gradientPreparer.invalidateAll();
       refreshGradientUI();
       if (map) map.triggerRepaint();
     });
@@ -2540,7 +2510,12 @@
       }
       gradientAutoScaleKey = value;
       gradientAutoScale = parsed;
-      if (isSamplingDistanceManual) {
+      if (useProposedGradient) {
+        samplingDistance = computeProposedSamplingDistance();
+        gradientPreparer.invalidateAll();
+        refreshGradientUI();
+        if (map) map.triggerRepaint();
+      } else if (isSamplingDistanceManual) {
         refreshGradientUI();
       } else {
         updateSamplingDistanceForZoom(true);
@@ -3956,20 +3931,6 @@
   if (daylightBtnEl) {
     daylightBtnEl.addEventListener('click', () => {
       toggleCustomMode('daylight');
-    });
-  }
-
-  if (terrainDebugBtn) {
-    terrainDebugBtn.addEventListener('click', () => {
-      if (terrainDebugEnabled) {
-        logTerrainDebug('Terrain debug logging disabled via UI.');
-      }
-      const nextEnabled = !terrainDebugEnabled;
-      setTerrainDebugEnabled(nextEnabled, { updateUrl: true });
-      if (nextEnabled) {
-        logTerrainDebug('Terrain debug logging enabled via UI.');
-      }
-      console.info(`Terrain debug logging ${nextEnabled ? 'enabled' : 'disabled'}.`);
     });
   }
 
