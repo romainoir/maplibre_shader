@@ -220,8 +220,7 @@
       outline-offset: 1px;
     }
 
-    #gradientMenu button,
-    #terrainMenu button {
+    #gradientMenu button {
       margin-top: 4px;
       padding: 6px 10px;
       font-size: 12px;
@@ -232,84 +231,14 @@
       cursor: pointer;
       transition: background 0.2s, opacity 0.2s;
     }
-    #gradientMenu button:hover:not(:disabled),
-    #terrainMenu button:hover:not(:disabled) {
+    #gradientMenu button:hover:not(:disabled) {
       background: #e67e54;
     }
-    #gradientMenu button:disabled,
-    #terrainMenu button:disabled {
+    #gradientMenu button:disabled {
       opacity: 0.55;
       cursor: default;
     }
-    #terrainMenu {
-      position: absolute;
-      bottom: 10px;
-      right: 10px;
-      z-index: 11;
-      display: none;
-      flex-direction: column;
-      gap: 10px;
-      width: 260px;
-      padding: 12px;
-      border-radius: 8px;
-      background: rgba(0, 0, 0, 0.65);
-      color: #fff;
-      font-family: sans-serif;
-      font-size: 12px;
-      box-shadow: 0 8px 16px rgba(0, 0, 0, 0.35);
-      backdrop-filter: blur(4px);
-    }
-    #terrainMenu h3 {
-      margin: 0;
-      font-size: 13px;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.04em;
-      color: #f2f2f2;
-    }
-    #terrainMenu p {
-      margin: 0;
-      color: #dcdcdc;
-      line-height: 1.4;
-    }
-    #terrainMenu small {
-      color: #bcbcbc;
-      line-height: 1.3;
-    }
-    #gradientMenu .panel-divider {
-      height: 1px;
-      background: rgba(255, 255, 255, 0.15);
-      border: none;
-      margin: 4px 0;
-    }
 
-    #debugPanel {
-      display: none;
-      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
-      font-size: 11px;
-      line-height: 1.5;
-      color: #f5f5f5;
-      background: rgba(255, 255, 255, 0.06);
-      padding: 10px;
-      border-radius: 8px;
-      max-height: 220px;
-      overflow-y: auto;
-    }
-
-    #debugPanel h3 {
-      margin: 0 0 6px;
-      font-size: 11px;
-      font-weight: 600;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      color: #ffd7b5;
-    }
-
-    #debugContent {
-      margin: 0;
-      white-space: pre-wrap;
-      word-break: break-word;
-    }
   </style>
 </head>
 <body>
@@ -318,7 +247,6 @@
       <input id="hqMode" type="checkbox">
       <label for="hqMode">HQ (LOD 3/9)</label>
     </div>
-    <button id="toggle3D" class="control-button">Revenir en 2D</button>
     <button id="layersToggle" class="control-button" aria-expanded="false" aria-controls="layersPanel">Layers</button>
   </div>
   <div id="layersPanel" aria-hidden="true">
@@ -336,8 +264,6 @@
       <button id="snowBtn" class="control-button">Snow</button>
       <button id="shadowBtn" class="control-button">Shadow</button>
       <button id="daylightBtn" class="control-button">Sunlight</button>
-      <button id="terrainMeshBtn" class="control-button">Three.js Mesh</button>
-      <button id="terrainDebugBtn" class="control-button">Terrain Debug</button>
     </div>
     <div id="snowSliderContainer" class="panel-section">
       <label for="snowAltitudeSlider">Snow Altitude</label>
@@ -424,17 +350,7 @@
       </select>
     </div>
     <button id="gradientAutoButton" type="button">Use Auto Sampling</button>
-    <div class="panel-divider"></div>
-    <div id="debugPanel">
-      <h3>Debug Info</h3>
-      <pre id="debugContent">Initializing…</pre>
-    </div>
-  </div>
-  <div id="terrainMenu">
-    <h3>Three.js Mesh</h3>
-    <p id="terrainStatus">Mesh hidden.</p>
-    <small>Displays a Three.js mesh generated from the current terrain tiles.</small>
-    <button id="terrainExportBtn" type="button" disabled>Export Mesh (.obj)</button>
+    <button id="gradientProposedButton" type="button">Use Proposed Gradient</button>
   </div>
   <div id="map"></div>
   <!-- Include shader definitions, gradient preparer and debugging helpers -->
@@ -450,7 +366,6 @@
   <script src="terrain-shaders.js"></script>
   <script src="terrain-gradient-preparer.js"></script>
   <script src="h4-sunlight-engine.js"></script>
-  <script type="module" src="three-global-shim.js"></script>
   <!-- Main application script -->
   <script defer src="terrain-analysis.js"></script>
 </body>
