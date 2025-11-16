@@ -231,8 +231,8 @@ ${SHADER_NEIGHBOR_METERS_UNIFORM_BLOCK}    uniform vec2 u_latrange;
     vec2 computeSobelGradient(vec2 pos) {
       float samplingDistance = 0.5;
       vec2 safePos = clampTexCoord(pos);
-      float metersPerPixel = 1.5 * pow(2.0, 16.0 - u_zoom);
-      float metersPerTile  = metersPerPixel * 256.0;
+      float metersPerPixel = max(u_metersPerPixel, 0.0001);
+      float metersPerTile  = metersPerPixel * max(u_dimension.x, 1.0);
       float delta = samplingDistance / metersPerTile;
 
       float tl = getElevationExtended(safePos + vec2(-delta, -delta));
