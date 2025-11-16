@@ -3576,10 +3576,17 @@
           tileSize: TERRAIN_ELEVATION_TILE_SIZE,
           maxzoom: 17,
           encoding: 'terrarium'
+        },
+        'satellite-base': {
+          type: 'raster',
+          tiles: ['https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2020_3857/default/g/{z}/{y}/{x}.jpg'],
+          tileSize: 256,
+          attribution: 'Imagery © EOX IT Services GmbH'
         }
       },
       layers: [
-        { id: 'background', type: 'background', paint: { 'background-color': '#000000' } }
+        { id: 'background', type: 'background', paint: { 'background-color': '#000000' } },
+        { id: 'satellite-base-layer', type: 'raster', source: 'satellite-base', minzoom: 0, maxzoom: 22 }
       ],
       sky: getSkyPaintProperties(),
       terrain: { source: TERRAIN_SOURCE_ID, exaggeration: 1.0 }
