@@ -230,6 +230,18 @@
   let hqModeCheckbox = null;
   let toggle3DButton = null;
   let layersPanelOpen = false;
+  let terrainWireframeLayer = null;
+  let terrainWireframeScene = null;
+  let terrainWireframeMesh = null;
+  let terrainSolidMesh = null;
+  let terrainWireframeLayerVisible = false;
+  let terrainWireframeLoading = false;
+  let terrainWireframeModelTransform = null;
+  let terrainMeshMetadata = null;
+  let terrainAmbientLight = null;
+  let terrainDirectionalLight = null;
+  let terrainDirectionalLightTarget = null;
+  let supportsUint32IndexBuffer = false;
 
   const gradientPreparer = TerrainGradientPreparer.create();
   const EARTH_CIRCUMFERENCE_METERS = 40075016.68557849;
