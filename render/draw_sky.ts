@@ -45,7 +45,7 @@ export function drawSky(painter: Painter, sky: Sky) {
 
     const skyUniforms = skyUniformValues(sky, painter.style.map.transform, painter.pixelRatio);
 
-    const depthMode = new DepthMode(gl.LEQUAL, DepthMode.ReadWrite, [0, 1]);
+    const depthMode = DepthMode.disabled;
     const stencilMode = StencilMode.disabled;
     const colorMode = painter.colorModeForRenderPass();
     const program = painter.useProgram('sky');
