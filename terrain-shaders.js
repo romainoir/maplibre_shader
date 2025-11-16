@@ -241,18 +241,22 @@ ${SHADER_NEIGHBOR_METERS_UNIFORM_BLOCK}    uniform vec2 u_latrange;
       float metersPerTile  = metersPerPixel * u_dimension.x;
       float sampleDist = max(u_samplingDistance, 0.0001);
       float delta = sampleDist / metersPerTile;
-      float denom = 2.0 * sampleDist;
 
       vec2 dx = vec2(delta, 0.0);
       vec2 dy = vec2(0.0, delta);
 
-      float left = getElevationExtended(safePos - dx);
-      float right = getElevationExtended(safePos + dx);
-      float top = getElevationExtended(safePos - dy);
-      float bottom = getElevationExtended(safePos + dy);
+      float tl = getElevationExtended(safePos - dx - dy);
+      float tm = getElevationExtended(safePos - dy);
+      float tr = getElevationExtended(safePos + dx - dy);
+      float ml = getElevationExtended(safePos - dx);
+      float mr = getElevationExtended(safePos + dx);
+      float bl = getElevationExtended(safePos - dx + dy);
+      float bm = getElevationExtended(safePos + dy);
+      float br = getElevationExtended(safePos + dx + dy);
 
-      float gx = (right - left) / denom;
-      float gy = (bottom - top) / denom;
+      float normalization = 8.0 * sampleDist;
+      float gx = (-tl + tr - 2.0 * ml + 2.0 * mr - bl + br) / normalization;
+      float gy = (-tl - 2.0 * tm - tr + bl + 2.0 * bm + br) / normalization;
 
       return vec2(gx, gy);
     }
