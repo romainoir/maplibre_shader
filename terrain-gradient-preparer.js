@@ -303,15 +303,22 @@ void main() {
   float metersPerPixel = max(u_metersPerPixel, 0.0001);
   float metersPerTile = metersPerPixel * u_dimension.x;
   float delta = sampleDist / metersPerTile;
-  float denom = 2.0 * sampleDist;
   vec2 dx = vec2(delta, 0.0);
   vec2 dy = vec2(0.0, delta);
-  float left = getElevationExtended(v_texCoord - dx);
-  float right = getElevationExtended(v_texCoord + dx);
-  float top = getElevationExtended(v_texCoord - dy);
-  float bottom = getElevationExtended(v_texCoord + dy);
-  float gx = (right - left) / denom;
-  float gy = (bottom - top) / denom;
+
+  float tl = getElevationExtended(v_texCoord - dx - dy);
+  float tm = getElevationExtended(v_texCoord - dy);
+  float tr = getElevationExtended(v_texCoord + dx - dy);
+  float ml = getElevationExtended(v_texCoord - dx);
+  float mr = getElevationExtended(v_texCoord + dx);
+  float bl = getElevationExtended(v_texCoord - dx + dy);
+  float bm = getElevationExtended(v_texCoord + dy);
+  float br = getElevationExtended(v_texCoord + dx + dy);
+
+  float normalization = 8.0 * sampleDist;
+  float gx = (-tl + tr - 2.0 * ml + 2.0 * mr - bl + br) / normalization;
+  float gy = (-tl - 2.0 * tm - tr + bl + 2.0 * bm + br) / normalization;
+
   fragColor = vec4(gx, gy, 0.0, 1.0);
 }`;
 
