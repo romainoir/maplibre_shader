@@ -3674,7 +3674,7 @@
         ? maplibregl.version
         : null;
       if (versionString) {
-        const versionMatch = versionString.match(/^(\d+)(?:\.(\d+))?/);
+        const versionMatch = versionString.match(/^(?:v|version\s*)?(\d+)(?:\.(\d+))?/i);
         if (versionMatch) {
           const major = parseInt(versionMatch[1], 10);
           const minor = versionMatch[2] ? parseInt(versionMatch[2], 10) : 0;
