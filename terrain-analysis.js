@@ -90,55 +90,6 @@
   let is3DViewEnabled = true;
   let isTerrainFlattened = false;
 
-  function getHillshadeDebugTiles(mapInstance, options = {}) {
-    const debugApi = window.mapLibreHillshadeDebug;
-    if (!mapInstance || !debugApi || typeof debugApi.getTiles !== 'function') {
-      return [];
-    }
-    try {
-      const tiles = debugApi.getTiles({ map: mapInstance, sourceId: TERRAIN_SOURCE_ID, ...options });
-      return Array.isArray(tiles) ? tiles : [];
-    } catch (error) {
-      if (terrainDebugEnabled) console.warn('Failed to query hillshade tiles from debug API', error);
-      return [];
-    }
-  }
-
-  function extractHillshadeColorAttachment(tile) {
-    if (!tile || !tile.fbo || !tile.fbo.colorAttachment) {
-      return null;
-    }
-    const attachment = tile.fbo.colorAttachment;
-    if (typeof attachment.get === 'function') {
-      try {
-        return attachment.get();
-      } catch (error) {
-        if (terrainDebugEnabled) console.warn('Failed to access hillshade framebuffer attachment', error);
-        return null;
-      }
-    }
-    return attachment || null;
-  }
-
-  function collectNativeHillshadeTextures(mapInstance) {
-    const tiles = getHillshadeDebugTiles(mapInstance, { onlyPrepared: true });
-    if (!tiles.length) {
-      return null;
-    }
-    const cache = new Map();
-    for (const tile of tiles) {
-      const key = tile && tile.tileID ? tile.tileID.key : null;
-      if (!key || tile.needsHillshadePrepare) {
-        continue;
-      }
-      const texture = extractHillshadeColorAttachment(tile);
-      if (texture) {
-        cache.set(key, texture);
-      }
-    }
-    return cache.size > 0 ? cache : null;
-  }
-
   // Global state variables
   const CUSTOM_LAYER_ORDER = Object.freeze(['hillshade', 'normal', 'avalanche', 'slope', 'aspect', 'snow', 'shadow', 'daylight']);
   const activeCustomModes = new Set();
@@ -176,50 +127,9 @@
   const SHADOW_BUFFER_MINUTES = 30;
   const DEFAULT_DAYLIGHT_BOUNDS = { min: 360, max: 1080 };
   let shadowTimeBounds = { min: 0, max: 1439 };
-  const GRADIENT_ZOOM_PIVOT = 14;
-  const MIN_GRADIENT_DISTANCE = 0.001;
-  const GRADIENT_DISTANCE_DECIMALS = 3;
-
-  function formatGradientDistance(value) {
-    return value.toFixed(GRADIENT_DISTANCE_DECIMALS);
-  }
-
-  function formatGradientDistanceLabel(value) {
-    return `${formatGradientDistance(value)} m`;
-  }
-
-  function formatAutoSamplingScaleLabel(scale) {
-    if (!Number.isFinite(scale)) {
-      return '1.00×';
-    }
-    return `${scale.toFixed(2)}×`;
-  }
-
-  const gradientParameters = {
-    baseDistance: 0.35,
-    minDistance: MIN_GRADIENT_DISTANCE,
-    maxDistance: 3.0
-  };
-  let samplingDistance = gradientParameters.baseDistance;
-  let isSamplingDistanceManual = false;
-  let useProposedGradient = false;
-  let gradientAutoScaleKey = '0.1';
-  let gradientAutoScale = parseFloat(gradientAutoScaleKey);
   let shadowDateValue = null;
   let shadowTimeValue = null;
   let map;
-
-  let gradientSamplingSlider = null;
-  let gradientSamplingValueEl = null;
-  let gradientBaseSlider = null;
-  let gradientBaseValueEl = null;
-  let gradientMinSlider = null;
-  let gradientMinValueEl = null;
-  let gradientMaxSlider = null;
-  let gradientMaxValueEl = null;
-  let gradientAutoButton = null;
-  let gradientProposedButton = null;
-  let gradientAutoScaleSelect = null;
   let terrainMeshBtn = null;
   let terrainExportBtn = null;
   let terrainMenuContainer = null;
@@ -243,7 +153,6 @@
   let terrainDirectionalLightTarget = null;
   let supportsUint32IndexBuffer = false;
 
-  const gradientPreparer = TerrainGradientPreparer.create();
   const EARTH_CIRCUMFERENCE_METERS = 40075016.68557849;
   const MIN_METERS_PER_PIXEL = 1e-6;
   const TERRAIN_ELEVATION_TILE_SIZE = 512;
@@ -311,23 +220,6 @@
 
   function clamp(value, min, max) {
     return Math.max(min, Math.min(max, value));
-  }
-
-  function sanitizeGradientParameters() {
-    const minDistance = Math.max(MIN_GRADIENT_DISTANCE, Math.min(gradientParameters.minDistance, gradientParameters.maxDistance));
-    const maxDistance = Math.max(minDistance, Math.max(gradientParameters.minDistance, gradientParameters.maxDistance));
-    gradientParameters.minDistance = minDistance;
-    gradientParameters.maxDistance = maxDistance;
-    gradientParameters.baseDistance = clamp(gradientParameters.baseDistance, minDistance, maxDistance);
-  }
-
-  function clampSamplingDistanceToRange() {
-    const clamped = clamp(samplingDistance, gradientParameters.minDistance, gradientParameters.maxDistance);
-    if (Math.abs(clamped - samplingDistance) > 1e-4) {
-      samplingDistance = clamped;
-      return true;
-    }
-    return false;
   }
 
   function clamp01(value) {
@@ -1419,51 +1311,6 @@
     return hours * 60 + minutes;
   }
 
-  function computeSamplingDistanceForZoom(zoom) {
-    sanitizeGradientParameters();
-    const minDistance = gradientParameters.minDistance;
-    const maxDistance = gradientParameters.maxDistance;
-    const baseDistance = clamp(gradientParameters.baseDistance, minDistance, maxDistance);
-    if (!Number.isFinite(zoom)) {
-      return baseDistance;
-    }
-    const effectiveZoom = Math.min(Math.max(zoom, 0), DEM_MAX_ZOOM);
-    const scaled = baseDistance * gradientAutoScale * Math.pow(2, GRADIENT_ZOOM_PIVOT - effectiveZoom);
-    return clamp(scaled, minDistance, maxDistance);
-  }
-
-  function computeProposedSamplingDistance() {
-    sanitizeGradientParameters();
-    const minDistance = gradientParameters.minDistance;
-    const maxDistance = gradientParameters.maxDistance;
-    const baseDistance = clamp(gradientParameters.baseDistance, minDistance, maxDistance);
-    const scaled = baseDistance * gradientAutoScale;
-    return clamp(scaled, minDistance, maxDistance);
-  }
-
-  function updateSamplingDistanceForZoom(forceInvalidate = false) {
-    if (!map) return;
-    if (isSamplingDistanceManual) {
-      if (forceInvalidate) {
-        gradientPreparer.invalidateAll();
-        refreshGradientUI();
-      }
-      return;
-    }
-    const previousDistance = samplingDistance;
-    const zoom = map.getZoom();
-    const newDistance = computeSamplingDistanceForZoom(zoom);
-    if (!Number.isFinite(newDistance)) return;
-    samplingDistance = newDistance;
-    const changed = Math.abs(newDistance - previousDistance) > 0.01;
-    if (forceInvalidate || changed) {
-      gradientPreparer.invalidateAll();
-    }
-    if (changed || forceInvalidate) {
-      refreshGradientUI();
-    }
-  }
-
   /**
    * MapLibre GL JS 5.11.0 ships a Mercator transform helper that throws a
    * "Not implemented" error when `getRayDirectionFromPixel` is invoked.
@@ -2016,17 +1863,6 @@
     });
   }
 
-  gradientSamplingSlider = document.getElementById('gradientSamplingSlider');
-  gradientSamplingValueEl = document.getElementById('gradientSamplingValue');
-  gradientBaseSlider = document.getElementById('gradientBaseSlider');
-  gradientBaseValueEl = document.getElementById('gradientBaseValue');
-  gradientMinSlider = document.getElementById('gradientMinSlider');
-  gradientMinValueEl = document.getElementById('gradientMinValue');
-  gradientMaxSlider = document.getElementById('gradientMaxSlider');
-  gradientMaxValueEl = document.getElementById('gradientMaxValue');
-  gradientAutoButton = document.getElementById('gradientAutoButton');
-  gradientProposedButton = document.getElementById('gradientProposedButton');
-  gradientAutoScaleSelect = document.getElementById('gradientAutoScaleSelect');
   terrainMeshBtn = document.getElementById('terrainMeshBtn');
   terrainExportBtn = document.getElementById('terrainExportBtn');
   terrainMenuContainer = document.getElementById('terrainMenu');
@@ -2036,10 +1872,6 @@
   layersCloseButton = document.getElementById('layersClose');
   hqModeCheckbox = document.getElementById('hqMode');
   toggle3DButton = document.getElementById('toggle3D');
-
-  if (gradientAutoScaleSelect) {
-    gradientAutoScaleSelect.value = gradientAutoScaleKey;
-  }
 
   function setLayersPanelVisibility(visible) {
     if (!layersPanelEl) {
@@ -2195,14 +2027,7 @@
   };
 
   function publishRenderDebugInfo(info) {
-    if (info) {
-      const samplingModeLabel = !isSamplingDistanceManual
-        ? 'auto'
-        : (useProposedGradient ? 'proposed' : 'manual');
-      debugState.lastRender = { ...info, timestamp: Date.now(), samplingMode: samplingModeLabel };
-    } else {
-      debugState.lastRender = null;
-    }
+    debugState.lastRender = info ? { ...info, timestamp: Date.now() } : null;
     refreshDebugPanel();
   }
 
@@ -2258,18 +2083,6 @@
     }
 
     const lastRender = debugState.lastRender;
-    const samplingCandidate = lastRender && Number.isFinite(lastRender.samplingDistance)
-      ? lastRender.samplingDistance
-      : samplingDistance;
-    const samplingLabel = Number.isFinite(samplingCandidate)
-      ? formatGradientDistanceLabel(samplingCandidate)
-      : 'n/a';
-    const samplingMode = lastRender && typeof lastRender.samplingMode === 'string'
-      ? lastRender.samplingMode
-      : (!isSamplingDistanceManual ? 'auto' : (useProposedGradient ? 'proposed' : 'manual'));
-    lines.push(`Gradient sampling: ${samplingLabel} (${samplingMode})`);
-    lines.push(`Auto sampling scale: ${formatAutoSamplingScaleLabel(gradientAutoScale)}`);
-
     const meshStateLabel = terrainWireframeLayerVisible
       ? (terrainWireframeLoading ? 'visible (building)' : 'visible')
       : 'hidden';
@@ -2293,246 +2106,12 @@
       if (Number.isFinite(lastRender.textureCacheCount)) {
         lines.push(`Neighbor texture cache entries: ${lastRender.textureCacheCount}`);
       }
-      if (Number.isFinite(lastRender.nativeGradientTiles)) {
-        lines.push(`Native gradient textures: ${lastRender.nativeGradientTiles}`);
-      }
-    }
-
-    const gradientInfo = lastRender?.gradientDebug
-      || (typeof gradientPreparer.getDebugInfo === 'function' ? gradientPreparer.getDebugInfo() : null);
-    if (gradientInfo) {
-      const gradientMode = gradientInfo.supported ? 'precomputed textures' : 'runtime fallback';
-      lines.push(`Gradient pipeline: ${gradientMode}`);
-      if (!gradientInfo.supported && gradientInfo.unsupportedReason) {
-        lines.push(`Gradient fallback reason: ${gradientInfo.unsupportedReason}`);
-      }
-      if (Number.isFinite(gradientInfo.tileStateCount)) {
-        lines.push(`Gradient tile cache: ${gradientInfo.tileStateCount}`);
-      }
-      const frameInfo = gradientInfo.lastFrameInfo;
-      if (frameInfo) {
-        const prepared = Number.isFinite(frameInfo.preparedTiles) ? frameInfo.preparedTiles : 0;
-        const reused = Number.isFinite(frameInfo.reusedTiles) ? frameInfo.reusedTiles : 0;
-        const discarded = Number.isFinite(frameInfo.discardedTiles) ? frameInfo.discardedTiles : 0;
-        lines.push(`Gradient tiles prepared/reused: ${prepared}/${reused}, discarded ${discarded}`);
-        const neighborMatches = Number.isFinite(frameInfo.neighborMatches) ? frameInfo.neighborMatches : 0;
-        const neighborFallbacks = Number.isFinite(frameInfo.neighborFallbacks) ? frameInfo.neighborFallbacks : 0;
-        lines.push(`Gradient neighbor fetch: ok ${neighborMatches}, fallback ${neighborFallbacks}`);
-      }
     }
 
     if (debugPanelEl) {
       debugPanelEl.style.display = lines.length ? 'block' : 'none';
     }
     debugContentEl.textContent = lines.join('\n');
-  }
-
-  function refreshGradientUI() {
-    sanitizeGradientParameters();
-    if (gradientSamplingSlider) {
-      gradientSamplingSlider.step = formatGradientDistance(MIN_GRADIENT_DISTANCE);
-      gradientSamplingSlider.min = formatGradientDistance(gradientParameters.minDistance);
-      gradientSamplingSlider.max = formatGradientDistance(gradientParameters.maxDistance);
-      if (document.activeElement !== gradientSamplingSlider) {
-        gradientSamplingSlider.value = formatGradientDistance(samplingDistance);
-      }
-    }
-    if (gradientSamplingValueEl) {
-      let modeLabel = 'auto';
-      if (isSamplingDistanceManual) {
-        modeLabel = useProposedGradient ? 'proposed' : 'manual';
-      }
-      gradientSamplingValueEl.textContent = `${formatGradientDistance(samplingDistance)} m (${modeLabel})`;
-    }
-    if (gradientBaseSlider) {
-      gradientBaseSlider.step = formatGradientDistance(MIN_GRADIENT_DISTANCE);
-      gradientBaseSlider.min = formatGradientDistance(gradientParameters.minDistance);
-      gradientBaseSlider.max = formatGradientDistance(gradientParameters.maxDistance);
-      if (document.activeElement !== gradientBaseSlider) {
-        gradientBaseSlider.value = formatGradientDistance(gradientParameters.baseDistance);
-      }
-    }
-    if (gradientBaseValueEl) {
-      gradientBaseValueEl.textContent = formatGradientDistanceLabel(gradientParameters.baseDistance);
-    }
-    if (gradientMinSlider) {
-      gradientMinSlider.step = formatGradientDistance(MIN_GRADIENT_DISTANCE);
-      gradientMinSlider.min = formatGradientDistance(MIN_GRADIENT_DISTANCE);
-      gradientMinSlider.max = formatGradientDistance(gradientParameters.maxDistance);
-      if (document.activeElement !== gradientMinSlider) {
-        gradientMinSlider.value = formatGradientDistance(gradientParameters.minDistance);
-      }
-    }
-    if (gradientMinValueEl) {
-      gradientMinValueEl.textContent = formatGradientDistanceLabel(gradientParameters.minDistance);
-    }
-    if (gradientMaxSlider) {
-      gradientMaxSlider.step = formatGradientDistance(MIN_GRADIENT_DISTANCE);
-      gradientMaxSlider.min = formatGradientDistance(gradientParameters.minDistance);
-      if (document.activeElement !== gradientMaxSlider) {
-        gradientMaxSlider.value = formatGradientDistance(gradientParameters.maxDistance);
-      }
-    }
-    if (gradientMaxValueEl) {
-      gradientMaxValueEl.textContent = formatGradientDistanceLabel(gradientParameters.maxDistance);
-    }
-    if (gradientAutoButton) {
-      gradientAutoButton.disabled = !isSamplingDistanceManual;
-    }
-    if (gradientProposedButton) {
-      gradientProposedButton.disabled = useProposedGradient;
-    }
-    if (gradientAutoScaleSelect && gradientAutoScaleSelect.value !== gradientAutoScaleKey) {
-      gradientAutoScaleSelect.value = gradientAutoScaleKey;
-    }
-    refreshDebugPanel();
-  }
-
-  sanitizeGradientParameters();
-  clampSamplingDistanceToRange();
-  refreshGradientUI();
-
-  if (gradientSamplingSlider) {
-    gradientSamplingSlider.addEventListener('input', (e) => {
-      const value = parseFloat(e.target.value);
-      if (!Number.isFinite(value)) return;
-      sanitizeGradientParameters();
-      samplingDistance = clamp(value, gradientParameters.minDistance, gradientParameters.maxDistance);
-      isSamplingDistanceManual = true;
-      useProposedGradient = false;
-      gradientPreparer.invalidateAll();
-      refreshGradientUI();
-      if (map) map.triggerRepaint();
-    });
-  }
-
-  if (gradientBaseSlider) {
-    gradientBaseSlider.addEventListener('input', (e) => {
-      const value = parseFloat(e.target.value);
-      if (!Number.isFinite(value)) return;
-      gradientParameters.baseDistance = value;
-      sanitizeGradientParameters();
-      if (useProposedGradient) {
-        samplingDistance = computeProposedSamplingDistance();
-      } else if (isSamplingDistanceManual) {
-        clampSamplingDistanceToRange();
-      } else {
-        const zoom = map ? map.getZoom() : undefined;
-        const newDistance = computeSamplingDistanceForZoom(zoom);
-        if (Number.isFinite(newDistance)) {
-          samplingDistance = newDistance;
-        }
-      }
-      gradientPreparer.invalidateAll();
-      refreshGradientUI();
-      if (map) map.triggerRepaint();
-    });
-  }
-
-  if (gradientMinSlider) {
-    gradientMinSlider.addEventListener('input', (e) => {
-      const value = parseFloat(e.target.value);
-      if (!Number.isFinite(value)) return;
-      gradientParameters.minDistance = value;
-      sanitizeGradientParameters();
-      if (useProposedGradient) {
-        samplingDistance = computeProposedSamplingDistance();
-      } else if (isSamplingDistanceManual) {
-        clampSamplingDistanceToRange();
-      } else {
-        const zoom = map ? map.getZoom() : undefined;
-        const newDistance = computeSamplingDistanceForZoom(zoom);
-        if (Number.isFinite(newDistance)) {
-          samplingDistance = newDistance;
-        }
-      }
-      gradientPreparer.invalidateAll();
-      refreshGradientUI();
-      if (map) map.triggerRepaint();
-    });
-  }
-
-  if (gradientMaxSlider) {
-    gradientMaxSlider.addEventListener('input', (e) => {
-      const value = parseFloat(e.target.value);
-      if (!Number.isFinite(value)) return;
-      gradientParameters.maxDistance = value;
-      sanitizeGradientParameters();
-      if (useProposedGradient) {
-        samplingDistance = computeProposedSamplingDistance();
-      } else if (isSamplingDistanceManual) {
-        clampSamplingDistanceToRange();
-      } else {
-        const zoom = map ? map.getZoom() : undefined;
-        const newDistance = computeSamplingDistanceForZoom(zoom);
-        if (Number.isFinite(newDistance)) {
-          samplingDistance = newDistance;
-        }
-      }
-      gradientPreparer.invalidateAll();
-      refreshGradientUI();
-      if (map) map.triggerRepaint();
-    });
-  }
-
-  if (gradientAutoButton) {
-    gradientAutoButton.addEventListener('click', () => {
-      if (!isSamplingDistanceManual) return;
-      useProposedGradient = false;
-      isSamplingDistanceManual = false;
-      clampSamplingDistanceToRange();
-      if (map) {
-        updateSamplingDistanceForZoom(true);
-      } else {
-        const newDistance = computeSamplingDistanceForZoom(undefined);
-        if (Number.isFinite(newDistance)) {
-          samplingDistance = newDistance;
-        }
-        gradientPreparer.invalidateAll();
-      }
-      refreshGradientUI();
-      if (map) map.triggerRepaint();
-    });
-  }
-
-  if (gradientProposedButton) {
-    gradientProposedButton.addEventListener('click', () => {
-      const proposedDistance = computeProposedSamplingDistance();
-      if (!Number.isFinite(proposedDistance)) {
-        return;
-      }
-      samplingDistance = proposedDistance;
-      isSamplingDistanceManual = true;
-      useProposedGradient = true;
-      gradientPreparer.invalidateAll();
-      refreshGradientUI();
-      if (map) map.triggerRepaint();
-    });
-  }
-
-  if (gradientAutoScaleSelect) {
-    gradientAutoScaleSelect.addEventListener('change', (event) => {
-      const value = typeof event.target?.value === 'string' ? event.target.value : '';
-      if (!value) {
-        return;
-      }
-      const parsed = parseFloat(value);
-      if (!Number.isFinite(parsed) || parsed <= 0) {
-        return;
-      }
-      gradientAutoScaleKey = value;
-      gradientAutoScale = parsed;
-      if (useProposedGradient) {
-        samplingDistance = computeProposedSamplingDistance();
-        gradientPreparer.invalidateAll();
-        refreshGradientUI();
-        if (map) map.triggerRepaint();
-      } else if (isSamplingDistanceManual) {
-        refreshGradientUI();
-      } else {
-        updateSamplingDistanceForZoom(true);
-      }
-    });
   }
 
   const triggerShadowRepaint = () => {
@@ -2821,7 +2400,6 @@
       this.gl = gl;
       this.frameCount = 0;
       this.terrainTextureCache = new Map();
-      gradientPreparer.initialize(gl);
       ensureSunlightEngine(gl);
     },
   
@@ -2872,8 +2450,6 @@
         'u_projection_fallback_matrix',
         'u_image',
         ...neighborUniforms,
-        'u_gradient',
-        'u_usePrecomputedGradient',
         'u_dimension',
         'u_original_vertex_count',
         'u_terrain_unpack',
@@ -2882,8 +2458,7 @@
         'u_metersPerPixel',
         'u_latrange',
         'u_lightDir',
-        'u_shadowsEnabled',
-        'u_samplingDistance'
+        'u_shadowsEnabled'
       ];
       if (currentMode === "hillshade") {
         uniforms.push(
@@ -2938,7 +2513,7 @@
       return result;
     },
   
-    renderTiles(gl, shader, renderableTiles, terrainInterface, tileManager, terrainDataCache, textureCache, metersPerPixelCache, nativeGradientCache = null, debugMetrics = null) {
+    renderTiles(gl, shader, renderableTiles, terrainInterface, tileManager, terrainDataCache, textureCache, metersPerPixelCache, debugMetrics = null) {
       if (!terrainInterface || !tileManager) return;
       let renderedCount = 0;
       let skippedCount = 0;
@@ -3030,7 +2605,7 @@
       };
 
       const sunParams = currentMode === "shadow" ? computeSunParameters(this.map) : null;
-      const gradientTextureUnit = NEIGHBOR_OFFSETS.length + 1;
+      const baseAdditionalTextureUnit = NEIGHBOR_OFFSETS.length + 1;
       const hillshadeUniforms = currentMode === "hillshade"
         ? getHillshadeUniformsForCustomLayer(this.map)
         : null;
@@ -3117,25 +2692,6 @@
           neighborMeters = [];
         }
 
-        const tileKey = tile.tileID ? tile.tileID.key : null;
-        let gradientTexture = null;
-        if (tileKey && nativeGradientCache && nativeGradientCache.has(tileKey)) {
-          gradientTexture = nativeGradientCache.get(tileKey);
-        }
-        if (!gradientTexture) {
-          gradientTexture = gradientPreparer.getTexture(tile.tileID.key);
-        }
-        const hasGradient = !!gradientTexture;
-        if (shader.locations.u_usePrecomputedGradient != null) {
-          gl.uniform1i(shader.locations.u_usePrecomputedGradient, hasGradient ? 1 : 0);
-        }
-        if (hasGradient && gradientTexture) {
-          bindTexture(gradientTexture, gradientTextureUnit, 'u_gradient');
-        } else if (shader.locations.u_gradient != null) {
-          gl.activeTexture(gl.TEXTURE0 + gradientTextureUnit);
-          gl.bindTexture(gl.TEXTURE_2D, null);
-        }
-
         const projectionData = this.map.transform.getProjectionData({
           overscaledTileID: tile.tileID,
           applyGlobeMatrix: true
@@ -3189,10 +2745,6 @@
         if (shader.locations.u_zoom != null) {
           gl.uniform1f(shader.locations.u_zoom, canonical.z);
         }
-        if (shader.locations.u_samplingDistance != null) {
-          gl.uniform1f(shader.locations.u_samplingDistance, samplingDistance);
-        }
-
         let horizonEntry = null;
         if (useH4Daylight && engine && engine.supported) {
           horizonEntry = engine.ensureTileResources({
@@ -3245,8 +2797,8 @@
         }
 
         if (useH4Daylight && engine && engine.supported && horizonEntry && lutInfo && lutInfo.texture) {
-          const horizonTextureUnit = gradientTextureUnit + 1;
-          const lutTextureUnit = gradientTextureUnit + 2;
+          const horizonTextureUnit = baseAdditionalTextureUnit;
+          const lutTextureUnit = baseAdditionalTextureUnit + 1;
           bindTextureArrayNearest(horizonEntry.texture, horizonTextureUnit, 'u_h4Horizon');
           bindTextureNearest2D(lutInfo.texture, lutTextureUnit, 'u_h4Lut');
           if (shader.locations.u_h4AzimuthCount != null) {
@@ -3348,21 +2900,14 @@
 
       const renderableTiles = tileManager.getRenderableTiles();
       if (renderableTiles.length === 0) {
-        const gradientDebug = typeof gradientPreparer.getDebugInfo === 'function'
-          ? gradientPreparer.getDebugInfo()
-          : null;
         publishRenderDebugInfo({
           debugMetrics: { totalTiles: 0, drawnTiles: 0, skippedTiles: 0, passes: 0 },
           renderableTileCount: 0,
           terrainDataCount: 0,
           textureCacheCount: 0,
-          nativeGradientTiles: 0,
-          samplingDistance,
-          isSamplingDistanceManual,
           neighborSamplingActive: false,
           hillshadeMode,
           currentMode,
-          gradientDebug,
           activeModes: getActiveModesInOrder()
         });
         this.map.triggerRepaint();
@@ -3419,29 +2964,9 @@
         }
       }
 
-      updateSamplingDistanceForZoom();
-
-      const nativeGradientCache = collectNativeHillshadeTextures(this.map);
-
-      gradientPreparer.prepare({
-        gl,
-        renderableTiles,
-        tileManager,
-        terrainInterface,
-        terrainDataCache,
-        textureCache,
-        metersPerPixelCache,
-        neighborOffsets: NEIGHBOR_OFFSETS,
-        samplingDistance
-      });
-
       gl.enable(gl.CULL_FACE);
       gl.cullFace(gl.BACK);
       gl.enable(gl.DEPTH_TEST);
-
-      const gradientDebug = typeof gradientPreparer.getDebugInfo === 'function'
-        ? gradientPreparer.getDebugInfo()
-        : null;
 
       const shared = {
         renderableTiles,
@@ -3449,9 +2974,7 @@
         tileManager,
         terrainDataCache,
         textureCache,
-        metersPerPixelCache,
-        nativeGradientCache,
-        gradientDebug
+        metersPerPixelCache
       };
 
       let lastDebug = null;
@@ -3510,7 +3033,7 @@
           gl.depthFunc(gl.LESS);
           gl.colorMask(false, false, false, false);
           gl.clear(gl.DEPTH_BUFFER_BIT);
-          this.renderTiles(gl, shader, shared.renderableTiles, shared.terrainInterface, shared.tileManager, shared.terrainDataCache, shared.textureCache, shared.metersPerPixelCache, shared.nativeGradientCache, debugMetrics);
+          this.renderTiles(gl, shader, shared.renderableTiles, shared.terrainInterface, shared.tileManager, shared.terrainDataCache, shared.textureCache, shared.metersPerPixelCache, debugMetrics);
 
           gl.colorMask(true, true, true, true);
           gl.depthFunc(gl.LEQUAL);
@@ -3521,7 +3044,7 @@
             gl.ONE,
             gl.ONE_MINUS_SRC_ALPHA
           );
-          this.renderTiles(gl, shader, shared.renderableTiles, shared.terrainInterface, shared.tileManager, shared.terrainDataCache, shared.textureCache, shared.metersPerPixelCache, shared.nativeGradientCache, debugMetrics);
+          this.renderTiles(gl, shader, shared.renderableTiles, shared.terrainInterface, shared.tileManager, shared.terrainDataCache, shared.textureCache, shared.metersPerPixelCache, debugMetrics);
         } else {
           gl.depthFunc(gl.LEQUAL);
           gl.clear(gl.DEPTH_BUFFER_BIT);
@@ -3544,7 +3067,7 @@
           } else {
             gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
           }
-          this.renderTiles(gl, shader, shared.renderableTiles, shared.terrainInterface, shared.tileManager, shared.terrainDataCache, shared.textureCache, shared.metersPerPixelCache, shared.nativeGradientCache, debugMetrics);
+          this.renderTiles(gl, shader, shared.renderableTiles, shared.terrainInterface, shared.tileManager, shared.terrainDataCache, shared.textureCache, shared.metersPerPixelCache, debugMetrics);
         }
 
         return {
@@ -3552,13 +3075,9 @@
           renderableTileCount: shared.renderableTiles.length,
           terrainDataCount: shared.terrainDataCache.size,
           textureCacheCount: shared.textureCache.size,
-          nativeGradientTiles: shared.nativeGradientCache ? shared.nativeGradientCache.size : 0,
-          samplingDistance,
-          isSamplingDistanceManual,
           neighborSamplingActive: mode === "shadow" || mode === "daylight",
           hillshadeMode,
           currentMode: mode,
-          gradientDebug: shared.gradientDebug
         };
       } finally {
         currentMode = previousMode;
@@ -3831,7 +3350,6 @@
     }
     console.log("Terrain layer initialized");
     recomputeShadowTimeBounds();
-    updateSamplingDistanceForZoom();
     applyHQModeToSources();
     if (HillshadeDebug && typeof HillshadeDebug.attachToMap === 'function') {
       HillshadeDebug.attachToMap(map, {
@@ -3858,7 +3376,6 @@
   });
 
   map.on('zoomend', () => {
-    updateSamplingDistanceForZoom();
     if (isModeActive('shadow') || isModeActive('daylight')) {
       map.triggerRepaint();
     }
@@ -3878,7 +3395,6 @@
       cachedTerrainInterface = previousTerrain;
       clampTerrainMeshFrameDelta(cachedTerrainInterface);
     }
-    gradientPreparer.invalidateAll();
     terrainNormalLayer.shaderMap.clear();
     if (sunlightEngine && typeof sunlightEngine.invalidateAll === 'function') {
       sunlightEngine.invalidateAll();
