@@ -3478,6 +3478,22 @@
 
       gl.disable(gl.BLEND);
 
+      // Rendering the custom layers overwrites the depth buffer which causes the
+      // subsequent sky draw call to fail the depth test and disappear. Reset the
+      // depth buffer after we're done so MapLibre's internal sky rendering sees
+      // a cleared buffer and can draw above our overlays without us touching the
+      // internal renderer.
+      if (modes.length) {
+        const depthMaskEnabled = gl.getParameter(gl.DEPTH_WRITEMASK);
+        if (!depthMaskEnabled) {
+          gl.depthMask(true);
+        }
+        gl.clear(gl.DEPTH_BUFFER_BIT);
+        if (!depthMaskEnabled) {
+          gl.depthMask(false);
+        }
+      }
+
       if (lastDebug) {
         lastDebug.activeModes = modes;
         publishRenderDebugInfo(lastDebug);
