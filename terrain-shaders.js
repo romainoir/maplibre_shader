@@ -87,14 +87,12 @@ const TerrainShaders = {
     precision highp float;
     precision highp int;
     uniform sampler2D u_image;
-${SHADER_NEIGHBOR_UNIFORM_BLOCK}    uniform sampler2D u_gradient;
+${SHADER_NEIGHBOR_UNIFORM_BLOCK}
     uniform vec4 u_terrain_unpack;
     uniform vec2 u_dimension;
     uniform float u_zoom;
     uniform float u_metersPerPixel;
 ${SHADER_NEIGHBOR_METERS_UNIFORM_BLOCK}    uniform vec2 u_latrange;
-    uniform float u_samplingDistance;
-    uniform int u_usePrecomputedGradient;
 
     float getElevationFromTexture(sampler2D tex, vec2 pos) {
       vec3 data = texture(tex, pos).rgb * 255.0;
@@ -231,32 +229,23 @@ ${SHADER_NEIGHBOR_METERS_UNIFORM_BLOCK}    uniform vec2 u_latrange;
     }
 
     vec2 computeSobelGradient(vec2 pos) {
-      if (u_usePrecomputedGradient == 1) {
-        vec2 safePos = clampTexCoord(pos);
-        vec2 precomputed = texture(u_gradient, safePos).rg;
-        return precomputed;
-      }
-      vec2 safePos = pos;
-      float metersPerPixel = max(u_metersPerPixel, 0.0001);
-      float metersPerTile  = metersPerPixel * u_dimension.x;
-      float sampleDist = max(u_samplingDistance, 0.0001);
-      float delta = sampleDist / metersPerTile;
+      float samplingDistance = 0.5;
+      vec2 safePos = clampTexCoord(pos);
+      float metersPerPixel = 1.5 * pow(2.0, 16.0 - u_zoom);
+      float metersPerTile  = metersPerPixel * 256.0;
+      float delta = samplingDistance / metersPerTile;
 
-      vec2 dx = vec2(delta, 0.0);
-      vec2 dy = vec2(0.0, delta);
+      float tl = getElevationExtended(safePos + vec2(-delta, -delta));
+      float tm = getElevationExtended(safePos + vec2(0.0, -delta));
+      float tr = getElevationExtended(safePos + vec2(delta, -delta));
+      float ml = getElevationExtended(safePos + vec2(-delta, 0.0));
+      float mr = getElevationExtended(safePos + vec2(delta, 0.0));
+      float bl = getElevationExtended(safePos + vec2(-delta, delta));
+      float bm = getElevationExtended(safePos + vec2(0.0, delta));
+      float br = getElevationExtended(safePos + vec2(delta, delta));
 
-      float tl = getElevationExtended(safePos - dx - dy);
-      float tm = getElevationExtended(safePos - dy);
-      float tr = getElevationExtended(safePos + dx - dy);
-      float ml = getElevationExtended(safePos - dx);
-      float mr = getElevationExtended(safePos + dx);
-      float bl = getElevationExtended(safePos - dx + dy);
-      float bm = getElevationExtended(safePos + dy);
-      float br = getElevationExtended(safePos + dx + dy);
-
-      float normalization = 8.0 * sampleDist;
-      float gx = (-tl + tr - 2.0 * ml + 2.0 * mr - bl + br) / normalization;
-      float gy = (-tl - 2.0 * tm - tr + bl + 2.0 * bm + br) / normalization;
+      float gx = (-tl + tr - 2.0 * ml + 2.0 * mr - bl + br) / (8.0 * samplingDistance);
+      float gy = (-tl - 2.0 * tm - tr + bl + 2.0 * bm + br) / (8.0 * samplingDistance);
 
       return vec2(gx, gy);
     }
