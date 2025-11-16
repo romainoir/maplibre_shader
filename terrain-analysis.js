@@ -1324,9 +1324,7 @@
    * unprojecting the provided pixel against the near and far clip planes and
    * normalising the resulting vector.
    */
-  (function patchGetRayDirectionFromPixel() {
-    if (!window.maplibregl) return;
-
+  const ensureRayDirectionFromPixel = (() => {
     const multiplyMat4Vec4 = (m, v) => {
       const [x, y, z, w] = v;
       return [
@@ -1411,8 +1409,15 @@
       };
     };
 
-    patchPrototype(window.maplibregl?.Transform?.prototype);
-    patchPrototype(window.maplibregl?.MercatorTransform?.prototype);
+    if (typeof window !== 'undefined' && window.maplibregl) {
+      patchPrototype(window.maplibregl.Transform?.prototype);
+      patchPrototype(window.maplibregl.MercatorTransform?.prototype);
+    }
+
+    return (transformInstance) => {
+      if (!transformInstance) return;
+      patchPrototype(Object.getPrototypeOf(transformInstance));
+    };
   })();
   const MAX_NEIGHBOR_OFFSET = 2;
   const NEIGHBOR_NAME_OVERRIDES = {
@@ -3121,6 +3126,8 @@
     minZoom: 2,
     fadeDuration: 500
   });
+
+  ensureRayDirectionFromPixel(map?.transform);
 
   function getSkyPaintProperties() {
     const clone = { ...SKY_BASE_PROPERTIES };
