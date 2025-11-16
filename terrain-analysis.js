@@ -3674,7 +3674,11 @@
         ? maplibregl.version
         : null;
       if (versionString) {
-        const versionMatch = versionString.match(/^(\d+)(?:\.(\d+))?/);
+        // MapLibre version strings are not strictly formatted and may include
+        // prefixes such as "maplibre-gl@" or suffixes like "+abcdef". Grab the
+        // first numeric major/minor version pair we can find instead of relying
+        // on a very specific prefix.
+        const versionMatch = versionString.match(/(\d+)(?:\.(\d+))?/);
         if (versionMatch) {
           const major = parseInt(versionMatch[1], 10);
           const minor = versionMatch[2] ? parseInt(versionMatch[2], 10) : 0;
