@@ -45,7 +45,10 @@ export function drawSky(painter: Painter, sky: Sky) {
 
     const skyUniforms = skyUniformValues(sky, painter.style.map.transform, painter.pixelRatio);
 
-    const depthMode = new DepthMode(gl.LEQUAL, DepthMode.ReadWrite, [0, 1]);
+    // Always draw the sky regardless of existing depth values so custom layers
+    // cannot occlude it. Avoid modifying the depth buffer to preserve
+    // information for subsequent rendering steps (e.g. atmosphere).
+    const depthMode = new DepthMode(gl.ALWAYS, DepthMode.ReadOnly, [0, 1]);
     const stencilMode = StencilMode.disabled;
     const colorMode = painter.colorModeForRenderPass();
     const program = painter.useProgram('sky');
