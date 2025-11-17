@@ -2473,7 +2473,9 @@
           'u_hillshade_exaggeration',
           'u_hillshade_light_dir',
           'u_hillshade_light_altitude',
-          'u_hillshade_opacity'
+          'u_hillshade_opacity',
+          'u_hillshade_gradient',
+          'u_hillshade_gradient_available'
         );
       }
       if (currentMode === "snow") {
@@ -2669,6 +2671,21 @@
         let neighborMeters = null;
         if (terrainData.texture && shader.locations.u_image != null) {
           bindTexture(terrainData.texture, 0, 'u_image');
+          if (currentMode === "hillshade") {
+            const gradientTextureUnit = baseAdditionalTextureUnit;
+            const gradientTexture = tile && tile.fbo && tile.fbo.colorAttachment && !tile.needsHillshadePrepare
+              ? tile.fbo.colorAttachment.get()
+              : null;
+            const availabilityLocation = shader.locations.u_hillshade_gradient_available;
+            if (gradientTexture) {
+              bindTexture(gradientTexture, gradientTextureUnit, 'u_hillshade_gradient');
+              if (availabilityLocation != null) {
+                gl.uniform1f(availabilityLocation, 1.0);
+              }
+            } else if (availabilityLocation != null) {
+              gl.uniform1f(availabilityLocation, 0.0);
+            }
+          }
           if (currentMode === "shadow" || currentMode === "daylight") {
             neighborTextures = [];
             neighborMeters = [];
