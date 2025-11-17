@@ -33,7 +33,7 @@
         }
 
         void main() {
-          vec2 grad = computeSobelGradient(v_texCoord);
+          vec2 grad = getHillshadeGradient(v_texCoord);
           vec3 color = evaluateHillshade(grad);
           fragColor = vec4(color, u_hillshade_opacity);
         }`;

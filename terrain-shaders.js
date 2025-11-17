@@ -87,12 +87,14 @@ const TerrainShaders = {
     precision highp float;
     precision highp int;
     uniform sampler2D u_image;
-${SHADER_NEIGHBOR_UNIFORM_BLOCK}
+    uniform sampler2D u_hillshade_gradient;
+    ${SHADER_NEIGHBOR_UNIFORM_BLOCK}
     uniform vec4 u_terrain_unpack;
     uniform vec2 u_dimension;
     uniform float u_zoom;
     uniform float u_metersPerPixel;
 ${SHADER_NEIGHBOR_METERS_UNIFORM_BLOCK}    uniform vec2 u_latrange;
+    uniform float u_hillshade_gradient_available;
 
     float getElevationFromTexture(sampler2D tex, vec2 pos) {
       vec3 data = texture(tex, pos).rgb * 255.0;
@@ -248,6 +250,25 @@ ${SHADER_NEIGHBOR_METERS_UNIFORM_BLOCK}    uniform vec2 u_latrange;
       float gy = (-tl - 2.0 * tm - tr + bl + 2.0 * bm + br) / (8.0 * samplingDistance);
 
       return vec2(gx, gy);
+    }
+
+    float computeLatitudeForTexCoord(float y) {
+      return (u_latrange.x - u_latrange.y) * (1.0 - y) + u_latrange.y;
+    }
+
+    vec2 samplePrefilteredHillshadeGradient(vec2 pos) {
+      vec2 safePos = clampTexCoord(pos);
+      vec2 encoded = texture(u_hillshade_gradient, safePos).rg;
+      float latitude = computeLatitudeForTexCoord(safePos.y);
+      float scaleFactor = max(abs(cos(radians(latitude))), 0.000001);
+      return ((encoded * 8.0) - 4.0) / scaleFactor;
+    }
+
+    vec2 getHillshadeGradient(vec2 pos) {
+      if (u_hillshade_gradient_available > 0.5) {
+        return samplePrefilteredHillshadeGradient(pos);
+      }
+      return computeSobelGradient(pos);
     }
   `,
 
