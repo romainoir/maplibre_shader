@@ -365,6 +365,40 @@
       justify-content: flex-end;
     }
 
+    .custom-layer-cheatsheet {
+      margin-top: 14px;
+      padding: 14px 16px;
+      border-radius: 16px;
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      background: rgba(5, 7, 18, 0.55);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1);
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 16px;
+      font-size: 13px;
+    }
+
+    .custom-layer-cheatsheet h4 {
+      margin: 0 0 6px;
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: rgba(255, 255, 255, 0.85);
+    }
+
+    .custom-layer-cheatsheet ul {
+      margin: 0;
+      padding-left: 18px;
+      list-style: disc;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .custom-layer-cheatsheet li {
+      line-height: 1.35;
+    }
+
     .control-button.secondary {
       background: rgba(255, 255, 255, 0.1);
       border-color: rgba(255, 255, 255, 0.2);
@@ -461,6 +495,25 @@
       </div>
       <p>Paste GLSL fragment code below. The editor automatically prepends MapLibre's terrain varyings and helper functions so you can access <code>v_texCoord</code>, <code>v_elevation</code>, <code>getElevationFromTexture</code>, <code>getHillshadeGradient</code>, neighbor samplers, and more.</p>
       <p class="modal-hint">Write a <code>void main()</code> function that sets <code>fragColor</code>. Gradient and depth textures are available, and new code is applied live.</p>
+      <div class="custom-layer-cheatsheet" aria-label="Custom layer arguments reference">
+        <div>
+          <h4>customLayerArgs</h4>
+          <ul>
+            <li><code>nearZ</code> / <code>farZ</code> – camera clipping planes in meters.</li>
+            <li><code>fov</code> – vertical field of view already converted to radians.</li>
+            <li><code>modelViewProjectionMatrix</code> &amp; <code>projectionMatrix</code> – the 4×4 matrices used for projecting world space into clip space.</li>
+            <li><code>shaderData</code> – projection metadata ({ <code>variantName</code>, <code>vertexShaderPrelude</code>, <code>define</code> }) injected ahead of your shader.</li>
+            <li><code>defaultProjectionData</code> – value from <code>transform.getProjectionDataForCustomLayer()</code> for globe/mercator helpers.</li>
+          </ul>
+        </div>
+        <div>
+          <h4>renderingMode</h4>
+          <ul>
+            <li><code>'3d'</code> – reads and writes depth via <code>painter.getDepthModeFor3D()</code> so geometry participates in terrain occlusion.</li>
+            <li><code>'2d'</code> (default) – depth is read-only, ideal for full-screen quads like skies or screen-space compositing.</li>
+          </ul>
+        </div>
+      </div>
       <textarea id="customShaderInput" spellcheck="false"></textarea>
       <div class="custom-shader-footer">
         <div id="customShaderStatus" aria-live="polite"></div>
