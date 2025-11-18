@@ -194,7 +194,7 @@ void main() {
       const separator = remainder.startsWith('\n') ? '' : '\n';
       return `${versionLine}${commonSource}${separator}${remainder}`;
     }
-    return `#version 300 es\nprecision highp float;\nprecision highp int;\n${commonSource}\nin highp vec2 v_texCoord;\nin highp float v_elevation;\nin highp float v_isWall;\nout vec4 fragColor;\n\n${body}\n`;
+    return `#version 300 es\nprecision highp float;\nprecision highp int;\n${commonSource}\nin highp vec2 v_texCoord;\nin highp vec2 v_uv;\nin highp float v_elevation;\nin highp float v_isWall;\nin highp float v_depth;\nout vec4 fragColor;\n\n${body}\n`;
   }
 
   function registerCustomShaderSource() {
