@@ -10,6 +10,14 @@ highp vec4 pack(highp float value) {
     return comp;
 }
 
+highp float encodeDepth(highp float clipSpaceDepth) {
+    // Convert clip-space depth (-1..1) into the 0..1 range expected by the
+    // packing routine before storing it in the color attachment. Clamping keeps
+    // precision issues from generating NaNs when the clip coordinate drifts
+    // slightly outside of the canonical range.
+    return clamp(clipSpaceDepth * 0.5 + 0.5, 0.0, 1.0);
+}
+
 void main() {
-    fragColor = pack(v_depth);
+    fragColor = pack(encodeDepth(v_depth));
 }

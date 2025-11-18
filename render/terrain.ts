@@ -361,7 +361,7 @@ export class Terrain {
     /**
      * Reads the depth value from the depth-framebuffer at a given screen pixel
      * @param p - Screen coordinate
-     * @returns depth value in clip space (between 0 and 1)
+     * @returns depth value in clip space (between -1 and 1)
      */
 
     depthAtPoint(p: Point): number {
@@ -371,8 +371,9 @@ export class Terrain {
         gl.readPixels(p.x, this.painter.height / devicePixelRatio - p.y - 1, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
         context.bindFramebuffer.set(null);
         // decode coordinates (encoding see terran_depth.fragment.glsl)
-        const depthValue = (rgba[0] / (256 * 256 * 256) + rgba[1] / (256 * 256) + rgba[2] / 256 + rgba[3]) / 256;
-        return depthValue;
+        const encodedDepth = (rgba[0] / (256 * 256 * 256) + rgba[1] / (256 * 256) + rgba[2] / 256 + rgba[3]) / 256;
+        const clipDepth = Math.min(1, Math.max(-1, encodedDepth * 2 - 1));
+        return clipDepth;
     }
 
     /**
