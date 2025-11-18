@@ -312,6 +312,8 @@ ${SHADER_NEIGHBOR_METERS_UNIFORM_BLOCK}    uniform vec2 u_latrange;
       out highp vec2 v_texCoord;
       out highp float v_elevation;
       out highp float v_isWall;
+      out highp vec2 v_uv;
+      out highp float v_depth;
 
       float getElevation(vec2 pos) {
         vec4 data = texture(u_image, pos) * 255.0;
@@ -326,10 +328,12 @@ ${SHADER_NEIGHBOR_METERS_UNIFORM_BLOCK}    uniform vec2 u_latrange;
         float elev   = getElevation(v_texCoord);
         v_elevation  = elev;
         v_isWall     = float(gl_VertexID >= u_original_vertex_count);
+        v_uv         = v_texCoord;
         float finalE = (v_isWall > 0.5)
                        ? elev - 50.0
                        : elev;
         gl_Position  = projectTileFor3D(a_pos, finalE);
+        v_depth      = gl_Position.z / gl_Position.w;
       }`;
   },
 
