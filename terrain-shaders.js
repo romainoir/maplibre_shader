@@ -96,6 +96,28 @@ const TerrainShaders = {
 ${SHADER_NEIGHBOR_METERS_UNIFORM_BLOCK}    uniform vec2 u_latrange;
     uniform float u_hillshade_gradient_available;
 
+    vec3 srgbToLinear(vec3 color) {
+      vec3 srgb = clamp(color, 0.0, 1.0);
+      vec3 lo = srgb / 12.92;
+      vec3 hi = pow((srgb + 0.055) / 1.055, vec3(2.4));
+      return mix(lo, hi, step(vec3(0.04045), srgb));
+    }
+
+    vec4 srgbToLinear(vec4 color) {
+      return vec4(srgbToLinear(color.rgb), color.a);
+    }
+
+    vec3 linearToSrgb(vec3 color) {
+      vec3 linear = max(color, vec3(0.0));
+      vec3 lo = linear * 12.92;
+      vec3 hi = 1.055 * pow(linear, vec3(1.0 / 2.4)) - 0.055;
+      return mix(lo, hi, step(vec3(0.0031308), linear));
+    }
+
+    vec4 linearToSrgb(vec4 color) {
+      return vec4(linearToSrgb(color.rgb), color.a);
+    }
+
     float getElevationFromTexture(sampler2D tex, vec2 pos) {
       vec3 data = texture(tex, pos).rgb * 255.0;
       // Terrarium encoding: elevation = (R * 256 + G + B / 256) - 32768

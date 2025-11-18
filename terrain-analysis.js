@@ -183,6 +183,17 @@ void main() {
     const body = customShaderSource && customShaderSource.trim().length
       ? customShaderSource
       : DEFAULT_CUSTOM_SHADER_SOURCE;
+    const bodyWithTrimmedLeading = body.replace(/^\s+/, '');
+    if (/^#version\s+\d+/i.test(bodyWithTrimmedLeading)) {
+      const newlineIndex = bodyWithTrimmedLeading.indexOf('\n');
+      if (newlineIndex === -1) {
+        return `${bodyWithTrimmedLeading}\n${commonSource}\n`;
+      }
+      const versionLine = bodyWithTrimmedLeading.slice(0, newlineIndex + 1);
+      const remainder = bodyWithTrimmedLeading.slice(newlineIndex + 1);
+      const separator = remainder.startsWith('\n') ? '' : '\n';
+      return `${versionLine}${commonSource}${separator}${remainder}`;
+    }
     return `#version 300 es\nprecision highp float;\nprecision highp int;\n${commonSource}\nin highp vec2 v_texCoord;\nin highp float v_elevation;\nin highp float v_isWall;\nout vec4 fragColor;\n\n${body}\n`;
   }
 
