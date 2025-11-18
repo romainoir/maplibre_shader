@@ -5,6 +5,1701 @@ functions (elevation sampling, Sobel gradients, SRGB helpers, etc.). Copy the bl
 into your MapLibre custom layer panel and wire up the uniforms listed at the top of the shader.
 For background on what each effect does, see [custom-shaders/README.md](./README.md).
 
+### Additional shader concepts
+
+The snippets below implement the six additional ideas in full GLSL so you can paste them straight into a custom layer panel.
+
+## Curvature & concavity diagnostic
+
+Colors convex ridges with warm hues and concave basins with cool hues by comparing a ring of elevation samples against the current pixel.
+
+```glsl
+#version 300 es
+        precision highp float;
+        precision highp int;
+        
+    precision highp float;
+    precision highp int;
+    uniform sampler2D u_image;
+    uniform sampler2D u_hillshade_gradient;
+        uniform sampler2D u_image_0_m2;
+    uniform sampler2D u_image_topLeft;
+    uniform sampler2D u_image_top;
+    uniform sampler2D u_image_topRight;
+    uniform sampler2D u_image_m2_0;
+    uniform sampler2D u_image_left;
+    uniform sampler2D u_image_right;
+    uniform sampler2D u_image_p2_0;
+    uniform sampler2D u_image_bottomLeft;
+    uniform sampler2D u_image_bottom;
+    uniform sampler2D u_image_bottomRight;
+    uniform sampler2D u_image_0_p2;
+
+    uniform vec4 u_terrain_unpack;
+    uniform vec2 u_dimension;
+    uniform float u_zoom;
+    uniform float u_metersPerPixel;
+    uniform float u_metersPerPixel_0_m2;
+    uniform float u_metersPerPixel_topLeft;
+    uniform float u_metersPerPixel_top;
+    uniform float u_metersPerPixel_topRight;
+    uniform float u_metersPerPixel_m2_0;
+    uniform float u_metersPerPixel_left;
+    uniform float u_metersPerPixel_right;
+    uniform float u_metersPerPixel_p2_0;
+    uniform float u_metersPerPixel_bottomLeft;
+    uniform float u_metersPerPixel_bottom;
+    uniform float u_metersPerPixel_bottomRight;
+    uniform float u_metersPerPixel_0_p2;
+    uniform vec2 u_latrange;
+    uniform float u_hillshade_gradient_available;
+
+    vec3 srgbToLinear(vec3 color) {
+      vec3 srgb = clamp(color, 0.0, 1.0);
+      vec3 lo = srgb / 12.92;
+      vec3 hi = pow((srgb + 0.055) / 1.055, vec3(2.4));
+      return mix(lo, hi, step(vec3(0.04045), srgb));
+    }
+
+    vec4 srgbToLinear(vec4 color) {
+      return vec4(srgbToLinear(color.rgb), color.a);
+    }
+
+    vec3 linearToSrgb(vec3 color) {
+      vec3 linear = max(color, vec3(0.0));
+      vec3 lo = linear * 12.92;
+      vec3 hi = 1.055 * pow(linear, vec3(1.0 / 2.4)) - 0.055;
+      return mix(lo, hi, step(vec3(0.0031308), linear));
+    }
+
+    vec4 linearToSrgb(vec4 color) {
+      return vec4(linearToSrgb(color.rgb), color.a);
+    }
+
+    float getElevationFromTexture(sampler2D tex, vec2 pos) {
+      vec3 data = texture(tex, pos).rgb * 255.0;
+      // Terrarium encoding: elevation = (R * 256 + G + B / 256) - 32768
+      return dot(data, vec3(256.0, 1.0, 1.0 / 256.0)) - 32768.0;
+    }
+
+    float getElevationFromTextureLod(sampler2D tex, vec2 pos, float lod) {
+      vec3 data = textureLod(tex, pos, lod).rgb * 255.0;
+      return dot(data, vec3(256.0, 1.0, 1.0 / 256.0)) - 32768.0;
+    }
+
+    float reflectCoord(float coord, float minBound, float maxBound) {
+      float span = max(maxBound - minBound, 0.0);
+      if (span <= 0.0) {
+        return minBound;
+      }
+      float twoSpan = span * 2.0;
+      float offset = coord - minBound;
+      float wrapped = mod(offset, twoSpan);
+      if (wrapped < 0.0) {
+        wrapped += twoSpan;
+      }
+      float reflected = wrapped <= span ? wrapped : (twoSpan - wrapped);
+      return minBound + reflected;
+    }
+
+    vec2 clampTexCoord(vec2 pos) {
+      float borderX = 0.5 / u_dimension.x;
+      float borderY = 0.5 / u_dimension.y;
+      float minX = borderX;
+      float maxX = 1.0 - borderX;
+      float minY = borderY;
+      float maxY = 1.0 - borderY;
+      return vec2(
+        reflectCoord(pos.x, minX, maxX),
+        reflectCoord(pos.y, minY, maxY)
+      );
+    }
+
+    vec2 resolveNeighborCoords(vec2 pos, out ivec2 offset) {
+      vec2 tilePos = pos;
+      offset = ivec2(0);
+      const int MAX_OFFSET = 2;
+      for (int i = 0; i < 8; ++i) {
+        bool adjusted = false;
+        if (tilePos.x < 0.0) {
+          int nextOffsetX = offset.x - 1;
+          if (nextOffsetX >= -MAX_OFFSET && abs(nextOffsetX) + abs(offset.y) <= MAX_OFFSET) {
+            tilePos.x += 1.0;
+            offset.x = nextOffsetX;
+            adjusted = true;
+          }
+        } else if (tilePos.x > 1.0) {
+          int nextOffsetX = offset.x + 1;
+          if (nextOffsetX <= MAX_OFFSET && abs(nextOffsetX) + abs(offset.y) <= MAX_OFFSET) {
+            tilePos.x -= 1.0;
+            offset.x = nextOffsetX;
+            adjusted = true;
+          }
+        }
+        if (tilePos.y < 0.0) {
+          int nextOffsetY = offset.y - 1;
+          if (nextOffsetY >= -MAX_OFFSET && abs(offset.x) + abs(nextOffsetY) <= MAX_OFFSET) {
+            tilePos.y += 1.0;
+            offset.y = nextOffsetY;
+            adjusted = true;
+          }
+        } else if (tilePos.y > 1.0) {
+          int nextOffsetY = offset.y + 1;
+          if (nextOffsetY <= MAX_OFFSET && abs(offset.x) + abs(nextOffsetY) <= MAX_OFFSET) {
+            tilePos.y -= 1.0;
+            offset.y = nextOffsetY;
+            adjusted = true;
+          }
+        }
+        if (!adjusted) {
+          break;
+        }
+      }
+      offset.x = clamp(offset.x, -MAX_OFFSET, MAX_OFFSET);
+      offset.y = clamp(offset.y, -MAX_OFFSET, MAX_OFFSET);
+      return clampTexCoord(tilePos);
+    }
+
+    float fetchElevationForOffset(ivec2 offset, vec2 tilePos) {
+      if (offset == ivec2(0, 0)) {
+        return getElevationFromTexture(u_image, tilePos);
+      }
+      if (offset == ivec2(0, -2)) {
+        return getElevationFromTexture(u_image_0_m2, tilePos);
+      }
+      if (offset == ivec2(-1, -1)) {
+        return getElevationFromTexture(u_image_topLeft, tilePos);
+      }
+      if (offset == ivec2(0, -1)) {
+        return getElevationFromTexture(u_image_top, tilePos);
+      }
+      if (offset == ivec2(1, -1)) {
+        return getElevationFromTexture(u_image_topRight, tilePos);
+      }
+      if (offset == ivec2(-2, 0)) {
+        return getElevationFromTexture(u_image_m2_0, tilePos);
+      }
+      if (offset == ivec2(-1, 0)) {
+        return getElevationFromTexture(u_image_left, tilePos);
+      }
+      if (offset == ivec2(1, 0)) {
+        return getElevationFromTexture(u_image_right, tilePos);
+      }
+      if (offset == ivec2(2, 0)) {
+        return getElevationFromTexture(u_image_p2_0, tilePos);
+      }
+      if (offset == ivec2(-1, 1)) {
+        return getElevationFromTexture(u_image_bottomLeft, tilePos);
+      }
+      if (offset == ivec2(0, 1)) {
+        return getElevationFromTexture(u_image_bottom, tilePos);
+      }
+      if (offset == ivec2(1, 1)) {
+        return getElevationFromTexture(u_image_bottomRight, tilePos);
+      }
+      if (offset == ivec2(0, 2)) {
+        return getElevationFromTexture(u_image_0_p2, tilePos);
+      }
+      return getElevationFromTexture(u_image, tilePos);
+    }
+
+    float fetchElevationForOffsetLod(ivec2 offset, vec2 tilePos, float lod) {
+      if (offset == ivec2(0, 0)) {
+        return getElevationFromTextureLod(u_image, tilePos, lod);
+      }
+      if (offset == ivec2(0, -2)) {
+        return getElevationFromTextureLod(u_image_0_m2, tilePos, lod);
+      }
+      if (offset == ivec2(-1, -1)) {
+        return getElevationFromTextureLod(u_image_topLeft, tilePos, lod);
+      }
+      if (offset == ivec2(0, -1)) {
+        return getElevationFromTextureLod(u_image_top, tilePos, lod);
+      }
+      if (offset == ivec2(1, -1)) {
+        return getElevationFromTextureLod(u_image_topRight, tilePos, lod);
+      }
+      if (offset == ivec2(-2, 0)) {
+        return getElevationFromTextureLod(u_image_m2_0, tilePos, lod);
+      }
+      if (offset == ivec2(-1, 0)) {
+        return getElevationFromTextureLod(u_image_left, tilePos, lod);
+      }
+      if (offset == ivec2(1, 0)) {
+        return getElevationFromTextureLod(u_image_right, tilePos, lod);
+      }
+      if (offset == ivec2(2, 0)) {
+        return getElevationFromTextureLod(u_image_p2_0, tilePos, lod);
+      }
+      if (offset == ivec2(-1, 1)) {
+        return getElevationFromTextureLod(u_image_bottomLeft, tilePos, lod);
+      }
+      if (offset == ivec2(0, 1)) {
+        return getElevationFromTextureLod(u_image_bottom, tilePos, lod);
+      }
+      if (offset == ivec2(1, 1)) {
+        return getElevationFromTextureLod(u_image_bottomRight, tilePos, lod);
+      }
+      if (offset == ivec2(0, 2)) {
+        return getElevationFromTextureLod(u_image_0_p2, tilePos, lod);
+      }
+      return getElevationFromTextureLod(u_image, tilePos, lod);
+    }
+
+    float getMetersPerPixelForOffset(ivec2 offset) {
+      if (offset == ivec2(0, 0)) {
+        return max(u_metersPerPixel, 0.0);
+      }
+      if (offset == ivec2(0, -2)) {
+        return max(u_metersPerPixel_0_m2, 0.0);
+      }
+      if (offset == ivec2(-1, -1)) {
+        return max(u_metersPerPixel_topLeft, 0.0);
+      }
+      if (offset == ivec2(0, -1)) {
+        return max(u_metersPerPixel_top, 0.0);
+      }
+      if (offset == ivec2(1, -1)) {
+        return max(u_metersPerPixel_topRight, 0.0);
+      }
+      if (offset == ivec2(-2, 0)) {
+        return max(u_metersPerPixel_m2_0, 0.0);
+      }
+      if (offset == ivec2(-1, 0)) {
+        return max(u_metersPerPixel_left, 0.0);
+      }
+      if (offset == ivec2(1, 0)) {
+        return max(u_metersPerPixel_right, 0.0);
+      }
+      if (offset == ivec2(2, 0)) {
+        return max(u_metersPerPixel_p2_0, 0.0);
+      }
+      if (offset == ivec2(-1, 1)) {
+        return max(u_metersPerPixel_bottomLeft, 0.0);
+      }
+      if (offset == ivec2(0, 1)) {
+        return max(u_metersPerPixel_bottom, 0.0);
+      }
+      if (offset == ivec2(1, 1)) {
+        return max(u_metersPerPixel_bottomRight, 0.0);
+      }
+      if (offset == ivec2(0, 2)) {
+        return max(u_metersPerPixel_0_p2, 0.0);
+      }
+      return max(u_metersPerPixel, 0.0);
+    }
+
+    float getElevationExtended(vec2 pos) {
+      ivec2 offset;
+      vec2 tilePos = resolveNeighborCoords(pos, offset);
+      return fetchElevationForOffset(offset, tilePos);
+    }
+
+    float computeRaySampleLod(float horizontalMeters, float metersPerPixel) {
+      float texelFootprint = horizontalMeters / max(metersPerPixel, 0.0001);
+      float lod = log2(max(texelFootprint, 1.0)) - 2.0;
+      return clamp(lod, 0.0, 8.0);
+    }
+
+    float sampleElevationAdaptive(vec2 pos, float horizontalMeters, float metersPerPixel) {
+      ivec2 offset;
+      vec2 tilePos = resolveNeighborCoords(pos, offset);
+      float localMetersPerPixel = getMetersPerPixelForOffset(offset);
+      if (localMetersPerPixel <= 0.0) {
+        localMetersPerPixel = metersPerPixel;
+      }
+      localMetersPerPixel = max(localMetersPerPixel, 0.0001);
+      float lod = computeRaySampleLod(horizontalMeters, localMetersPerPixel);
+      if (lod <= 0.001) {
+        return fetchElevationForOffset(offset, tilePos);
+      }
+      return fetchElevationForOffsetLod(offset, tilePos, lod);
+    }
+
+    float computeAdaptiveStepGrowth(float horizontalMeters) {
+      float t = clamp(horizontalMeters / 6000.0, 0.0, 1.0);
+      return mix(1.04, 1.10, t);
+    }
+
+    vec2 computeSobelGradient(vec2 pos) {
+      float samplingDistance = 0.5;
+      vec2 safePos = clampTexCoord(pos);
+      float metersPerPixel = 1.5 * pow(2.0, 16.0 - u_zoom);
+      float metersPerTile  = metersPerPixel * 256.0;
+      float delta = samplingDistance / metersPerTile;
+
+      float tl = getElevationExtended(safePos + vec2(-delta, -delta));
+      float tm = getElevationExtended(safePos + vec2(0.0, -delta));
+      float tr = getElevationExtended(safePos + vec2(delta, -delta));
+      float ml = getElevationExtended(safePos + vec2(-delta, 0.0));
+      float mr = getElevationExtended(safePos + vec2(delta, 0.0));
+      float bl = getElevationExtended(safePos + vec2(-delta, delta));
+      float bm = getElevationExtended(safePos + vec2(0.0, delta));
+      float br = getElevationExtended(safePos + vec2(delta, delta));
+
+      float gx = (-tl + tr - 2.0 * ml + 2.0 * mr - bl + br) / (8.0 * samplingDistance);
+      float gy = (-tl - 2.0 * tm - tr + bl + 2.0 * bm + br) / (8.0 * samplingDistance);
+
+      return vec2(gx, gy);
+    }
+
+    float computeLatitudeForTexCoord(float y) {
+      return (u_latrange.x - u_latrange.y) * (1.0 - y) + u_latrange.y;
+    }
+
+    vec2 samplePrefilteredHillshadeGradient(vec2 pos) {
+      vec2 safePos = clampTexCoord(pos);
+      vec2 encoded = texture(u_hillshade_gradient, safePos).rg;
+      float latitude = computeLatitudeForTexCoord(safePos.y);
+      float scaleFactor = max(abs(cos(radians(latitude))), 0.000001);
+      return ((encoded * 8.0) - 4.0) / scaleFactor;
+    }
+
+    vec2 getHillshadeGradient(vec2 pos) {
+      if (u_hillshade_gradient_available > 0.5) {
+        return samplePrefilteredHillshadeGradient(pos);
+      }
+      return computeSobelGradient(pos);
+    }
+        in  highp vec2 v_texCoord;
+        out vec4 fragColor;
+
+        float computeSlopeDegrees(vec2 pos) {
+          vec2 g = computeSobelGradient(pos);
+          return degrees(atan(length(g)));
+        }
+
+        float computeCurvature(vec2 pos) {
+          vec2 safePos = clampTexCoord(pos);
+          float center = getElevationExtended(safePos);
+          float metersPerPixel = 1.5 * pow(2.0, 16.0 - u_zoom);
+          float metersPerTile = metersPerPixel * 256.0;
+          float radiusMeters = 20.0;
+          float delta = radiusMeters / metersPerTile;
+          const vec2 ringOffsets[12] = vec2[](
+            vec2(1.0, 0.0), vec2(-1.0, 0.0),
+            vec2(0.0, 1.0), vec2(0.0, -1.0),
+            vec2(0.707, 0.707), vec2(0.707, -0.707),
+            vec2(-0.707, 0.707), vec2(-0.707, -0.707),
+            vec2(1.5, 0.0), vec2(-1.5, 0.0),
+            vec2(0.0, 1.5), vec2(0.0, -1.5)
+          );
+          float sum = 0.0;
+          for (int i = 0; i < 12; ++i) {
+            sum += getElevationExtended(safePos + ringOffsets[i] * delta);
+          }
+          float mean = sum / 12.0;
+          return mean - center;
+        }
+
+        void main() {
+          float curvature = computeCurvature(v_texCoord);
+          float slope = computeSlopeDegrees(v_texCoord);
+          float slopeMask = smoothstep(3.0, 18.0, slope);
+          float intensity = clamp(abs(curvature) / 5.0, 0.0, 1.0) * slopeMask;
+          float concavity = smoothstep(-1.5, 1.5, curvature);
+          vec3 concaveColor = vec3(0.18, 0.44, 0.94);
+          vec3 convexColor = vec3(1.0, 0.58, 0.08);
+          vec3 neutralColor = vec3(0.08, 0.08, 0.08);
+          vec3 ramp = mix(concaveColor, convexColor, concavity);
+          vec3 color = mix(neutralColor, ramp, intensity);
+          fragColor = vec4(color, 0.85 * intensity + 0.15);
+        }
+```
+
+## Latitude-adjusted snowline bands
+
+Estimates a freezing altitude that changes with latitude and aspect, then blends alpine snow above the computed snowline and warmer tones below it.
+
+```glsl
+#version 300 es
+        precision highp float;
+        precision highp int;
+        
+    precision highp float;
+    precision highp int;
+    uniform sampler2D u_image;
+    uniform sampler2D u_hillshade_gradient;
+        uniform sampler2D u_image_0_m2;
+    uniform sampler2D u_image_topLeft;
+    uniform sampler2D u_image_top;
+    uniform sampler2D u_image_topRight;
+    uniform sampler2D u_image_m2_0;
+    uniform sampler2D u_image_left;
+    uniform sampler2D u_image_right;
+    uniform sampler2D u_image_p2_0;
+    uniform sampler2D u_image_bottomLeft;
+    uniform sampler2D u_image_bottom;
+    uniform sampler2D u_image_bottomRight;
+    uniform sampler2D u_image_0_p2;
+
+    uniform vec4 u_terrain_unpack;
+    uniform vec2 u_dimension;
+    uniform float u_zoom;
+    uniform float u_metersPerPixel;
+    uniform float u_metersPerPixel_0_m2;
+    uniform float u_metersPerPixel_topLeft;
+    uniform float u_metersPerPixel_top;
+    uniform float u_metersPerPixel_topRight;
+    uniform float u_metersPerPixel_m2_0;
+    uniform float u_metersPerPixel_left;
+    uniform float u_metersPerPixel_right;
+    uniform float u_metersPerPixel_p2_0;
+    uniform float u_metersPerPixel_bottomLeft;
+    uniform float u_metersPerPixel_bottom;
+    uniform float u_metersPerPixel_bottomRight;
+    uniform float u_metersPerPixel_0_p2;
+    uniform vec2 u_latrange;
+    uniform float u_hillshade_gradient_available;
+
+    vec3 srgbToLinear(vec3 color) {
+      vec3 srgb = clamp(color, 0.0, 1.0);
+      vec3 lo = srgb / 12.92;
+      vec3 hi = pow((srgb + 0.055) / 1.055, vec3(2.4));
+      return mix(lo, hi, step(vec3(0.04045), srgb));
+    }
+
+    vec4 srgbToLinear(vec4 color) {
+      return vec4(srgbToLinear(color.rgb), color.a);
+    }
+
+    vec3 linearToSrgb(vec3 color) {
+      vec3 linear = max(color, vec3(0.0));
+      vec3 lo = linear * 12.92;
+      vec3 hi = 1.055 * pow(linear, vec3(1.0 / 2.4)) - 0.055;
+      return mix(lo, hi, step(vec3(0.0031308), linear));
+    }
+
+    vec4 linearToSrgb(vec4 color) {
+      return vec4(linearToSrgb(color.rgb), color.a);
+    }
+
+    float getElevationFromTexture(sampler2D tex, vec2 pos) {
+      vec3 data = texture(tex, pos).rgb * 255.0;
+      // Terrarium encoding: elevation = (R * 256 + G + B / 256) - 32768
+      return dot(data, vec3(256.0, 1.0, 1.0 / 256.0)) - 32768.0;
+    }
+
+    float getElevationFromTextureLod(sampler2D tex, vec2 pos, float lod) {
+      vec3 data = textureLod(tex, pos, lod).rgb * 255.0;
+      return dot(data, vec3(256.0, 1.0, 1.0 / 256.0)) - 32768.0;
+    }
+
+    float reflectCoord(float coord, float minBound, float maxBound) {
+      float span = max(maxBound - minBound, 0.0);
+      if (span <= 0.0) {
+        return minBound;
+      }
+      float twoSpan = span * 2.0;
+      float offset = coord - minBound;
+      float wrapped = mod(offset, twoSpan);
+      if (wrapped < 0.0) {
+        wrapped += twoSpan;
+      }
+      float reflected = wrapped <= span ? wrapped : (twoSpan - wrapped);
+      return minBound + reflected;
+    }
+
+    vec2 clampTexCoord(vec2 pos) {
+      float borderX = 0.5 / u_dimension.x;
+      float borderY = 0.5 / u_dimension.y;
+      float minX = borderX;
+      float maxX = 1.0 - borderX;
+      float minY = borderY;
+      float maxY = 1.0 - borderY;
+      return vec2(
+        reflectCoord(pos.x, minX, maxX),
+        reflectCoord(pos.y, minY, maxY)
+      );
+    }
+
+    vec2 resolveNeighborCoords(vec2 pos, out ivec2 offset) {
+      vec2 tilePos = pos;
+      offset = ivec2(0);
+      const int MAX_OFFSET = 2;
+      for (int i = 0; i < 8; ++i) {
+        bool adjusted = false;
+        if (tilePos.x < 0.0) {
+          int nextOffsetX = offset.x - 1;
+          if (nextOffsetX >= -MAX_OFFSET && abs(nextOffsetX) + abs(offset.y) <= MAX_OFFSET) {
+            tilePos.x += 1.0;
+            offset.x = nextOffsetX;
+            adjusted = true;
+          }
+        } else if (tilePos.x > 1.0) {
+          int nextOffsetX = offset.x + 1;
+          if (nextOffsetX <= MAX_OFFSET && abs(nextOffsetX) + abs(offset.y) <= MAX_OFFSET) {
+            tilePos.x -= 1.0;
+            offset.x = nextOffsetX;
+            adjusted = true;
+          }
+        }
+        if (tilePos.y < 0.0) {
+          int nextOffsetY = offset.y - 1;
+          if (nextOffsetY >= -MAX_OFFSET && abs(offset.x) + abs(nextOffsetY) <= MAX_OFFSET) {
+            tilePos.y += 1.0;
+            offset.y = nextOffsetY;
+            adjusted = true;
+          }
+        } else if (tilePos.y > 1.0) {
+          int nextOffsetY = offset.y + 1;
+          if (nextOffsetY <= MAX_OFFSET && abs(offset.x) + abs(nextOffsetY) <= MAX_OFFSET) {
+            tilePos.y -= 1.0;
+            offset.y = nextOffsetY;
+            adjusted = true;
+          }
+        }
+        if (!adjusted) {
+          break;
+        }
+      }
+      offset.x = clamp(offset.x, -MAX_OFFSET, MAX_OFFSET);
+      offset.y = clamp(offset.y, -MAX_OFFSET, MAX_OFFSET);
+      return clampTexCoord(tilePos);
+    }
+
+    float fetchElevationForOffset(ivec2 offset, vec2 tilePos) {
+      if (offset == ivec2(0, 0)) {
+        return getElevationFromTexture(u_image, tilePos);
+      }
+      if (offset == ivec2(0, -2)) {
+        return getElevationFromTexture(u_image_0_m2, tilePos);
+      }
+      if (offset == ivec2(-1, -1)) {
+        return getElevationFromTexture(u_image_topLeft, tilePos);
+      }
+      if (offset == ivec2(0, -1)) {
+        return getElevationFromTexture(u_image_top, tilePos);
+      }
+      if (offset == ivec2(1, -1)) {
+        return getElevationFromTexture(u_image_topRight, tilePos);
+      }
+      if (offset == ivec2(-2, 0)) {
+        return getElevationFromTexture(u_image_m2_0, tilePos);
+      }
+      if (offset == ivec2(-1, 0)) {
+        return getElevationFromTexture(u_image_left, tilePos);
+      }
+      if (offset == ivec2(1, 0)) {
+        return getElevationFromTexture(u_image_right, tilePos);
+      }
+      if (offset == ivec2(2, 0)) {
+        return getElevationFromTexture(u_image_p2_0, tilePos);
+      }
+      if (offset == ivec2(-1, 1)) {
+        return getElevationFromTexture(u_image_bottomLeft, tilePos);
+      }
+      if (offset == ivec2(0, 1)) {
+        return getElevationFromTexture(u_image_bottom, tilePos);
+      }
+      if (offset == ivec2(1, 1)) {
+        return getElevationFromTexture(u_image_bottomRight, tilePos);
+      }
+      if (offset == ivec2(0, 2)) {
+        return getElevationFromTexture(u_image_0_p2, tilePos);
+      }
+      return getElevationFromTexture(u_image, tilePos);
+    }
+
+    float fetchElevationForOffsetLod(ivec2 offset, vec2 tilePos, float lod) {
+      if (offset == ivec2(0, 0)) {
+        return getElevationFromTextureLod(u_image, tilePos, lod);
+      }
+      if (offset == ivec2(0, -2)) {
+        return getElevationFromTextureLod(u_image_0_m2, tilePos, lod);
+      }
+      if (offset == ivec2(-1, -1)) {
+        return getElevationFromTextureLod(u_image_topLeft, tilePos, lod);
+      }
+      if (offset == ivec2(0, -1)) {
+        return getElevationFromTextureLod(u_image_top, tilePos, lod);
+      }
+      if (offset == ivec2(1, -1)) {
+        return getElevationFromTextureLod(u_image_topRight, tilePos, lod);
+      }
+      if (offset == ivec2(-2, 0)) {
+        return getElevationFromTextureLod(u_image_m2_0, tilePos, lod);
+      }
+      if (offset == ivec2(-1, 0)) {
+        return getElevationFromTextureLod(u_image_left, tilePos, lod);
+      }
+      if (offset == ivec2(1, 0)) {
+        return getElevationFromTextureLod(u_image_right, tilePos, lod);
+      }
+      if (offset == ivec2(2, 0)) {
+        return getElevationFromTextureLod(u_image_p2_0, tilePos, lod);
+      }
+      if (offset == ivec2(-1, 1)) {
+        return getElevationFromTextureLod(u_image_bottomLeft, tilePos, lod);
+      }
+      if (offset == ivec2(0, 1)) {
+        return getElevationFromTextureLod(u_image_bottom, tilePos, lod);
+      }
+      if (offset == ivec2(1, 1)) {
+        return getElevationFromTextureLod(u_image_bottomRight, tilePos, lod);
+      }
+      if (offset == ivec2(0, 2)) {
+        return getElevationFromTextureLod(u_image_0_p2, tilePos, lod);
+      }
+      return getElevationFromTextureLod(u_image, tilePos, lod);
+    }
+
+    float getMetersPerPixelForOffset(ivec2 offset) {
+      if (offset == ivec2(0, 0)) {
+        return max(u_metersPerPixel, 0.0);
+      }
+      if (offset == ivec2(0, -2)) {
+        return max(u_metersPerPixel_0_m2, 0.0);
+      }
+      if (offset == ivec2(-1, -1)) {
+        return max(u_metersPerPixel_topLeft, 0.0);
+      }
+      if (offset == ivec2(0, -1)) {
+        return max(u_metersPerPixel_top, 0.0);
+      }
+      if (offset == ivec2(1, -1)) {
+        return max(u_metersPerPixel_topRight, 0.0);
+      }
+      if (offset == ivec2(-2, 0)) {
+        return max(u_metersPerPixel_m2_0, 0.0);
+      }
+      if (offset == ivec2(-1, 0)) {
+        return max(u_metersPerPixel_left, 0.0);
+      }
+      if (offset == ivec2(1, 0)) {
+        return max(u_metersPerPixel_right, 0.0);
+      }
+      if (offset == ivec2(2, 0)) {
+        return max(u_metersPerPixel_p2_0, 0.0);
+      }
+      if (offset == ivec2(-1, 1)) {
+        return max(u_metersPerPixel_bottomLeft, 0.0);
+      }
+      if (offset == ivec2(0, 1)) {
+        return max(u_metersPerPixel_bottom, 0.0);
+      }
+      if (offset == ivec2(1, 1)) {
+        return max(u_metersPerPixel_bottomRight, 0.0);
+      }
+      if (offset == ivec2(0, 2)) {
+        return max(u_metersPerPixel_0_p2, 0.0);
+      }
+      return max(u_metersPerPixel, 0.0);
+    }
+
+    float getElevationExtended(vec2 pos) {
+      ivec2 offset;
+      vec2 tilePos = resolveNeighborCoords(pos, offset);
+      return fetchElevationForOffset(offset, tilePos);
+    }
+
+    float computeRaySampleLod(float horizontalMeters, float metersPerPixel) {
+      float texelFootprint = horizontalMeters / max(metersPerPixel, 0.0001);
+      float lod = log2(max(texelFootprint, 1.0)) - 2.0;
+      return clamp(lod, 0.0, 8.0);
+    }
+
+    float sampleElevationAdaptive(vec2 pos, float horizontalMeters, float metersPerPixel) {
+      ivec2 offset;
+      vec2 tilePos = resolveNeighborCoords(pos, offset);
+      float localMetersPerPixel = getMetersPerPixelForOffset(offset);
+      if (localMetersPerPixel <= 0.0) {
+        localMetersPerPixel = metersPerPixel;
+      }
+      localMetersPerPixel = max(localMetersPerPixel, 0.0001);
+      float lod = computeRaySampleLod(horizontalMeters, localMetersPerPixel);
+      if (lod <= 0.001) {
+        return fetchElevationForOffset(offset, tilePos);
+      }
+      return fetchElevationForOffsetLod(offset, tilePos, lod);
+    }
+
+    float computeAdaptiveStepGrowth(float horizontalMeters) {
+      float t = clamp(horizontalMeters / 6000.0, 0.0, 1.0);
+      return mix(1.04, 1.10, t);
+    }
+
+    vec2 computeSobelGradient(vec2 pos) {
+      float samplingDistance = 0.5;
+      vec2 safePos = clampTexCoord(pos);
+      float metersPerPixel = 1.5 * pow(2.0, 16.0 - u_zoom);
+      float metersPerTile  = metersPerPixel * 256.0;
+      float delta = samplingDistance / metersPerTile;
+
+      float tl = getElevationExtended(safePos + vec2(-delta, -delta));
+      float tm = getElevationExtended(safePos + vec2(0.0, -delta));
+      float tr = getElevationExtended(safePos + vec2(delta, -delta));
+      float ml = getElevationExtended(safePos + vec2(-delta, 0.0));
+      float mr = getElevationExtended(safePos + vec2(delta, 0.0));
+      float bl = getElevationExtended(safePos + vec2(-delta, delta));
+      float bm = getElevationExtended(safePos + vec2(0.0, delta));
+      float br = getElevationExtended(safePos + vec2(delta, delta));
+
+      float gx = (-tl + tr - 2.0 * ml + 2.0 * mr - bl + br) / (8.0 * samplingDistance);
+      float gy = (-tl - 2.0 * tm - tr + bl + 2.0 * bm + br) / (8.0 * samplingDistance);
+
+      return vec2(gx, gy);
+    }
+
+    float computeLatitudeForTexCoord(float y) {
+      return (u_latrange.x - u_latrange.y) * (1.0 - y) + u_latrange.y;
+    }
+
+    vec2 samplePrefilteredHillshadeGradient(vec2 pos) {
+      vec2 safePos = clampTexCoord(pos);
+      vec2 encoded = texture(u_hillshade_gradient, safePos).rg;
+      float latitude = computeLatitudeForTexCoord(safePos.y);
+      float scaleFactor = max(abs(cos(radians(latitude))), 0.000001);
+      return ((encoded * 8.0) - 4.0) / scaleFactor;
+    }
+
+    vec2 getHillshadeGradient(vec2 pos) {
+      if (u_hillshade_gradient_available > 0.5) {
+        return samplePrefilteredHillshadeGradient(pos);
+      }
+      return computeSobelGradient(pos);
+    }
+        in  highp vec2 v_texCoord;
+        in  highp float v_elevation;
+        out vec4 fragColor;
+
+        float computeSlopeDegrees(vec2 pos) {
+          vec2 g = computeSobelGradient(pos);
+          return degrees(atan(length(g)));
+        }
+
+        float computeAspectShade(vec2 grad) {
+          vec2 dir = normalize(vec2(grad.x, grad.y) + vec2(0.0001));
+          return -dir.y;
+        }
+
+        float computeSnowline(float latitude, float aspectShade) {
+          float normalizedLat = clamp(abs(latitude) / 60.0, 0.0, 1.0);
+          float equatorSnowline = 4800.0;
+          float poleSnowline = 200.0;
+          float base = mix(equatorSnowline, poleSnowline, normalizedLat);
+          float shadeAdjustment = aspectShade * 200.0;
+          return base + shadeAdjustment;
+        }
+
+        void main() {
+          float latitude = computeLatitudeForTexCoord(v_texCoord.y);
+          vec2 grad = getHillshadeGradient(v_texCoord);
+          float aspectShade = computeAspectShade(grad);
+          float snowline = computeSnowline(latitude, aspectShade);
+          float lapseRate = 6.0;
+          float temperatureDelta = lapseRate * (snowline - v_elevation) / 1000.0;
+          float snowMask = smoothstep(-1.0, 1.0, -temperatureDelta);
+          float slope = computeSlopeDegrees(v_texCoord);
+          float slopeShade = smoothstep(15.0, 45.0, slope);
+          vec3 meadow = vec3(0.12, 0.23, 0.07);
+          vec3 tundra = vec3(0.39, 0.32, 0.19);
+          vec3 snow = vec3(0.93, 0.97, 1.0);
+          vec3 ground = mix(meadow, tundra, clamp((v_elevation - 1000.0) / 1500.0, 0.0, 1.0));
+          vec3 baseColor = mix(ground, snow, snowMask);
+          baseColor = mix(baseColor, snow, slopeShade * 0.25);
+          fragColor = vec4(baseColor, 0.95);
+        }
+```
+
+## Depth-based atmospheric perspective
+
+Applies volumetric haze in screen space by linearizing `v_depth` and blending toward configurable fog and horizon colors.
+
+```glsl
+#version 300 es
+precision highp float;
+
+uniform sampler2D u_color;
+uniform vec4 u_fog_color_near;
+uniform vec4 u_fog_color_far;
+uniform float u_near;
+uniform float u_far;
+uniform float u_fog_density;
+uniform float u_height_falloff;
+
+in vec2 v_uv;
+in float v_depth;
+
+out vec4 fragColor;
+
+vec3 srgbToLinear(vec3 color) {
+  vec3 srgb = clamp(color, 0.0, 1.0);
+  vec3 lo = srgb / 12.92;
+  vec3 hi = pow((srgb + 0.055) / 1.055, vec3(2.4));
+  return mix(lo, hi, step(vec3(0.04045), srgb));
+}
+
+vec4 srgbToLinear(vec4 color) {
+  return vec4(srgbToLinear(color.rgb), color.a);
+}
+
+vec3 linearToSrgb(vec3 color) {
+  vec3 linear = max(color, vec3(0.0));
+  vec3 lo = linear * 12.92;
+  vec3 hi = 1.055 * pow(linear, vec3(1.0 / 2.4)) - 0.055;
+  return mix(lo, hi, step(vec3(0.0031308), linear));
+}
+
+vec4 linearToSrgb(vec4 color) {
+  return vec4(linearToSrgb(color.rgb), color.a);
+}
+
+float linearizeDepth(float depth) {
+  float z = depth * 2.0 - 1.0;
+  return (2.0 * u_near * u_far) / (u_far + u_near - z * (u_far - u_near));
+}
+
+void main() {
+  vec4 base = texture(u_color, v_uv);
+  float depthLinear = linearizeDepth(v_depth);
+  float normalized = clamp((depthLinear - u_near) / max(u_far - u_near, 0.0001), 0.0, 1.0);
+  float fogFactor = 1.0 - exp(-normalized * u_fog_density);
+  float horizonFactor = pow(normalized, 1.5);
+  float heightMask = exp(-depthLinear * u_height_falloff);
+  vec4 fogColor = mix(u_fog_color_near, u_fog_color_far, horizonFactor);
+  fogColor.rgb = mix(fogColor.rgb, u_fog_color_far.rgb, 1.0 - heightMask);
+  vec3 baseLinear = srgbToLinear(base).rgb;
+  vec3 fogLinear = srgbToLinear(fogColor).rgb;
+  vec3 result = mix(baseLinear, fogLinear, fogFactor);
+  float alpha = mix(base.a, fogColor.a, fogFactor);
+  fragColor = vec4(linearToSrgb(result), alpha);
+}
+```
+
+## Cliff and wall highlighter
+
+Emphasizes steep cliffs and mesh skirts by combining the per-vertex wall flag with gradient magnitude and slope thresholds.
+
+```glsl
+#version 300 es
+        precision highp float;
+        precision highp int;
+        
+    precision highp float;
+    precision highp int;
+    uniform sampler2D u_image;
+    uniform sampler2D u_hillshade_gradient;
+        uniform sampler2D u_image_0_m2;
+    uniform sampler2D u_image_topLeft;
+    uniform sampler2D u_image_top;
+    uniform sampler2D u_image_topRight;
+    uniform sampler2D u_image_m2_0;
+    uniform sampler2D u_image_left;
+    uniform sampler2D u_image_right;
+    uniform sampler2D u_image_p2_0;
+    uniform sampler2D u_image_bottomLeft;
+    uniform sampler2D u_image_bottom;
+    uniform sampler2D u_image_bottomRight;
+    uniform sampler2D u_image_0_p2;
+
+    uniform vec4 u_terrain_unpack;
+    uniform vec2 u_dimension;
+    uniform float u_zoom;
+    uniform float u_metersPerPixel;
+    uniform float u_metersPerPixel_0_m2;
+    uniform float u_metersPerPixel_topLeft;
+    uniform float u_metersPerPixel_top;
+    uniform float u_metersPerPixel_topRight;
+    uniform float u_metersPerPixel_m2_0;
+    uniform float u_metersPerPixel_left;
+    uniform float u_metersPerPixel_right;
+    uniform float u_metersPerPixel_p2_0;
+    uniform float u_metersPerPixel_bottomLeft;
+    uniform float u_metersPerPixel_bottom;
+    uniform float u_metersPerPixel_bottomRight;
+    uniform float u_metersPerPixel_0_p2;
+    uniform vec2 u_latrange;
+    uniform float u_hillshade_gradient_available;
+
+    vec3 srgbToLinear(vec3 color) {
+      vec3 srgb = clamp(color, 0.0, 1.0);
+      vec3 lo = srgb / 12.92;
+      vec3 hi = pow((srgb + 0.055) / 1.055, vec3(2.4));
+      return mix(lo, hi, step(vec3(0.04045), srgb));
+    }
+
+    vec4 srgbToLinear(vec4 color) {
+      return vec4(srgbToLinear(color.rgb), color.a);
+    }
+
+    vec3 linearToSrgb(vec3 color) {
+      vec3 linear = max(color, vec3(0.0));
+      vec3 lo = linear * 12.92;
+      vec3 hi = 1.055 * pow(linear, vec3(1.0 / 2.4)) - 0.055;
+      return mix(lo, hi, step(vec3(0.0031308), linear));
+    }
+
+    vec4 linearToSrgb(vec4 color) {
+      return vec4(linearToSrgb(color.rgb), color.a);
+    }
+
+    float getElevationFromTexture(sampler2D tex, vec2 pos) {
+      vec3 data = texture(tex, pos).rgb * 255.0;
+      // Terrarium encoding: elevation = (R * 256 + G + B / 256) - 32768
+      return dot(data, vec3(256.0, 1.0, 1.0 / 256.0)) - 32768.0;
+    }
+
+    float getElevationFromTextureLod(sampler2D tex, vec2 pos, float lod) {
+      vec3 data = textureLod(tex, pos, lod).rgb * 255.0;
+      return dot(data, vec3(256.0, 1.0, 1.0 / 256.0)) - 32768.0;
+    }
+
+    float reflectCoord(float coord, float minBound, float maxBound) {
+      float span = max(maxBound - minBound, 0.0);
+      if (span <= 0.0) {
+        return minBound;
+      }
+      float twoSpan = span * 2.0;
+      float offset = coord - minBound;
+      float wrapped = mod(offset, twoSpan);
+      if (wrapped < 0.0) {
+        wrapped += twoSpan;
+      }
+      float reflected = wrapped <= span ? wrapped : (twoSpan - wrapped);
+      return minBound + reflected;
+    }
+
+    vec2 clampTexCoord(vec2 pos) {
+      float borderX = 0.5 / u_dimension.x;
+      float borderY = 0.5 / u_dimension.y;
+      float minX = borderX;
+      float maxX = 1.0 - borderX;
+      float minY = borderY;
+      float maxY = 1.0 - borderY;
+      return vec2(
+        reflectCoord(pos.x, minX, maxX),
+        reflectCoord(pos.y, minY, maxY)
+      );
+    }
+
+    vec2 resolveNeighborCoords(vec2 pos, out ivec2 offset) {
+      vec2 tilePos = pos;
+      offset = ivec2(0);
+      const int MAX_OFFSET = 2;
+      for (int i = 0; i < 8; ++i) {
+        bool adjusted = false;
+        if (tilePos.x < 0.0) {
+          int nextOffsetX = offset.x - 1;
+          if (nextOffsetX >= -MAX_OFFSET && abs(nextOffsetX) + abs(offset.y) <= MAX_OFFSET) {
+            tilePos.x += 1.0;
+            offset.x = nextOffsetX;
+            adjusted = true;
+          }
+        } else if (tilePos.x > 1.0) {
+          int nextOffsetX = offset.x + 1;
+          if (nextOffsetX <= MAX_OFFSET && abs(nextOffsetX) + abs(offset.y) <= MAX_OFFSET) {
+            tilePos.x -= 1.0;
+            offset.x = nextOffsetX;
+            adjusted = true;
+          }
+        }
+        if (tilePos.y < 0.0) {
+          int nextOffsetY = offset.y - 1;
+          if (nextOffsetY >= -MAX_OFFSET && abs(offset.x) + abs(nextOffsetY) <= MAX_OFFSET) {
+            tilePos.y += 1.0;
+            offset.y = nextOffsetY;
+            adjusted = true;
+          }
+        } else if (tilePos.y > 1.0) {
+          int nextOffsetY = offset.y + 1;
+          if (nextOffsetY <= MAX_OFFSET && abs(offset.x) + abs(nextOffsetY) <= MAX_OFFSET) {
+            tilePos.y -= 1.0;
+            offset.y = nextOffsetY;
+            adjusted = true;
+          }
+        }
+        if (!adjusted) {
+          break;
+        }
+      }
+      offset.x = clamp(offset.x, -MAX_OFFSET, MAX_OFFSET);
+      offset.y = clamp(offset.y, -MAX_OFFSET, MAX_OFFSET);
+      return clampTexCoord(tilePos);
+    }
+
+    float fetchElevationForOffset(ivec2 offset, vec2 tilePos) {
+      if (offset == ivec2(0, 0)) {
+        return getElevationFromTexture(u_image, tilePos);
+      }
+      if (offset == ivec2(0, -2)) {
+        return getElevationFromTexture(u_image_0_m2, tilePos);
+      }
+      if (offset == ivec2(-1, -1)) {
+        return getElevationFromTexture(u_image_topLeft, tilePos);
+      }
+      if (offset == ivec2(0, -1)) {
+        return getElevationFromTexture(u_image_top, tilePos);
+      }
+      if (offset == ivec2(1, -1)) {
+        return getElevationFromTexture(u_image_topRight, tilePos);
+      }
+      if (offset == ivec2(-2, 0)) {
+        return getElevationFromTexture(u_image_m2_0, tilePos);
+      }
+      if (offset == ivec2(-1, 0)) {
+        return getElevationFromTexture(u_image_left, tilePos);
+      }
+      if (offset == ivec2(1, 0)) {
+        return getElevationFromTexture(u_image_right, tilePos);
+      }
+      if (offset == ivec2(2, 0)) {
+        return getElevationFromTexture(u_image_p2_0, tilePos);
+      }
+      if (offset == ivec2(-1, 1)) {
+        return getElevationFromTexture(u_image_bottomLeft, tilePos);
+      }
+      if (offset == ivec2(0, 1)) {
+        return getElevationFromTexture(u_image_bottom, tilePos);
+      }
+      if (offset == ivec2(1, 1)) {
+        return getElevationFromTexture(u_image_bottomRight, tilePos);
+      }
+      if (offset == ivec2(0, 2)) {
+        return getElevationFromTexture(u_image_0_p2, tilePos);
+      }
+      return getElevationFromTexture(u_image, tilePos);
+    }
+
+    float fetchElevationForOffsetLod(ivec2 offset, vec2 tilePos, float lod) {
+      if (offset == ivec2(0, 0)) {
+        return getElevationFromTextureLod(u_image, tilePos, lod);
+      }
+      if (offset == ivec2(0, -2)) {
+        return getElevationFromTextureLod(u_image_0_m2, tilePos, lod);
+      }
+      if (offset == ivec2(-1, -1)) {
+        return getElevationFromTextureLod(u_image_topLeft, tilePos, lod);
+      }
+      if (offset == ivec2(0, -1)) {
+        return getElevationFromTextureLod(u_image_top, tilePos, lod);
+      }
+      if (offset == ivec2(1, -1)) {
+        return getElevationFromTextureLod(u_image_topRight, tilePos, lod);
+      }
+      if (offset == ivec2(-2, 0)) {
+        return getElevationFromTextureLod(u_image_m2_0, tilePos, lod);
+      }
+      if (offset == ivec2(-1, 0)) {
+        return getElevationFromTextureLod(u_image_left, tilePos, lod);
+      }
+      if (offset == ivec2(1, 0)) {
+        return getElevationFromTextureLod(u_image_right, tilePos, lod);
+      }
+      if (offset == ivec2(2, 0)) {
+        return getElevationFromTextureLod(u_image_p2_0, tilePos, lod);
+      }
+      if (offset == ivec2(-1, 1)) {
+        return getElevationFromTextureLod(u_image_bottomLeft, tilePos, lod);
+      }
+      if (offset == ivec2(0, 1)) {
+        return getElevationFromTextureLod(u_image_bottom, tilePos, lod);
+      }
+      if (offset == ivec2(1, 1)) {
+        return getElevationFromTextureLod(u_image_bottomRight, tilePos, lod);
+      }
+      if (offset == ivec2(0, 2)) {
+        return getElevationFromTextureLod(u_image_0_p2, tilePos, lod);
+      }
+      return getElevationFromTextureLod(u_image, tilePos, lod);
+    }
+
+    float getMetersPerPixelForOffset(ivec2 offset) {
+      if (offset == ivec2(0, 0)) {
+        return max(u_metersPerPixel, 0.0);
+      }
+      if (offset == ivec2(0, -2)) {
+        return max(u_metersPerPixel_0_m2, 0.0);
+      }
+      if (offset == ivec2(-1, -1)) {
+        return max(u_metersPerPixel_topLeft, 0.0);
+      }
+      if (offset == ivec2(0, -1)) {
+        return max(u_metersPerPixel_top, 0.0);
+      }
+      if (offset == ivec2(1, -1)) {
+        return max(u_metersPerPixel_topRight, 0.0);
+      }
+      if (offset == ivec2(-2, 0)) {
+        return max(u_metersPerPixel_m2_0, 0.0);
+      }
+      if (offset == ivec2(-1, 0)) {
+        return max(u_metersPerPixel_left, 0.0);
+      }
+      if (offset == ivec2(1, 0)) {
+        return max(u_metersPerPixel_right, 0.0);
+      }
+      if (offset == ivec2(2, 0)) {
+        return max(u_metersPerPixel_p2_0, 0.0);
+      }
+      if (offset == ivec2(-1, 1)) {
+        return max(u_metersPerPixel_bottomLeft, 0.0);
+      }
+      if (offset == ivec2(0, 1)) {
+        return max(u_metersPerPixel_bottom, 0.0);
+      }
+      if (offset == ivec2(1, 1)) {
+        return max(u_metersPerPixel_bottomRight, 0.0);
+      }
+      if (offset == ivec2(0, 2)) {
+        return max(u_metersPerPixel_0_p2, 0.0);
+      }
+      return max(u_metersPerPixel, 0.0);
+    }
+
+    float getElevationExtended(vec2 pos) {
+      ivec2 offset;
+      vec2 tilePos = resolveNeighborCoords(pos, offset);
+      return fetchElevationForOffset(offset, tilePos);
+    }
+
+    float computeRaySampleLod(float horizontalMeters, float metersPerPixel) {
+      float texelFootprint = horizontalMeters / max(metersPerPixel, 0.0001);
+      float lod = log2(max(texelFootprint, 1.0)) - 2.0;
+      return clamp(lod, 0.0, 8.0);
+    }
+
+    float sampleElevationAdaptive(vec2 pos, float horizontalMeters, float metersPerPixel) {
+      ivec2 offset;
+      vec2 tilePos = resolveNeighborCoords(pos, offset);
+      float localMetersPerPixel = getMetersPerPixelForOffset(offset);
+      if (localMetersPerPixel <= 0.0) {
+        localMetersPerPixel = metersPerPixel;
+      }
+      localMetersPerPixel = max(localMetersPerPixel, 0.0001);
+      float lod = computeRaySampleLod(horizontalMeters, localMetersPerPixel);
+      if (lod <= 0.001) {
+        return fetchElevationForOffset(offset, tilePos);
+      }
+      return fetchElevationForOffsetLod(offset, tilePos, lod);
+    }
+
+    float computeAdaptiveStepGrowth(float horizontalMeters) {
+      float t = clamp(horizontalMeters / 6000.0, 0.0, 1.0);
+      return mix(1.04, 1.10, t);
+    }
+
+    vec2 computeSobelGradient(vec2 pos) {
+      float samplingDistance = 0.5;
+      vec2 safePos = clampTexCoord(pos);
+      float metersPerPixel = 1.5 * pow(2.0, 16.0 - u_zoom);
+      float metersPerTile  = metersPerPixel * 256.0;
+      float delta = samplingDistance / metersPerTile;
+
+      float tl = getElevationExtended(safePos + vec2(-delta, -delta));
+      float tm = getElevationExtended(safePos + vec2(0.0, -delta));
+      float tr = getElevationExtended(safePos + vec2(delta, -delta));
+      float ml = getElevationExtended(safePos + vec2(-delta, 0.0));
+      float mr = getElevationExtended(safePos + vec2(delta, 0.0));
+      float bl = getElevationExtended(safePos + vec2(-delta, delta));
+      float bm = getElevationExtended(safePos + vec2(0.0, delta));
+      float br = getElevationExtended(safePos + vec2(delta, delta));
+
+      float gx = (-tl + tr - 2.0 * ml + 2.0 * mr - bl + br) / (8.0 * samplingDistance);
+      float gy = (-tl - 2.0 * tm - tr + bl + 2.0 * bm + br) / (8.0 * samplingDistance);
+
+      return vec2(gx, gy);
+    }
+
+    float computeLatitudeForTexCoord(float y) {
+      return (u_latrange.x - u_latrange.y) * (1.0 - y) + u_latrange.y;
+    }
+
+    vec2 samplePrefilteredHillshadeGradient(vec2 pos) {
+      vec2 safePos = clampTexCoord(pos);
+      vec2 encoded = texture(u_hillshade_gradient, safePos).rg;
+      float latitude = computeLatitudeForTexCoord(safePos.y);
+      float scaleFactor = max(abs(cos(radians(latitude))), 0.000001);
+      return ((encoded * 8.0) - 4.0) / scaleFactor;
+    }
+
+    vec2 getHillshadeGradient(vec2 pos) {
+      if (u_hillshade_gradient_available > 0.5) {
+        return samplePrefilteredHillshadeGradient(pos);
+      }
+      return computeSobelGradient(pos);
+    }
+        in  highp vec2 v_texCoord;
+        in  highp float v_isWall;
+        out vec4 fragColor;
+
+        float computeSlopeDegrees(vec2 pos) {
+          vec2 g = computeSobelGradient(pos);
+          return degrees(atan(length(g)));
+        }
+
+        void main() {
+          vec2 grad = computeSobelGradient(v_texCoord);
+          float slope = computeSlopeDegrees(v_texCoord);
+          float wallMask = smoothstep(0.1, 0.9, v_isWall);
+          float cliffMask = smoothstep(45.0, 70.0, slope);
+          float gradientStrength = clamp(length(grad) / 30.0, 0.0, 1.0);
+          vec3 base = vec3(0.08, 0.09, 0.12) + gradientStrength * 0.12;
+          vec3 cliffColor = vec3(1.0, 0.35, 0.08);
+          vec3 wallColor = vec3(0.52, 0.82, 1.0);
+          vec3 color = mix(base, cliffColor, cliffMask);
+          color = mix(color, wallColor, wallMask);
+          float alpha = max(cliffMask, wallMask);
+          fragColor = vec4(color, mix(0.4, 0.95, alpha));
+        }
+```
+
+## Planform flow accumulation estimate
+
+Walks downhill along the DEM gradient for a few steps to approximate wetness and highlight potential drainage lines.
+
+```glsl
+#version 300 es
+        precision highp float;
+        precision highp int;
+        
+    precision highp float;
+    precision highp int;
+    uniform sampler2D u_image;
+    uniform sampler2D u_hillshade_gradient;
+        uniform sampler2D u_image_0_m2;
+    uniform sampler2D u_image_topLeft;
+    uniform sampler2D u_image_top;
+    uniform sampler2D u_image_topRight;
+    uniform sampler2D u_image_m2_0;
+    uniform sampler2D u_image_left;
+    uniform sampler2D u_image_right;
+    uniform sampler2D u_image_p2_0;
+    uniform sampler2D u_image_bottomLeft;
+    uniform sampler2D u_image_bottom;
+    uniform sampler2D u_image_bottomRight;
+    uniform sampler2D u_image_0_p2;
+
+    uniform vec4 u_terrain_unpack;
+    uniform vec2 u_dimension;
+    uniform float u_zoom;
+    uniform float u_metersPerPixel;
+    uniform float u_metersPerPixel_0_m2;
+    uniform float u_metersPerPixel_topLeft;
+    uniform float u_metersPerPixel_top;
+    uniform float u_metersPerPixel_topRight;
+    uniform float u_metersPerPixel_m2_0;
+    uniform float u_metersPerPixel_left;
+    uniform float u_metersPerPixel_right;
+    uniform float u_metersPerPixel_p2_0;
+    uniform float u_metersPerPixel_bottomLeft;
+    uniform float u_metersPerPixel_bottom;
+    uniform float u_metersPerPixel_bottomRight;
+    uniform float u_metersPerPixel_0_p2;
+    uniform vec2 u_latrange;
+    uniform float u_hillshade_gradient_available;
+
+    vec3 srgbToLinear(vec3 color) {
+      vec3 srgb = clamp(color, 0.0, 1.0);
+      vec3 lo = srgb / 12.92;
+      vec3 hi = pow((srgb + 0.055) / 1.055, vec3(2.4));
+      return mix(lo, hi, step(vec3(0.04045), srgb));
+    }
+
+    vec4 srgbToLinear(vec4 color) {
+      return vec4(srgbToLinear(color.rgb), color.a);
+    }
+
+    vec3 linearToSrgb(vec3 color) {
+      vec3 linear = max(color, vec3(0.0));
+      vec3 lo = linear * 12.92;
+      vec3 hi = 1.055 * pow(linear, vec3(1.0 / 2.4)) - 0.055;
+      return mix(lo, hi, step(vec3(0.0031308), linear));
+    }
+
+    vec4 linearToSrgb(vec4 color) {
+      return vec4(linearToSrgb(color.rgb), color.a);
+    }
+
+    float getElevationFromTexture(sampler2D tex, vec2 pos) {
+      vec3 data = texture(tex, pos).rgb * 255.0;
+      // Terrarium encoding: elevation = (R * 256 + G + B / 256) - 32768
+      return dot(data, vec3(256.0, 1.0, 1.0 / 256.0)) - 32768.0;
+    }
+
+    float getElevationFromTextureLod(sampler2D tex, vec2 pos, float lod) {
+      vec3 data = textureLod(tex, pos, lod).rgb * 255.0;
+      return dot(data, vec3(256.0, 1.0, 1.0 / 256.0)) - 32768.0;
+    }
+
+    float reflectCoord(float coord, float minBound, float maxBound) {
+      float span = max(maxBound - minBound, 0.0);
+      if (span <= 0.0) {
+        return minBound;
+      }
+      float twoSpan = span * 2.0;
+      float offset = coord - minBound;
+      float wrapped = mod(offset, twoSpan);
+      if (wrapped < 0.0) {
+        wrapped += twoSpan;
+      }
+      float reflected = wrapped <= span ? wrapped : (twoSpan - wrapped);
+      return minBound + reflected;
+    }
+
+    vec2 clampTexCoord(vec2 pos) {
+      float borderX = 0.5 / u_dimension.x;
+      float borderY = 0.5 / u_dimension.y;
+      float minX = borderX;
+      float maxX = 1.0 - borderX;
+      float minY = borderY;
+      float maxY = 1.0 - borderY;
+      return vec2(
+        reflectCoord(pos.x, minX, maxX),
+        reflectCoord(pos.y, minY, maxY)
+      );
+    }
+
+    vec2 resolveNeighborCoords(vec2 pos, out ivec2 offset) {
+      vec2 tilePos = pos;
+      offset = ivec2(0);
+      const int MAX_OFFSET = 2;
+      for (int i = 0; i < 8; ++i) {
+        bool adjusted = false;
+        if (tilePos.x < 0.0) {
+          int nextOffsetX = offset.x - 1;
+          if (nextOffsetX >= -MAX_OFFSET && abs(nextOffsetX) + abs(offset.y) <= MAX_OFFSET) {
+            tilePos.x += 1.0;
+            offset.x = nextOffsetX;
+            adjusted = true;
+          }
+        } else if (tilePos.x > 1.0) {
+          int nextOffsetX = offset.x + 1;
+          if (nextOffsetX <= MAX_OFFSET && abs(nextOffsetX) + abs(offset.y) <= MAX_OFFSET) {
+            tilePos.x -= 1.0;
+            offset.x = nextOffsetX;
+            adjusted = true;
+          }
+        }
+        if (tilePos.y < 0.0) {
+          int nextOffsetY = offset.y - 1;
+          if (nextOffsetY >= -MAX_OFFSET && abs(offset.x) + abs(nextOffsetY) <= MAX_OFFSET) {
+            tilePos.y += 1.0;
+            offset.y = nextOffsetY;
+            adjusted = true;
+          }
+        } else if (tilePos.y > 1.0) {
+          int nextOffsetY = offset.y + 1;
+          if (nextOffsetY <= MAX_OFFSET && abs(offset.x) + abs(nextOffsetY) <= MAX_OFFSET) {
+            tilePos.y -= 1.0;
+            offset.y = nextOffsetY;
+            adjusted = true;
+          }
+        }
+        if (!adjusted) {
+          break;
+        }
+      }
+      offset.x = clamp(offset.x, -MAX_OFFSET, MAX_OFFSET);
+      offset.y = clamp(offset.y, -MAX_OFFSET, MAX_OFFSET);
+      return clampTexCoord(tilePos);
+    }
+
+    float fetchElevationForOffset(ivec2 offset, vec2 tilePos) {
+      if (offset == ivec2(0, 0)) {
+        return getElevationFromTexture(u_image, tilePos);
+      }
+      if (offset == ivec2(0, -2)) {
+        return getElevationFromTexture(u_image_0_m2, tilePos);
+      }
+      if (offset == ivec2(-1, -1)) {
+        return getElevationFromTexture(u_image_topLeft, tilePos);
+      }
+      if (offset == ivec2(0, -1)) {
+        return getElevationFromTexture(u_image_top, tilePos);
+      }
+      if (offset == ivec2(1, -1)) {
+        return getElevationFromTexture(u_image_topRight, tilePos);
+      }
+      if (offset == ivec2(-2, 0)) {
+        return getElevationFromTexture(u_image_m2_0, tilePos);
+      }
+      if (offset == ivec2(-1, 0)) {
+        return getElevationFromTexture(u_image_left, tilePos);
+      }
+      if (offset == ivec2(1, 0)) {
+        return getElevationFromTexture(u_image_right, tilePos);
+      }
+      if (offset == ivec2(2, 0)) {
+        return getElevationFromTexture(u_image_p2_0, tilePos);
+      }
+      if (offset == ivec2(-1, 1)) {
+        return getElevationFromTexture(u_image_bottomLeft, tilePos);
+      }
+      if (offset == ivec2(0, 1)) {
+        return getElevationFromTexture(u_image_bottom, tilePos);
+      }
+      if (offset == ivec2(1, 1)) {
+        return getElevationFromTexture(u_image_bottomRight, tilePos);
+      }
+      if (offset == ivec2(0, 2)) {
+        return getElevationFromTexture(u_image_0_p2, tilePos);
+      }
+      return getElevationFromTexture(u_image, tilePos);
+    }
+
+    float fetchElevationForOffsetLod(ivec2 offset, vec2 tilePos, float lod) {
+      if (offset == ivec2(0, 0)) {
+        return getElevationFromTextureLod(u_image, tilePos, lod);
+      }
+      if (offset == ivec2(0, -2)) {
+        return getElevationFromTextureLod(u_image_0_m2, tilePos, lod);
+      }
+      if (offset == ivec2(-1, -1)) {
+        return getElevationFromTextureLod(u_image_topLeft, tilePos, lod);
+      }
+      if (offset == ivec2(0, -1)) {
+        return getElevationFromTextureLod(u_image_top, tilePos, lod);
+      }
+      if (offset == ivec2(1, -1)) {
+        return getElevationFromTextureLod(u_image_topRight, tilePos, lod);
+      }
+      if (offset == ivec2(-2, 0)) {
+        return getElevationFromTextureLod(u_image_m2_0, tilePos, lod);
+      }
+      if (offset == ivec2(-1, 0)) {
+        return getElevationFromTextureLod(u_image_left, tilePos, lod);
+      }
+      if (offset == ivec2(1, 0)) {
+        return getElevationFromTextureLod(u_image_right, tilePos, lod);
+      }
+      if (offset == ivec2(2, 0)) {
+        return getElevationFromTextureLod(u_image_p2_0, tilePos, lod);
+      }
+      if (offset == ivec2(-1, 1)) {
+        return getElevationFromTextureLod(u_image_bottomLeft, tilePos, lod);
+      }
+      if (offset == ivec2(0, 1)) {
+        return getElevationFromTextureLod(u_image_bottom, tilePos, lod);
+      }
+      if (offset == ivec2(1, 1)) {
+        return getElevationFromTextureLod(u_image_bottomRight, tilePos, lod);
+      }
+      if (offset == ivec2(0, 2)) {
+        return getElevationFromTextureLod(u_image_0_p2, tilePos, lod);
+      }
+      return getElevationFromTextureLod(u_image, tilePos, lod);
+    }
+
+    float getMetersPerPixelForOffset(ivec2 offset) {
+      if (offset == ivec2(0, 0)) {
+        return max(u_metersPerPixel, 0.0);
+      }
+      if (offset == ivec2(0, -2)) {
+        return max(u_metersPerPixel_0_m2, 0.0);
+      }
+      if (offset == ivec2(-1, -1)) {
+        return max(u_metersPerPixel_topLeft, 0.0);
+      }
+      if (offset == ivec2(0, -1)) {
+        return max(u_metersPerPixel_top, 0.0);
+      }
+      if (offset == ivec2(1, -1)) {
+        return max(u_metersPerPixel_topRight, 0.0);
+      }
+      if (offset == ivec2(-2, 0)) {
+        return max(u_metersPerPixel_m2_0, 0.0);
+      }
+      if (offset == ivec2(-1, 0)) {
+        return max(u_metersPerPixel_left, 0.0);
+      }
+      if (offset == ivec2(1, 0)) {
+        return max(u_metersPerPixel_right, 0.0);
+      }
+      if (offset == ivec2(2, 0)) {
+        return max(u_metersPerPixel_p2_0, 0.0);
+      }
+      if (offset == ivec2(-1, 1)) {
+        return max(u_metersPerPixel_bottomLeft, 0.0);
+      }
+      if (offset == ivec2(0, 1)) {
+        return max(u_metersPerPixel_bottom, 0.0);
+      }
+      if (offset == ivec2(1, 1)) {
+        return max(u_metersPerPixel_bottomRight, 0.0);
+      }
+      if (offset == ivec2(0, 2)) {
+        return max(u_metersPerPixel_0_p2, 0.0);
+      }
+      return max(u_metersPerPixel, 0.0);
+    }
+
+    float getElevationExtended(vec2 pos) {
+      ivec2 offset;
+      vec2 tilePos = resolveNeighborCoords(pos, offset);
+      return fetchElevationForOffset(offset, tilePos);
+    }
+
+    float computeRaySampleLod(float horizontalMeters, float metersPerPixel) {
+      float texelFootprint = horizontalMeters / max(metersPerPixel, 0.0001);
+      float lod = log2(max(texelFootprint, 1.0)) - 2.0;
+      return clamp(lod, 0.0, 8.0);
+    }
+
+    float sampleElevationAdaptive(vec2 pos, float horizontalMeters, float metersPerPixel) {
+      ivec2 offset;
+      vec2 tilePos = resolveNeighborCoords(pos, offset);
+      float localMetersPerPixel = getMetersPerPixelForOffset(offset);
+      if (localMetersPerPixel <= 0.0) {
+        localMetersPerPixel = metersPerPixel;
+      }
+      localMetersPerPixel = max(localMetersPerPixel, 0.0001);
+      float lod = computeRaySampleLod(horizontalMeters, localMetersPerPixel);
+      if (lod <= 0.001) {
+        return fetchElevationForOffset(offset, tilePos);
+      }
+      return fetchElevationForOffsetLod(offset, tilePos, lod);
+    }
+
+    float computeAdaptiveStepGrowth(float horizontalMeters) {
+      float t = clamp(horizontalMeters / 6000.0, 0.0, 1.0);
+      return mix(1.04, 1.10, t);
+    }
+
+    vec2 computeSobelGradient(vec2 pos) {
+      float samplingDistance = 0.5;
+      vec2 safePos = clampTexCoord(pos);
+      float metersPerPixel = 1.5 * pow(2.0, 16.0 - u_zoom);
+      float metersPerTile  = metersPerPixel * 256.0;
+      float delta = samplingDistance / metersPerTile;
+
+      float tl = getElevationExtended(safePos + vec2(-delta, -delta));
+      float tm = getElevationExtended(safePos + vec2(0.0, -delta));
+      float tr = getElevationExtended(safePos + vec2(delta, -delta));
+      float ml = getElevationExtended(safePos + vec2(-delta, 0.0));
+      float mr = getElevationExtended(safePos + vec2(delta, 0.0));
+      float bl = getElevationExtended(safePos + vec2(-delta, delta));
+      float bm = getElevationExtended(safePos + vec2(0.0, delta));
+      float br = getElevationExtended(safePos + vec2(delta, delta));
+
+      float gx = (-tl + tr - 2.0 * ml + 2.0 * mr - bl + br) / (8.0 * samplingDistance);
+      float gy = (-tl - 2.0 * tm - tr + bl + 2.0 * bm + br) / (8.0 * samplingDistance);
+
+      return vec2(gx, gy);
+    }
+
+    float computeLatitudeForTexCoord(float y) {
+      return (u_latrange.x - u_latrange.y) * (1.0 - y) + u_latrange.y;
+    }
+
+    vec2 samplePrefilteredHillshadeGradient(vec2 pos) {
+      vec2 safePos = clampTexCoord(pos);
+      vec2 encoded = texture(u_hillshade_gradient, safePos).rg;
+      float latitude = computeLatitudeForTexCoord(safePos.y);
+      float scaleFactor = max(abs(cos(radians(latitude))), 0.000001);
+      return ((encoded * 8.0) - 4.0) / scaleFactor;
+    }
+
+    vec2 getHillshadeGradient(vec2 pos) {
+      if (u_hillshade_gradient_available > 0.5) {
+        return samplePrefilteredHillshadeGradient(pos);
+      }
+      return computeSobelGradient(pos);
+    }
+        in  highp vec2 v_texCoord;
+        out vec4 fragColor;
+
+        float tracePlanformFlow(vec2 pos) {
+          vec2 current = clampTexCoord(pos);
+          const int MAX_STEPS = 24;
+          float weight = 1.0;
+          float accum = 0.0;
+          float metersPerPixel = 1.5 * pow(2.0, 16.0 - u_zoom);
+          float metersPerTile = metersPerPixel * 256.0;
+          float stepMeters = 12.0;
+          float stepDelta = stepMeters / metersPerTile;
+          for (int i = 0; i < MAX_STEPS; ++i) {
+            vec2 grad = getHillshadeGradient(current);
+            float slope = length(grad);
+            accum += slope * weight;
+            vec2 dir = normalize(grad + vec2(0.0001));
+            current -= dir * stepDelta;
+            current = clampTexCoord(current);
+            weight *= 0.88;
+          }
+          return accum / float(MAX_STEPS);
+        }
+
+        void main() {
+          float wetness = clamp(tracePlanformFlow(v_texCoord) / 12.0, 0.0, 1.0);
+          float wetPow = pow(wetness, 1.2);
+          vec3 dryColor = vec3(0.28, 0.22, 0.18);
+          vec3 wetColor = vec3(0.0, 0.44, 0.82);
+          vec3 saturated = vec3(0.6, 0.9, 1.0);
+          vec3 color = mix(dryColor, wetColor, wetPow);
+          color = mix(color, saturated, pow(wetness, 3.0));
+          float alpha = mix(0.35, 0.95, wetPow);
+          fragColor = vec4(color, alpha);
+        }
+```
+
+## Terrain detail foveation
+
+Keeps nearby terrain crisp with a high-frequency detail texture and fades it with distance using the provided depth buffer.
+
+```glsl
+#version 300 es
+precision highp float;
+
+uniform sampler2D u_color;
+uniform sampler2D u_detail;
+uniform float u_near;
+uniform float u_far;
+uniform float u_detail_near_scale;
+uniform float u_detail_far_scale;
+uniform float u_detail_intensity;
+uniform float u_gloss_intensity;
+uniform vec3 u_gloss_color;
+
+in vec2 v_uv;
+in float v_depth;
+
+out vec4 fragColor;
+
+vec3 srgbToLinear(vec3 color) {
+  vec3 srgb = clamp(color, 0.0, 1.0);
+  vec3 lo = srgb / 12.92;
+  vec3 hi = pow((srgb + 0.055) / 1.055, vec3(2.4));
+  return mix(lo, hi, step(vec3(0.04045), srgb));
+}
+
+vec4 srgbToLinear(vec4 color) {
+  return vec4(srgbToLinear(color.rgb), color.a);
+}
+
+vec3 linearToSrgb(vec3 color) {
+  vec3 linear = max(color, vec3(0.0));
+  vec3 lo = linear * 12.92;
+  vec3 hi = 1.055 * pow(linear, vec3(1.0 / 2.4)) - 0.055;
+  return mix(lo, hi, step(vec3(0.0031308), linear));
+}
+
+vec4 linearToSrgb(vec4 color) {
+  return vec4(linearToSrgb(color.rgb), color.a);
+}
+
+float linearizeDepth(float depth) {
+  float z = depth * 2.0 - 1.0;
+  return (2.0 * u_near * u_far) / (u_far + u_near - z * (u_far - u_near));
+}
+
+void main() {
+  vec4 base = texture(u_color, v_uv);
+  vec3 baseLinear = srgbToLinear(base).rgb;
+  float depthLinear = linearizeDepth(v_depth);
+  float distanceFactor = clamp((depthLinear - u_near) / max(u_far - u_near, 0.0001), 0.0, 1.0);
+  float focus = smoothstep(0.0, 0.4, 1.0 - distanceFactor);
+  float scale = mix(u_detail_far_scale, u_detail_near_scale, focus);
+  vec2 detailUv = v_uv * scale;
+  vec3 detailSample = texture(u_detail, detailUv).rgb * 2.0 - 1.0;
+  vec3 detailLinear = detailSample * (u_detail_intensity * focus);
+  float rim = pow(1.0 - distanceFactor, 3.0) * u_gloss_intensity;
+  vec3 glossLinear = u_gloss_color * rim;
+  vec3 finalLinear = baseLinear + detailLinear + glossLinear;
+  fragColor = vec4(linearToSrgb(finalLinear), base.a);
+}
+```
+
 ## Aspect
 
 Color-coded slope aspect using a bright categorical palette.
