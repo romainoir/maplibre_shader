@@ -91,7 +91,18 @@
   let isTerrainFlattened = false;
 
   // Global state variables
-  const CUSTOM_LAYER_ORDER = Object.freeze(['hillshade', 'normal', 'avalanche', 'slope', 'aspect', 'snow', 'shadow', 'daylight']);
+  const CUSTOM_SHADER_USER_MODE = 'custom-user';
+  const CUSTOM_LAYER_ORDER = Object.freeze([
+    CUSTOM_SHADER_USER_MODE,
+    'hillshade',
+    'normal',
+    'avalanche',
+    'slope',
+    'aspect',
+    'snow',
+    'shadow',
+    'daylight'
+  ]);
   const activeCustomModes = new Set();
   let currentMode = '';
   let hillshadeMode = 'none'; // "none", "native", or "custom"
@@ -110,6 +121,84 @@
   let shadowSlopeBias = 0.03;
   let shadowPixelBias = 0.15;
   let pendingCustomLayerEnsure = false;
+  const CUSTOM_SHADER_STORAGE_KEY = 'terrain.customShaderSource';
+  const DEFAULT_CUSTOM_SHADER_SOURCE = `
+vec3 elevationPalette(float elevation) {
+  vec3 low = vec3(0.02, 0.12, 0.30);
+  vec3 mid = vec3(0.55, 0.67, 0.50);
+  vec3 high = vec3(0.92, 0.82, 0.62);
+  float t = clamp((elevation + 500.0) / 3000.0, 0.0, 1.0);
+  return mix(mix(low, mid, smoothstep(0.0, 0.5, t)), high, smoothstep(0.5, 1.0, t));
+}
+
+void main() {
+  vec2 uv = v_texCoord;
+  vec2 gradient = getHillshadeGradient(uv);
+  float slope = length(gradient);
+  vec3 base = elevationPalette(v_elevation);
+  vec3 highlights = vec3(0.9, 0.7, 0.4) * smoothstep(0.2, 1.4, slope);
+  vec3 shadow = vec3(0.05, 0.07, 0.12) * smoothstep(0.0, 0.8, 1.0 - slope);
+  vec3 color = base + highlights - shadow;
+  fragColor = vec4(color, 1.0);
+}`.trim();
+  let customShaderSource = DEFAULT_CUSTOM_SHADER_SOURCE;
+  const customShaderRegistry = typeof window !== 'undefined'
+    ? (window.terrainCustomShaderSources = window.terrainCustomShaderSources || {})
+    : null;
+
+  function persistCustomShaderSource(source) {
+    if (typeof window === 'undefined' || !window.localStorage) return;
+    try {
+      if (source && source.length) {
+        window.localStorage.setItem(CUSTOM_SHADER_STORAGE_KEY, source);
+      } else {
+        window.localStorage.removeItem(CUSTOM_SHADER_STORAGE_KEY);
+      }
+    } catch (error) {
+      if (terrainDebugEnabled) {
+        console.warn('Failed to persist custom shader source', error);
+      }
+    }
+  }
+
+  function loadStoredCustomShaderSource() {
+    if (typeof window === 'undefined' || !window.localStorage) {
+      customShaderSource = DEFAULT_CUSTOM_SHADER_SOURCE;
+      return;
+    }
+    try {
+      const stored = window.localStorage.getItem(CUSTOM_SHADER_STORAGE_KEY);
+      if (stored && stored.trim().length) {
+        customShaderSource = stored;
+      }
+    } catch (error) {
+      if (terrainDebugEnabled) {
+        console.warn('Failed to load custom shader source', error);
+      }
+      customShaderSource = DEFAULT_CUSTOM_SHADER_SOURCE;
+    }
+  }
+
+  function buildCustomShaderFragment(commonSource) {
+    const body = customShaderSource && customShaderSource.trim().length
+      ? customShaderSource
+      : DEFAULT_CUSTOM_SHADER_SOURCE;
+    return `#version 300 es\nprecision highp float;\nprecision highp int;\n${commonSource}\nin highp vec2 v_texCoord;\nin highp float v_elevation;\nin highp float v_isWall;\nout vec4 fragColor;\n\n${body}\n`;
+  }
+
+  function registerCustomShaderSource() {
+    if (!customShaderRegistry) return;
+    customShaderRegistry[CUSTOM_SHADER_USER_MODE] = (common) => buildCustomShaderFragment(common);
+  }
+
+  function setCustomShaderSource(source) {
+    customShaderSource = typeof source === 'string' ? source : '';
+    persistCustomShaderSource(customShaderSource);
+    registerCustomShaderSource();
+  }
+
+  loadStoredCustomShaderSource();
+  registerCustomShaderSource();
   function isModeActive(mode) {
     return activeCustomModes.has(mode);
   }
@@ -139,6 +228,14 @@
   let layersCloseButton = null;
   let hqModeCheckbox = null;
   let toggle3DButton = null;
+  let customShaderModalEl = null;
+  let customShaderInputEl = null;
+  let customShaderStatusEl = null;
+  let customShaderApplyButton = null;
+  let customShaderDisableButton = null;
+  let customShaderCancelButton = null;
+  let customShaderCloseButton = null;
+  let customShaderModalOpen = false;
   let layersPanelOpen = false;
   let terrainWireframeLayer = null;
   let terrainWireframeScene = null;
@@ -1814,6 +1911,10 @@
     if (daylightBtn) {
       daylightBtn.classList.toggle('active', isCustomActive && isModeActive('daylight'));
     }
+    const customShaderBtn = document.getElementById('customShaderBtn');
+    if (customShaderBtn) {
+      customShaderBtn.classList.toggle('active', isCustomActive && isModeActive(CUSTOM_SHADER_USER_MODE));
+    }
     if (!terrainMeshBtn) {
       terrainMeshBtn = document.getElementById('terrainMeshBtn');
     }
@@ -1877,6 +1978,14 @@
   layersCloseButton = document.getElementById('layersClose');
   hqModeCheckbox = document.getElementById('hqMode');
   toggle3DButton = document.getElementById('toggle3D');
+  customShaderModalEl = document.getElementById('customShaderModal');
+  customShaderInputEl = document.getElementById('customShaderInput');
+  customShaderStatusEl = document.getElementById('customShaderStatus');
+  customShaderApplyButton = document.getElementById('customShaderApply');
+  customShaderDisableButton = document.getElementById('customShaderDisable');
+  customShaderCancelButton = document.getElementById('customShaderCancel');
+  customShaderCloseButton = document.getElementById('customShaderClose');
+  const customShaderBtnEl = document.getElementById('customShaderBtn');
 
   function setLayersPanelVisibility(visible) {
     if (!layersPanelEl) {
@@ -1894,11 +2003,111 @@
 
   setLayersPanelVisibility(false);
 
+  function syncCustomShaderEditor() {
+    if (customShaderInputEl) {
+      customShaderInputEl.value = customShaderSource || '';
+    }
+  }
+
+  function setCustomShaderStatus(message, isError) {
+    if (!customShaderStatusEl) return;
+    customShaderStatusEl.textContent = message || '';
+    customShaderStatusEl.classList.toggle('error', Boolean(isError));
+  }
+
+  function openCustomShaderModal() {
+    if (!customShaderModalEl) return;
+    customShaderModalOpen = true;
+    customShaderModalEl.classList.add('open');
+    customShaderModalEl.setAttribute('aria-hidden', 'false');
+    syncCustomShaderEditor();
+    setCustomShaderStatus('', false);
+    setTimeout(() => {
+      if (customShaderInputEl) {
+        customShaderInputEl.focus();
+        const end = customShaderInputEl.value.length;
+        customShaderInputEl.setSelectionRange(end, end);
+      }
+    }, 0);
+  }
+
+  function closeCustomShaderModal() {
+    if (!customShaderModalEl) return;
+    customShaderModalOpen = false;
+    customShaderModalEl.classList.remove('open');
+    customShaderModalEl.setAttribute('aria-hidden', 'true');
+  }
+
+  function applyCustomShaderFromEditor() {
+    if (!customShaderInputEl) return;
+    const source = customShaderInputEl.value || '';
+    if (!source.trim().length) {
+      setCustomShaderStatus('Please provide fragment shader code.', true);
+      return;
+    }
+    setCustomShaderSource(source);
+    setCustomShaderStatus('Shader saved. Rendering…', false);
+    terrainNormalLayer.shaderMap.clear();
+    setCustomModeEnabled(CUSTOM_SHADER_USER_MODE, true);
+    ensureCustomTerrainLayer();
+    if (map) {
+      map.triggerRepaint();
+    }
+  }
+
+  function disableCustomShaderLayer() {
+    setCustomModeEnabled(CUSTOM_SHADER_USER_MODE, false);
+    setCustomShaderStatus('Custom shader layer disabled.', false);
+    if (map) {
+      map.triggerRepaint();
+    }
+  }
+
   if (layersToggleButton) {
     layersToggleButton.addEventListener('click', () => {
       setLayersPanelVisibility(!layersPanelOpen);
     });
   }
+
+  if (customShaderBtnEl) {
+    customShaderBtnEl.addEventListener('click', () => {
+      openCustomShaderModal();
+    });
+  }
+  if (customShaderApplyButton) {
+    customShaderApplyButton.addEventListener('click', () => {
+      applyCustomShaderFromEditor();
+    });
+  }
+  if (customShaderDisableButton) {
+    customShaderDisableButton.addEventListener('click', () => {
+      disableCustomShaderLayer();
+    });
+  }
+  if (customShaderCancelButton) {
+    customShaderCancelButton.addEventListener('click', () => {
+      closeCustomShaderModal();
+    });
+  }
+  if (customShaderCloseButton) {
+    customShaderCloseButton.addEventListener('click', () => {
+      closeCustomShaderModal();
+    });
+  }
+  if (customShaderModalEl) {
+    customShaderModalEl.addEventListener('click', (event) => {
+      if (event.target === customShaderModalEl) {
+        closeCustomShaderModal();
+      }
+    });
+  }
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && customShaderModalOpen) {
+      event.preventDefault();
+      closeCustomShaderModal();
+    }
+  });
+  syncCustomShaderEditor();
 
   if (layersCloseButton) {
     layersCloseButton.addEventListener('click', () => {
@@ -2465,7 +2674,7 @@
         'u_lightDir',
         'u_shadowsEnabled'
       ];
-      if (currentMode === "hillshade") {
+      if (currentMode === "hillshade" || currentMode === CUSTOM_SHADER_USER_MODE) {
         uniforms.push(
           'u_hillshade_highlight_color',
           'u_hillshade_shadow_color',
@@ -2613,7 +2822,7 @@
 
       const sunParams = currentMode === "shadow" ? computeSunParameters(this.map) : null;
       const baseAdditionalTextureUnit = NEIGHBOR_OFFSETS.length + 1;
-      const hillshadeUniforms = currentMode === "hillshade"
+      const hillshadeUniforms = (currentMode === "hillshade" || currentMode === CUSTOM_SHADER_USER_MODE)
         ? getHillshadeUniformsForCustomLayer(this.map)
         : null;
 
@@ -2671,7 +2880,7 @@
         let neighborMeters = null;
         if (terrainData.texture && shader.locations.u_image != null) {
           bindTexture(terrainData.texture, 0, 'u_image');
-          if (currentMode === "hillshade") {
+          if (currentMode === "hillshade" || currentMode === CUSTOM_SHADER_USER_MODE) {
             const gradientTextureUnit = baseAdditionalTextureUnit;
             const gradientTexture = tile && tile.fbo && tile.fbo.colorAttachment && !tile.needsHillshadePrepare
               ? tile.fbo.colorAttachment.get()

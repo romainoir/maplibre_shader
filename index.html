@@ -204,6 +204,10 @@
       font-variant-numeric: tabular-nums;
     }
 
+    #customShaderBtn {
+      font-weight: 600;
+    }
+
     #shadowControls {
       gap: 8px;
     }
@@ -248,6 +252,126 @@
       from { transform: scale(0.96) translateY(8px); opacity: 0; }
       to { transform: scale(1) translateY(0); opacity: 1; }
     }
+
+    #customShaderModal {
+      position: fixed;
+      inset: 0;
+      background: rgba(4, 7, 15, 0.65);
+      backdrop-filter: blur(6px);
+      z-index: 50;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 30px;
+    }
+
+    #customShaderModal.open {
+      display: flex;
+    }
+
+    #customShaderModal .modal-content {
+      width: min(900px, 90vw);
+      max-height: 90vh;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      border-radius: 28px;
+      background: var(--glass-panel-bg);
+      border: 1px solid rgba(255, 255, 255, 0.35);
+      box-shadow: 0 35px 80px rgba(5, 6, 20, 0.65);
+      padding: 26px;
+      color: #fff;
+      animation: floatIn 0.45s ease forwards;
+    }
+
+    #customShaderModal .modal-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+    }
+
+    #customShaderModal .modal-header h3 {
+      margin: 0;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      font-size: 15px;
+    }
+
+    #customShaderModal .modal-header button {
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid rgba(255, 255, 255, 0.3);
+      border-radius: 999px;
+      color: #fff;
+      font-size: 18px;
+      line-height: 1;
+      width: 36px;
+      height: 36px;
+      cursor: pointer;
+    }
+
+    #customShaderModal p {
+      margin: 0;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    #customShaderModal .modal-hint {
+      font-size: 13px;
+      color: rgba(255, 255, 255, 0.8);
+    }
+
+    #customShaderInput {
+      width: 100%;
+      min-height: 320px;
+      border-radius: 18px;
+      border: 1px solid rgba(255, 255, 255, 0.25);
+      background: rgba(5, 7, 18, 0.85);
+      color: #f8fbff;
+      padding: 16px;
+      font-family: 'JetBrains Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
+      font-size: 13px;
+      line-height: 1.45;
+      resize: vertical;
+    }
+
+    #customShaderInput:focus {
+      outline: 2px solid var(--accent);
+      outline-offset: 4px;
+    }
+
+    .custom-shader-footer {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 14px;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    #customShaderStatus {
+      min-height: 20px;
+      font-size: 13px;
+    }
+
+    #customShaderStatus.error {
+      color: #ff9f5c;
+    }
+
+    .custom-shader-actions {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .control-button.secondary {
+      background: rgba(255, 255, 255, 0.1);
+      border-color: rgba(255, 255, 255, 0.2);
+    }
+    .control-button.secondary:hover {
+      background: rgba(255, 255, 255, 0.15);
+    }
   </style>
 </head>
 <body>
@@ -257,6 +381,7 @@
       <label for="hqMode">HQ (LOD 3/9)</label>
     </div>
     <button id="layersToggle" class="control-button" aria-expanded="false" aria-controls="layersPanel">Layers</button>
+    <button id="customShaderBtn" class="control-button" type="button">Custom Shader</button>
   </div>
   <div id="layersPanel" aria-hidden="true">
     <div class="panel-header">
@@ -325,6 +450,25 @@
         <label for="shadowRayStepMultiplierSlider">Ray Substeps</label>
         <input type="range" id="shadowRayStepMultiplierSlider" min="0.25" max="4" step="0.05" value="1">
         <span id="shadowRayStepMultiplierValue">1.00</span>
+      </div>
+    </div>
+  </div>
+  <div id="customShaderModal" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="customShaderTitle">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 id="customShaderTitle">Custom Shader Layer</h3>
+        <button id="customShaderClose" type="button" aria-label="Close custom shader editor">×</button>
+      </div>
+      <p>Paste GLSL fragment code below. The editor automatically prepends MapLibre's terrain varyings and helper functions so you can access <code>v_texCoord</code>, <code>v_elevation</code>, <code>getElevationFromTexture</code>, <code>getHillshadeGradient</code>, neighbor samplers, and more.</p>
+      <p class="modal-hint">Write a <code>void main()</code> function that sets <code>fragColor</code>. Gradient and depth textures are available, and new code is applied live.</p>
+      <textarea id="customShaderInput" spellcheck="false"></textarea>
+      <div class="custom-shader-footer">
+        <div id="customShaderStatus" aria-live="polite"></div>
+        <div class="custom-shader-actions">
+          <button id="customShaderDisable" type="button" class="control-button secondary">Disable Layer</button>
+          <button id="customShaderCancel" type="button" class="control-button secondary">Cancel</button>
+          <button id="customShaderApply" type="button" class="control-button">Apply Shader</button>
+        </div>
       </div>
     </div>
   </div>
