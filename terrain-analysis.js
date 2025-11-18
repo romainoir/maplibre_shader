@@ -184,7 +184,20 @@ void main() {
       ? customShaderSource
       : DEFAULT_CUSTOM_SHADER_SOURCE;
     const bodyWithTrimmedLeading = body.replace(/^\s+/, '');
-    if (/^#version\s+\d+/i.test(bodyWithTrimmedLeading)) {
+    const bodyFullyTrimmed = bodyWithTrimmedLeading.replace(/\s+$/, '');
+    const hasVersionDirective = /^#version\s+\d+/i.test(bodyWithTrimmedLeading);
+    const containsCommonUniforms = /uniform\s+sampler2D\s+u_image\b/.test(bodyWithTrimmedLeading);
+    const containsCommonFunctions = /float\s+getElevationFromTexture\s*\(/.test(bodyWithTrimmedLeading)
+      || /vec3\s+srgbToLinear\s*\(/.test(bodyWithTrimmedLeading);
+
+    if (containsCommonUniforms && containsCommonFunctions) {
+      if (hasVersionDirective) {
+        return bodyFullyTrimmed;
+      }
+      return `#version 300 es\n${bodyFullyTrimmed}`;
+    }
+
+    if (hasVersionDirective) {
       const newlineIndex = bodyWithTrimmedLeading.indexOf('\n');
       if (newlineIndex === -1) {
         return `${bodyWithTrimmedLeading}\n${commonSource}\n`;
