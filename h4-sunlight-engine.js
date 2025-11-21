@@ -39,7 +39,16 @@
     const azimuths = Math.max(1, azimuthCount || 32);
     const levels = Math.max(1, quantizationLevels || 32);
 
-    const histogram = Array.from({ length: azimuths }, () => new Uint16Array(levels));
+    // We need to store: Duration (R), MinTime (G), MaxTime (B)
+    // Initialize minTime with a high value, maxTime with -1
+    const width = levels;
+    const height = azimuths;
+    const size = width * height;
+
+    // Temporary arrays for accumulation
+    const histogram = new Float32Array(size); // For duration
+    const minTime = new Float32Array(size).fill(99999);
+    const maxTime = new Float32Array(size).fill(-1);
 
     const start = new Date(date.getTime());
     start.setHours(0, 0, 0, 0);
@@ -50,7 +59,8 @@
     const elevationRange = elevationMax - elevationMin;
 
     for (let step = 0; step < totalSteps; step++) {
-      const sampleDate = new Date(start.getTime() + step * minutes * 60000);
+      const timeInMinutes = step * minutes;
+      const sampleDate = new Date(start.getTime() + timeInMinutes * 60000);
       const position = SunCalc.getPosition(sampleDate, lat, lon);
       if (!position) continue;
 
@@ -63,7 +73,9 @@
       const normalizedElevation = elevationRange > 0
         ? (altitudeClamped - elevationMin) / elevationRange
         : 0;
-      const levelIndex = clamp(
+
+      // The sun is at this specific level index
+      const sunLevelIndex = clamp(
         Math.floor(normalizedElevation * (levels - 1) + 0.5),
         0,
         levels - 1
@@ -78,25 +90,30 @@
         azimuths - 1
       );
 
-      histogram[azimuthIndex][levelIndex] += 1;
+      // If the sun is at 'sunLevelIndex', it is visible for any horizon height <= sunLevelIndex.
+      // So we update all bins from 0 to sunLevelIndex for this azimuth.
+      const rowOffset = azimuthIndex * width;
+      for (let l = 0; l <= sunLevelIndex; l++) {
+        const idx = rowOffset + l;
+        histogram[idx] += 1; // Add one time step
+        if (timeInMinutes < minTime[idx]) minTime[idx] = timeInMinutes;
+        if (timeInMinutes > maxTime[idx]) maxTime[idx] = timeInMinutes;
+      }
     }
 
-    const width = levels;
-    const height = azimuths;
-    const data = new Float32Array(width * height);
+    // Pack into RGBA texture data
+    const data = new Float32Array(width * height * 4);
     let maxMinutes = 0;
 
-    for (let az = 0; az < azimuths; az++) {
-      const bins = histogram[az];
-      let cumulative = 0;
-      for (let level = levels - 1; level >= 0; level--) {
-        cumulative += bins[level];
-        const minutesAbove = cumulative * minutes;
-        data[az * width + level] = minutesAbove;
-        if (minutesAbove > maxMinutes) {
-          maxMinutes = minutesAbove;
-        }
-      }
+    for (let i = 0; i < size; i++) {
+      const minutesAbove = histogram[i] * minutes;
+      if (minutesAbove > maxMinutes) maxMinutes = minutesAbove;
+
+      const offset = i * 4;
+      data[offset + 0] = minutesAbove;
+      data[offset + 1] = minTime[i] === 99999 ? -1.0 : minTime[i]; // Sunrise time (minutes from midnight)
+      data[offset + 2] = maxTime[i]; // Sunset time (minutes from midnight)
+      data[offset + 3] = 1.0; // Alpha
     }
 
     return {
@@ -183,9 +200,9 @@
 
       const quad = new Float32Array([
         -1, -1,
-         1, -1,
-        -1,  1,
-         1,  1
+        1, -1,
+        -1, 1,
+        1, 1
       ]);
       this.quadBuffer = gl.createBuffer();
       gl.bindBuffer(gl.ARRAY_BUFFER, this.quadBuffer);
@@ -251,11 +268,11 @@
       gl.texImage2D(
         gl.TEXTURE_2D,
         0,
-        gl.R32F,
+        gl.RGBA32F,
         lut.width,
         lut.height,
         0,
-        gl.RED,
+        gl.RGBA,
         gl.FLOAT,
         lut.data
       );
@@ -329,12 +346,12 @@
           this.gl.texImage3D(
             this.gl.TEXTURE_2D_ARRAY,
             0,
-            this.gl.R8,
+            this.gl.RG8,
             tileSize,
             tileSize,
             this.azimuthCount,
             0,
-            this.gl.RED,
+            this.gl.RG,
             this.gl.UNSIGNED_BYTE,
             null
           );
@@ -464,11 +481,13 @@
       for (let i = 0; i < this.horizonUniforms.neighbors.length; i++) {
         const uniform = this.horizonUniforms.neighbors[i];
         if (!uniform || !uniform.textureLocation) continue;
-        const texture = params.neighborTextures[i] || params.baseTexture;
+        const texture = params.neighborTextures[i] || null;
         gl.activeTexture(gl.TEXTURE1 + i);
         gl.bindTexture(gl.TEXTURE_2D, texture);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        if (texture) {
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        }
         gl.uniform1i(uniform.textureLocation, 1 + i);
         if (uniform.metersLocation) {
           const neighborMeters = Array.isArray(params.neighborMeters) ? params.neighborMeters : null;
@@ -598,7 +617,8 @@
         + `    if (traveled <= 0.0) {\n`
         + `      continue;\n`
         + `    }\n`
-        + `    float sampleElevation = sampleElevationAdaptive(samplePos, traveled, u_metersPerPixel);\n`
+        + `    vec2 clampedPos = vec2(clamp(samplePos.x, minBound, maxBound), clamp(samplePos.y, minBound, maxBound));\n`
+        + `    float sampleElevation = sampleElevationAdaptive(clampedPos, traveled, u_metersPerPixel);\n`
         + `    float slope = (sampleElevation - baseElevation) / traveled;\n`
         + `    maxSlope = max(maxSlope, slope);\n`
         + `    float growth = computeAdaptiveStepGrowth(traveled);\n`
@@ -612,10 +632,11 @@
         + `  float angle = atan(maxSlope);\n`
         + `  float normalized = (angle - u_angleMin) / (u_angleMax - u_angleMin);\n`
         + `  normalized = clamp(normalized, 0.0, 1.0);\n`
-        + `  float qLevels = float(max(u_quantizationLevels, 2));\n`
-        + `  float quantized = floor(normalized * (qLevels - 1.0) + 0.5);\n`
-        + `  float stored = quantized / (qLevels - 1.0);\n`
-        + `  oColor = vec4(stored, stored, stored, 1.0);\n`
+        + `  // Pack 16-bit float into RG8\n`
+        + `  float v = normalized * 65535.0;\n`
+        + `  float r = floor(v / 256.0);\n`
+        + `  float g = v - r * 256.0;\n`
+        + `  oColor = vec4(r / 255.0, g / 255.0, 0.0, 1.0);\n`
         + `}`;
 
       return this._createProgram(gl, vertexSource, fragmentSource);

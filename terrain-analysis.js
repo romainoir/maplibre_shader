@@ -1,5 +1,12 @@
 /* terrain-analysis.js */
-(function() {
+(function () {
+  // Guard against multiple initialization
+  if (window.__terrainAnalysisInitialized) {
+    console.warn('Terrain analysis already initialized, skipping duplicate initialization.');
+    return;
+  }
+  window.__terrainAnalysisInitialized = true;
+
   const terrainDebugEnabled = false;
   const HillshadeDebug = window.__MapLibreHillshadeDebug || null;
   const hillshadeDebugEnabled = (() => {
@@ -89,6 +96,7 @@
   let terrainAnimationFrameId = null;
   let is3DViewEnabled = true;
   let isTerrainFlattened = false;
+  let daylightMode = 0; // 0=Duration, 1=Sunrise, 2=Sunset
 
   // Global state variables
   const CUSTOM_SHADER_USER_MODE = 'custom-user';
@@ -111,13 +119,14 @@
   let snowAltitude = 3000;
   let snowMaxSlope = 55; // in degrees
   let snowBlurAmount = 1.0;
-  let shadowSampleCount = 1;
+  // Shadow defaults tuned for higher quality; user UI only adjusts date/time/opacity.
+  let shadowSampleCount = 8;
   let shadowBlurRadius = 1.0;
   let shadowMaxDistance = 14000; // meters
   let shadowVisibilityThreshold = 0.02;
-  let shadowEdgeSoftness = 0.01;
-  let shadowMaxOpacity = 0.85;
-  let shadowRayStepMultiplier = 1.0;
+  let shadowEdgeSoftness = 0.02;
+  let shadowMaxOpacity = 0.9;
+  let shadowRayStepMultiplier = 0.9;
   let shadowSlopeBias = 0.03;
   let shadowPixelBias = 0.15;
   let pendingCustomLayerEnsure = false;
@@ -230,7 +239,7 @@ void main() {
     return CUSTOM_LAYER_ORDER.filter((mode) => activeCustomModes.has(mode));
   }
   const H4_SUNLIGHT_CONFIG = Object.freeze({
-    azimuthCount: 48,
+    azimuthCount: 96,  // Doubled for smoother shadows
     quantizationLevels: 64,
     minutesStep: 5,
     angleMin: -2 * Math.PI / 180,
@@ -243,8 +252,6 @@ void main() {
   let shadowDateValue = null;
   let shadowTimeValue = null;
   let map;
-  let terrainMeshBtn = null;
-  let terrainExportBtn = null;
   let terrainMenuContainer = null;
   let terrainStatusEl = null;
   let layersPanelEl = null;
@@ -261,18 +268,6 @@ void main() {
   let customShaderCloseButton = null;
   let customShaderModalOpen = false;
   let layersPanelOpen = false;
-  let terrainWireframeLayer = null;
-  let terrainWireframeScene = null;
-  let terrainWireframeMesh = null;
-  let terrainSolidMesh = null;
-  let terrainWireframeLayerVisible = false;
-  let terrainWireframeLoading = false;
-  let terrainWireframeModelTransform = null;
-  let terrainMeshMetadata = null;
-  let terrainAmbientLight = null;
-  let terrainDirectionalLight = null;
-  let terrainDirectionalLightTarget = null;
-  let supportsUint32IndexBuffer = false;
 
   const EARTH_CIRCUMFERENCE_METERS = 40075016.68557849;
   const MIN_METERS_PER_PIXEL = 1e-6;
@@ -337,7 +332,7 @@ void main() {
     const metersPerPixel = (EARTH_CIRCUMFERENCE_METERS * Math.abs(cosLat)) / scale;
     return Math.max(metersPerPixel, MIN_METERS_PER_PIXEL);
   }
-  let recomputeShadowTimeBounds = () => {};
+  let recomputeShadowTimeBounds = () => { };
 
   function clamp(value, min, max) {
     return Math.max(min, Math.min(max, value));
@@ -415,64 +410,6 @@ void main() {
     }
   }
 
-  function tileToLngLat(x, y, z) {
-    const n = Math.pow(2, z);
-    const lng = (x / n) * 360 - 180;
-    const lat = Math.atan(Math.sinh(Math.PI * (1 - (2 * y) / n))) * 180 / Math.PI;
-    return { lng, lat };
-  }
-
-  function lngLatToMercator(lng, lat) {
-    const x = EARTH_RADIUS_METERS * THREE.MathUtils.degToRad(lng);
-    const y = EARTH_RADIUS_METERS * Math.log(Math.tan(Math.PI / 4 + THREE.MathUtils.degToRad(lat) / 2));
-    return { x, y };
-  }
-
-  function tileToMercator(x, y, z) {
-    const { lng, lat } = tileToLngLat(x, y, z);
-    return lngLatToMercator(lng, lat);
-  }
-
-  function mercatorToLngLat(x, y) {
-    const lng = THREE.MathUtils.radToDeg(x / EARTH_RADIUS_METERS);
-    const lat = THREE.MathUtils.radToDeg(2 * Math.atan(Math.exp(y / EARTH_RADIUS_METERS)) - Math.PI / 2);
-    return { lng, lat };
-  }
-
-  function isMatrixLike(value) {
-    return Array.isArray(value) || ArrayBuffer.isView(value);
-  }
-
-  function resolveProjectionMatrix(input, mapInstance) {
-    if (isMatrixLike(input)) {
-      return input;
-    }
-    if (input && typeof input === 'object') {
-      if (isMatrixLike(input.matrix)) {
-        return input.matrix;
-      }
-      if (isMatrixLike(input.projectionMatrix)) {
-        return input.projectionMatrix;
-      }
-      const defaultProjectionData = input.defaultProjectionData;
-      if (defaultProjectionData && typeof defaultProjectionData === 'object') {
-        if (isMatrixLike(defaultProjectionData.mainMatrix)) {
-          return defaultProjectionData.mainMatrix;
-        }
-        if (isMatrixLike(defaultProjectionData.fallbackMatrix)) {
-          return defaultProjectionData.fallbackMatrix;
-        }
-      }
-    }
-    if (mapInstance?.transform && typeof mapInstance.transform.customLayerMatrix === 'function') {
-      const matrix = mapInstance.transform.customLayerMatrix();
-      if (isMatrixLike(matrix)) {
-        return matrix;
-      }
-    }
-    return null;
-  }
-
   function getTerrainDemUrl(tile) {
     if (!map || typeof map.getStyle !== 'function') {
       return null;
@@ -524,7 +461,7 @@ void main() {
       return null;
     }
     const meshBuffers = maplibregl.createTileMesh({
-      granularity: 128,
+      granularity: 200,
       generateBorders: false,
       extent: TERRAIN_MESH_CONFIG.extent
     }, '16bit');
@@ -1464,19 +1401,19 @@ void main() {
 
     const resolvePointLike = (pointLike) => {
       if (Array.isArray(pointLike)) {
-        return {x: pointLike[0], y: pointLike[1]};
+        return { x: pointLike[0], y: pointLike[1] };
       }
       if (pointLike && typeof pointLike === 'object') {
         if ('x' in pointLike && 'y' in pointLike) {
-          return {x: Number(pointLike.x), y: Number(pointLike.y)};
+          return { x: Number(pointLike.x), y: Number(pointLike.y) };
         }
         if ('lng' in pointLike && 'lat' in pointLike) {
           // MapLibre occasionally passes a Point class instance which exposes
           // `lng`/`lat`. Treat it as pixel coordinates to avoid throwing.
-          return {x: Number(pointLike.lng), y: Number(pointLike.lat)};
+          return { x: Number(pointLike.lng), y: Number(pointLike.lat) };
         }
       }
-      return {x: 0, y: 0};
+      return { x: 0, y: 0 };
     };
 
     const patchPrototype = (prototype) => {
@@ -1485,7 +1422,7 @@ void main() {
       const needsPatch = !original || /Not implemented/.test(String(original));
       if (!needsPatch) return;
 
-      prototype.getRayDirectionFromPixel = function(pointLike, coordinateOrigin = 'viewport') {
+      prototype.getRayDirectionFromPixel = function (pointLike, coordinateOrigin = 'viewport') {
         const point = resolvePointLike(pointLike);
         const width = this.width || 0;
         const height = this.height || 0;
@@ -1671,9 +1608,9 @@ void main() {
       const isoDate = shadowDateValue;
       const targetDate = isoDate
         ? (() => {
-            const [yearStr, monthStr, dayStr] = isoDate.split('-');
-            return new Date(Number(yearStr), Number(monthStr) - 1, Number(dayStr));
-          })()
+          const [yearStr, monthStr, dayStr] = isoDate.split('-');
+          return new Date(Number(yearStr), Number(monthStr) - 1, Number(dayStr));
+        })()
         : dateFromDayIndex(defaultDayIndex);
 
       const times = SunCalc.getTimes(targetDate, center.lat, center.lng);
@@ -1793,8 +1730,10 @@ void main() {
     const sunPos = SunCalc.getPosition(sunDate, center.lat, center.lng);
     const azimuth = sunPos.azimuth;
     const altitude = sunPos.altitude;
+    // SunCalc: azimuth 0 = south, positive westward.
+    // Tile coords: +X east, +Y south. Project sun onto ground in that frame.
     const dirX = -Math.sin(azimuth);
-    const dirY = -Math.cos(azimuth);
+    const dirY = Math.cos(azimuth);
     const minAltitude = -1 * (Math.PI / 180); // approximately -1 degree
     const clampedAltitude = Math.max(altitude, minAltitude);
     const sunSlope = Math.tan(clampedAltitude);
@@ -1959,13 +1898,271 @@ void main() {
     if (snowSliderContainer) {
       snowSliderContainer.style.display = (isCustomActive && isModeActive('snow')) ? "flex" : "none";
     }
+
+    function initializeDaylightControls() {
+      const shadowControls = document.getElementById('shadowControls');
+      if (!shadowControls) return;
+
+      let container = document.getElementById('daylightModeContainer');
+      if (!container) {
+        container = document.createElement('div');
+        container.id = 'daylightModeContainer';
+        container.style.display = 'none';
+        container.style.marginTop = '10px';
+        container.style.gap = '5px';
+        container.style.justifyContent = 'center';
+
+        const modes = [
+          { name: 'Duration', value: 0 },
+          { name: 'Sunrise', value: 1 },
+          { name: 'Sunset', value: 2 }
+        ];
+
+        modes.forEach(mode => {
+          const btn = document.createElement('button');
+          btn.textContent = mode.name;
+          btn.className = 'map-control-button'; // Re-use existing class if possible
+          if (mode.value === daylightMode) btn.classList.add('active');
+
+          btn.style.padding = '4px 8px';
+          btn.style.fontSize = '12px';
+          btn.style.cursor = 'pointer';
+          btn.style.border = '1px solid #ccc';
+          btn.style.borderRadius = '4px';
+          btn.style.backgroundColor = mode.value === daylightMode ? '#ccc' : '#fff';
+
+          btn.onclick = () => {
+            daylightMode = mode.value;
+            // Update active state
+            Array.from(container.children).forEach((child, index) => {
+              child.classList.toggle('active', index === mode.value);
+              child.style.backgroundColor = index === mode.value ? '#ccc' : '#fff';
+            });
+            if (map) map.triggerRepaint();
+          };
+          container.appendChild(btn);
+        });
+
+        shadowControls.appendChild(container);
+      }
+    }
+
+    function initializeShadowSettingsUI() {
+      const shadowControls = document.getElementById('shadowControls');
+      if (!shadowControls) return;
+
+      // Check if cog button already exists
+      if (document.getElementById('shadowSettingsBtn')) return;
+
+      const cogBtn = document.createElement('button');
+      cogBtn.id = 'shadowSettingsBtn';
+      cogBtn.innerHTML = '⚙️'; // Simple cog icon
+      cogBtn.className = 'map-control-button';
+      cogBtn.style.marginLeft = '10px';
+      cogBtn.style.cursor = 'pointer';
+      cogBtn.style.padding = '4px 8px';
+      cogBtn.title = "Shadow Settings";
+
+      cogBtn.onclick = () => {
+        const popup = document.getElementById('shadowSettingsPopup');
+        if (popup) {
+          popup.style.display = popup.style.display === 'none' ? 'block' : 'none';
+        }
+      };
+
+      // Append to shadowControls (assuming it's a flex container)
+      shadowControls.appendChild(cogBtn);
+
+      // Create Popup
+      let popup = document.getElementById('shadowSettingsPopup');
+      if (!popup) {
+        popup = document.createElement('div');
+        popup.id = 'shadowSettingsPopup';
+        popup.style.display = 'none';
+        popup.style.position = 'absolute';
+        popup.style.top = '80px'; // Default to top-right
+        popup.style.right = '20px';
+        popup.style.left = 'auto';
+        popup.style.bottom = 'auto';
+        popup.style.backgroundColor = 'rgba(0, 0, 0, 0.9)';
+        popup.style.color = 'white';
+        popup.style.padding = '0'; // Padding handled inside for header separation
+        popup.style.borderRadius = '8px';
+        popup.style.zIndex = '10000';
+        popup.style.width = '300px';
+        popup.style.maxHeight = '500px';
+        popup.style.overflowY = 'auto';
+        popup.style.fontFamily = 'sans-serif';
+        popup.style.fontSize = '12px';
+        popup.style.boxShadow = '0 4px 12px rgba(0,0,0,0.5)';
+
+        // Header (Drag Handle)
+        const header = document.createElement('div');
+        header.style.padding = '10px 15px';
+        header.style.backgroundColor = 'rgba(255, 255, 255, 0.1)';
+        header.style.borderTopLeftRadius = '8px';
+        header.style.borderTopRightRadius = '8px';
+        header.style.cursor = 'move';
+        header.style.display = 'flex';
+        header.style.justifyContent = 'space-between';
+        header.style.alignItems = 'center';
+
+        const title = document.createElement('span');
+        title.textContent = 'Shadow Settings';
+        title.style.fontWeight = 'bold';
+        title.style.fontSize = '14px';
+        header.appendChild(title);
+
+        const closeBtn = document.createElement('button');
+        closeBtn.textContent = '✕';
+        closeBtn.style.background = 'none';
+        closeBtn.style.border = 'none';
+        closeBtn.style.color = 'white';
+        closeBtn.style.cursor = 'pointer';
+        closeBtn.style.fontSize = '14px';
+        closeBtn.onclick = () => { popup.style.display = 'none'; };
+        header.appendChild(closeBtn);
+
+        popup.appendChild(header);
+
+        // Content Container
+        const content = document.createElement('div');
+        content.style.padding = '15px';
+        popup.appendChild(content);
+
+        // Drag Logic
+        let isDragging = false;
+        let startX, startY, initialLeft, initialTop;
+
+        header.onmousedown = (e) => {
+          isDragging = true;
+          startX = e.clientX;
+          startY = e.clientY;
+          const rect = popup.getBoundingClientRect();
+          initialLeft = rect.left;
+          initialTop = rect.top;
+          // Clear right/bottom to allow free movement via left/top
+          popup.style.right = 'auto';
+          popup.style.bottom = 'auto';
+          popup.style.left = `${initialLeft}px`;
+          popup.style.top = `${initialTop}px`;
+          document.addEventListener('mousemove', onMouseMove);
+          document.addEventListener('mouseup', onMouseUp);
+        };
+
+        function onMouseMove(e) {
+          if (!isDragging) return;
+          const dx = e.clientX - startX;
+          const dy = e.clientY - startY;
+          popup.style.left = `${initialLeft + dx}px`;
+          popup.style.top = `${initialTop + dy}px`;
+        }
+
+        function onMouseUp() {
+          isDragging = false;
+          document.removeEventListener('mousemove', onMouseMove);
+          document.removeEventListener('mouseup', onMouseUp);
+        }
+
+        const settings = [
+          { label: 'Sample Count', var: 'shadowSampleCount', min: 1, max: 16, step: 1, ref: () => shadowSampleCount, set: (v) => shadowSampleCount = v },
+          { label: 'Blur Radius', var: 'shadowBlurRadius', min: 0, max: 5, step: 0.1, ref: () => shadowBlurRadius, set: (v) => shadowBlurRadius = v },
+          { label: 'Max Distance', var: 'shadowMaxDistance', min: 1000, max: 50000, step: 1000, ref: () => shadowMaxDistance, set: (v) => shadowMaxDistance = v },
+          { label: 'Vis Threshold', var: 'shadowVisibilityThreshold', min: 0.0, max: 0.1, step: 0.001, ref: () => shadowVisibilityThreshold, set: (v) => shadowVisibilityThreshold = v },
+          { label: 'Edge Softness', var: 'shadowEdgeSoftness', min: 0.0, max: 0.2, step: 0.001, ref: () => shadowEdgeSoftness, set: (v) => shadowEdgeSoftness = v },
+          { label: 'Ray Step Mul', var: 'shadowRayStepMultiplier', min: 0.1, max: 2.0, step: 0.1, ref: () => shadowRayStepMultiplier, set: (v) => shadowRayStepMultiplier = v },
+          { label: 'Slope Bias', var: 'shadowSlopeBias', min: 0.0, max: 0.1, step: 0.001, ref: () => shadowSlopeBias, set: (v) => shadowSlopeBias = v },
+          { label: 'Pixel Bias', var: 'shadowPixelBias', min: 0.0, max: 1.0, step: 0.01, ref: () => shadowPixelBias, set: (v) => shadowPixelBias = v },
+        ];
+
+        settings.forEach(setting => {
+          const row = document.createElement('div');
+          row.style.marginBottom = '8px';
+
+          const label = document.createElement('div');
+          label.textContent = `${setting.label}: ${setting.ref()}`;
+          row.appendChild(label);
+
+          const slider = document.createElement('input');
+          slider.type = 'range';
+          slider.min = setting.min;
+          slider.max = setting.max;
+          slider.step = setting.step;
+          slider.value = setting.ref();
+          slider.style.width = '100%';
+
+          slider.oninput = (e) => {
+            const val = parseFloat(e.target.value);
+            setting.set(val);
+            label.textContent = `${setting.label}: ${val}`;
+            if (map) map.triggerRepaint();
+          };
+
+          row.appendChild(slider);
+          content.appendChild(row);
+        });
+
+        // Reset Button
+        const resetBtn = document.createElement('button');
+        resetBtn.textContent = "Reset Defaults";
+        resetBtn.style.marginTop = "10px";
+        resetBtn.style.width = "100%";
+        resetBtn.onclick = () => {
+          shadowSampleCount = 8;
+          shadowBlurRadius = 1.0;
+          shadowMaxDistance = 14000;
+          shadowVisibilityThreshold = 0.02;
+          shadowEdgeSoftness = 0.02;
+          shadowRayStepMultiplier = 0.9;
+          shadowSlopeBias = 0.03;
+          shadowPixelBias = 0.15;
+
+          // Update sliders
+          Array.from(content.querySelectorAll('input[type=range]')).forEach((input, idx) => {
+            const s = settings[idx];
+            if (s) {
+              input.value = s.ref();
+              input.previousSibling.textContent = `${s.label}: ${s.ref()}`;
+            }
+          });
+          if (map) map.triggerRepaint();
+        };
+        content.appendChild(resetBtn);
+
+        document.body.appendChild(popup);
+      }
+    }
+
+    // Call initialization
+    initializeDaylightControls();
+    initializeShadowSettingsUI();
+
     const shadowControls = document.getElementById('shadowControls');
     if (shadowControls) {
-      shadowControls.style.display = (isCustomActive && (isModeActive('shadow') || isModeActive('daylight'))) ? "flex" : "none";
+      const showShadow = isCustomActive && isModeActive('shadow');
+      const showDaylight = isCustomActive && isModeActive('daylight');
+      shadowControls.style.display = (showShadow || showDaylight) ? "flex" : "none";
+
+      // Hide time and opacity sliders if only daylight mode is active
+      const timeSlider = document.getElementById('shadowTimeSlider');
+      const opacitySlider = document.getElementById('shadowMaxOpacitySlider');
+      const daylightContainer = document.getElementById('daylightModeContainer');
+
+      if (timeSlider && timeSlider.parentElement) {
+        timeSlider.parentElement.style.display = showShadow ? "flex" : "none";
+      }
+
+      if (opacitySlider && opacitySlider.parentElement) {
+        opacitySlider.parentElement.style.display = showShadow ? "flex" : "none";
+      }
+
+      if (daylightContainer) {
+        daylightContainer.style.display = showDaylight ? "flex" : "none";
+      }
     }
     refreshDebugPanel();
   }
-  
+
   // Slider event listeners
   document.getElementById('snowAltitudeSlider').addEventListener('input', (e) => {
     snowAltitude = parseFloat(e.target.value);
@@ -2470,7 +2667,6 @@ void main() {
       publishRenderDebugInfo(null);
     }
 
-    terrainNormalLayer.shaderMap.clear();
     updateButtons();
     if (styleReady && map) {
       map.triggerRepaint();
@@ -2490,7 +2686,6 @@ void main() {
       hillshadeMode = 'none';
     }
     currentMode = '';
-    terrainNormalLayer.shaderMap.clear();
     updateButtons();
     if (styleReady && map) {
       map.triggerRepaint();
@@ -2539,50 +2734,6 @@ void main() {
     }
   }
 
-  const shadowSampleCountSlider = document.getElementById('shadowSampleCountSlider');
-  const shadowSampleCountValue = document.getElementById('shadowSampleCountValue');
-  if (shadowSampleCountSlider && shadowSampleCountValue) {
-    shadowSampleCountValue.textContent = shadowSampleCount.toString();
-    shadowSampleCountSlider.addEventListener('input', (e) => {
-      shadowSampleCount = Math.max(1, parseInt(e.target.value, 10));
-      shadowSampleCountValue.textContent = shadowSampleCount.toString();
-      triggerShadowRepaint();
-    });
-  }
-
-  const shadowBlurRadiusSlider = document.getElementById('shadowBlurRadiusSlider');
-  const shadowBlurRadiusValue = document.getElementById('shadowBlurRadiusValue');
-  if (shadowBlurRadiusSlider && shadowBlurRadiusValue) {
-    shadowBlurRadiusValue.textContent = shadowBlurRadius.toFixed(2);
-    shadowBlurRadiusSlider.addEventListener('input', (e) => {
-      shadowBlurRadius = Math.max(0, parseFloat(e.target.value));
-      shadowBlurRadiusValue.textContent = shadowBlurRadius.toFixed(2);
-      triggerShadowRepaint();
-    });
-  }
-
-  const shadowRayLengthSlider = document.getElementById('shadowRayLengthSlider');
-  const shadowRayLengthValue = document.getElementById('shadowRayLengthValue');
-  if (shadowRayLengthSlider && shadowRayLengthValue) {
-    shadowRayLengthValue.textContent = shadowMaxDistance.toFixed(0);
-    shadowRayLengthSlider.addEventListener('input', (e) => {
-      shadowMaxDistance = Math.max(0, parseFloat(e.target.value));
-      shadowRayLengthValue.textContent = shadowMaxDistance.toFixed(0);
-      triggerShadowRepaint();
-    });
-  }
-
-  const shadowEdgeSoftnessSlider = document.getElementById('shadowEdgeSoftnessSlider');
-  const shadowEdgeSoftnessValue = document.getElementById('shadowEdgeSoftnessValue');
-  if (shadowEdgeSoftnessSlider && shadowEdgeSoftnessValue) {
-    shadowEdgeSoftnessValue.textContent = shadowEdgeSoftness.toFixed(2);
-    shadowEdgeSoftnessSlider.addEventListener('input', (e) => {
-      shadowEdgeSoftness = Math.max(0, parseFloat(e.target.value));
-      shadowEdgeSoftnessValue.textContent = shadowEdgeSoftness.toFixed(2);
-      triggerShadowRepaint();
-    });
-  }
-
   const shadowMaxOpacitySlider = document.getElementById('shadowMaxOpacitySlider');
   const shadowMaxOpacityValue = document.getElementById('shadowMaxOpacityValue');
   if (shadowMaxOpacitySlider && shadowMaxOpacityValue) {
@@ -2594,36 +2745,30 @@ void main() {
     });
   }
 
-  const shadowRayStepMultiplierSlider = document.getElementById('shadowRayStepMultiplierSlider');
-  const shadowRayStepMultiplierValue = document.getElementById('shadowRayStepMultiplierValue');
-  if (shadowRayStepMultiplierSlider && shadowRayStepMultiplierValue) {
-    shadowRayStepMultiplierValue.textContent = shadowRayStepMultiplier.toFixed(2);
-    shadowRayStepMultiplierSlider.addEventListener('input', (e) => {
-      shadowRayStepMultiplier = Math.max(0.25, parseFloat(e.target.value));
-      shadowRayStepMultiplierValue.textContent = shadowRayStepMultiplier.toFixed(2);
-      triggerShadowRepaint();
-    });
-  }
-
   // Minimal getTileMesh: create or return cached mesh for a tile
   function getTileMesh(gl, tile) {
     const key = `mesh_${tile.tileID.key}`;
     if (meshCache.has(key)) return meshCache.get(key);
-    const meshBuffers = maplibregl.createTileMesh({ granularity: 220, generateBorders: false, extent: EXTENT }, '16bit');
+    const granularity = 220;
+    const meshBuffers = maplibregl.createTileMesh({ granularity: granularity, generateBorders: true, extent: EXTENT }, '16bit');
     const vertices = new Int16Array(meshBuffers.vertices);
     const indices = new Int16Array(meshBuffers.indices);
-    const vertexCount = vertices.length / 2;
+    // originalVertexCount is the count of the main grid vertices, excluding the borders.
+    // The shader uses this to identify which vertices are "walls" (borders).
+    const gridSize = granularity + 1;
+    const originalVertexCount = gridSize * gridSize;
+
     const vbo = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
     gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
     const ibo = gl.createBuffer();
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
     gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW);
-    const mesh = { vbo, ibo, indexCount: indices.length, originalVertexCount: vertexCount };
+    const mesh = { vbo, ibo, indexCount: indices.length, originalVertexCount: originalVertexCount };
     meshCache.set(key, mesh);
     return mesh;
   }
-  
+
   // Define the custom terrain layer.
   const terrainNormalLayer = {
     id: 'terrain-normal',
@@ -2632,7 +2777,7 @@ void main() {
     shaderMap: new Map(),
     frameCount: 0,
     terrainTextureCache: new Map(),
-    
+
     onAdd(mapInstance, gl) {
       this.map = mapInstance;
       this.gl = gl;
@@ -2640,15 +2785,15 @@ void main() {
       this.terrainTextureCache = new Map();
       ensureSunlightEngine(gl);
     },
-  
+
     getShader(gl, shaderDescription) {
       const variantName = shaderDescription.variantName + "_" + currentMode;
       if (this.shaderMap.has(variantName)) return this.shaderMap.get(variantName);
-      
+
       // Build the shader sources using our TerrainShaders helper.
       const vertexSource = TerrainShaders.getVertexShader(shaderDescription, EXTENT);
       const fragmentSource = TerrainShaders.getFragmentShader(currentMode);
-      
+
       const program = gl.createProgram();
       const vertexShader = gl.createShader(gl.VERTEX_SHADER);
       const fragmentShader = gl.createShader(gl.FRAGMENT_SHADER);
@@ -2714,34 +2859,43 @@ void main() {
       if (currentMode === "snow") {
         uniforms.push('u_snow_altitude', 'u_snow_maxSlope', 'u_snow_blur');
       }
-        if (currentMode === "shadow" || currentMode === "daylight") {
+      if (currentMode === "shadow" || currentMode === "daylight") {
+        uniforms.push(
+          'u_shadowSampleCount',
+          'u_shadowBlurRadius',
+          'u_shadowMaxDistance',
+          'u_shadowVisibilityThreshold',
+          'u_shadowEdgeSoftness',
+          'u_shadowMaxOpacity',
+          'u_shadowRayStepMultiplier',
+          'u_shadowSlopeBias',
+          'u_shadowPixelBias'
+        );
+        const h4SharedUniforms = [
+          'u_h4Horizon',
+          'u_h4AzimuthCount',
+          'u_h4QuantizationLevels',
+          'u_h4AngleMin',
+          'u_h4AngleMax'
+        ];
+        uniforms.push(...h4SharedUniforms);
+        if (currentMode === "shadow") {
           uniforms.push(
-            'u_shadowSampleCount',
-            'u_shadowBlurRadius',
-            'u_shadowMaxDistance',
-            'u_shadowVisibilityThreshold',
-            'u_shadowEdgeSoftness',
-            'u_shadowMaxOpacity',
-            'u_shadowRayStepMultiplier',
-            'u_shadowSlopeBias',
-            'u_shadowPixelBias'
+            'u_sunDirection',
+            'u_sunAltitude',
+            'u_sunSlope',
+            'u_sunWarmColor',
+            'u_sunWarmIntensity'
           );
-          if (currentMode === "shadow") {
-            uniforms.push(
-              'u_sunDirection',
-              'u_sunAltitude',
-              'u_sunSlope',
-              'u_sunWarmColor',
-              'u_sunWarmIntensity'
-            );
-          } else {
-            uniforms.push(
-            'u_h4Horizon',
+        }
+        if (currentMode === "daylight") {
+          uniforms.push(
             'u_h4Lut',
-            'u_h4AzimuthCount',
-            'u_h4QuantizationLevels',
             'u_h4MinutesToHours',
-            'u_h4MaxHours'
+            'u_h4MaxHours',
+            'u_daylightMode',
+            'u_sunriseRange',
+            'u_sunsetRange'
           );
         }
       }
@@ -2752,17 +2906,18 @@ void main() {
       this.shaderMap.set(variantName, result);
       return result;
     },
-  
-    renderTiles(gl, shader, renderableTiles, terrainInterface, tileManager, terrainDataCache, textureCache, metersPerPixelCache, debugMetrics = null) {
+
+    renderTiles(gl, shader, renderableTiles, terrainInterface, tileManager, terrainDataCache, textureCache, metersPerPixelCache, debugMetrics = null, viewMetersPerPixelOverride = null) {
       if (!terrainInterface || !tileManager) return;
       let renderedCount = 0;
       let skippedCount = 0;
-      const useH4Daylight = currentMode === "daylight";
-      const engine = useH4Daylight ? ensureSunlightEngine(gl) : null;
+      const useH4 = currentMode === "daylight" || currentMode === "shadow";
+      const needsLut = currentMode === "daylight";
+      const engine = useH4 ? ensureSunlightEngine(gl) : null;
       const MINUTES_TO_HOURS = 1.0 / 60.0;
       let lutInfo = null;
 
-      if (engine && engine.supported && useH4Daylight) {
+      if (engine && engine.supported && needsLut) {
         const center = this.map ? this.map.getCenter() : { lat: 0, lng: 0 };
         lutInfo = engine.ensureHeliostatLUT({
           lat: center.lat || 0,
@@ -2772,10 +2927,17 @@ void main() {
         });
       }
 
-      if (engine && engine.supported && useH4Daylight) {
+      if (engine && engine.supported && useH4) {
         const activeKeys = renderableTiles.map(tile => tile.tileID.key);
         engine.collectGarbage(activeKeys);
       }
+
+      // View-consistent meters-per-pixel to align shadow/horizon sampling across mixed LOD tiles.
+      const viewMetersPerPixel = Number.isFinite(viewMetersPerPixelOverride)
+        ? viewMetersPerPixelOverride
+        : (this.map && typeof this.map.getMetersPerPixelAtLatitude === 'function'
+          ? this.map.getMetersPerPixelAtLatitude((this.map.getCenter() || { lat: 0 }).lat || 0)
+          : null);
 
       if (debugMetrics) {
         if (!Number.isFinite(debugMetrics.totalTiles)) {
@@ -2792,37 +2954,49 @@ void main() {
 
       const bindTexture = (texture, unit, uniformName) => {
         const location = shader.locations[uniformName];
-        if (location == null || !texture) return;
+        if (location == null) return;
         gl.activeTexture(gl.TEXTURE0 + unit);
-        gl.bindTexture(gl.TEXTURE_2D, texture);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        if (texture) {
+          gl.bindTexture(gl.TEXTURE_2D, texture);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        } else {
+          gl.bindTexture(gl.TEXTURE_2D, null);
+        }
         gl.uniform1i(location, unit);
       };
 
       const bindTextureNearest2D = (texture, unit, uniformName) => {
         const location = shader.locations[uniformName];
-        if (location == null || !texture) return;
+        if (location == null) return;
         gl.activeTexture(gl.TEXTURE0 + unit);
-        gl.bindTexture(gl.TEXTURE_2D, texture);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        if (texture) {
+          gl.bindTexture(gl.TEXTURE_2D, texture);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        } else {
+          gl.bindTexture(gl.TEXTURE_2D, null);
+        }
         gl.uniform1i(location, unit);
       };
 
       const bindTextureArrayNearest = (texture, unit, uniformName) => {
         const location = shader.locations[uniformName];
-        if (location == null || !texture) return;
+        if (location == null) return;
         gl.activeTexture(gl.TEXTURE0 + unit);
-        gl.bindTexture(gl.TEXTURE_2D_ARRAY, texture);
-        gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-        gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-        gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-        gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        if (texture) {
+          gl.bindTexture(gl.TEXTURE_2D_ARRAY, texture);
+          gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+          gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+          gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+          gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        } else {
+          gl.bindTexture(gl.TEXTURE_2D_ARRAY, null);
+        }
         gl.uniform1i(location, unit);
       };
 
@@ -2895,7 +3069,10 @@ void main() {
 
         const canonical = tile.tileID.canonical;
         const tileSize = sourceTile.dem && sourceTile.dem.dim ? sourceTile.dem.dim : TILE_SIZE;
-        const metersPerPixel = computeMetersPerPixelForTile(canonical, tileSize);
+        const metersPerPixelBase = computeMetersPerPixelForTile(canonical, tileSize);
+        const metersPerPixel = (currentMode === "shadow" || currentMode === "daylight") && Number.isFinite(viewMetersPerPixel)
+          ? viewMetersPerPixel
+          : metersPerPixelBase;
         if (shader.locations.u_metersPerPixel != null) {
           gl.uniform1f(shader.locations.u_metersPerPixel, metersPerPixel);
         }
@@ -2904,7 +3081,8 @@ void main() {
         let neighborMeters = null;
         if (terrainData.texture && shader.locations.u_image != null) {
           bindTexture(terrainData.texture, 0, 'u_image');
-          if (currentMode === "hillshade" || currentMode === CUSTOM_SHADER_USER_MODE) {
+          // Always attempt to bind the hillshade gradient if available, for any mode.
+          {
             const gradientTextureUnit = baseAdditionalTextureUnit;
             const gradientTexture = tile && tile.fbo && tile.fbo.colorAttachment && !tile.needsHillshadePrepare
               ? tile.fbo.colorAttachment.get()
@@ -2928,13 +3106,11 @@ void main() {
                 tile.tileID,
                 neighbor.dx,
                 neighbor.dy,
-                terrainData.texture
+                null
               );
               neighborTextures.push(texture);
               bindTexture(texture, index + 1, neighbor.uniform);
-              const neighborMetersValue = (neighborKey && metersPerPixelCache && metersPerPixelCache.has(neighborKey))
-                ? metersPerPixelCache.get(neighborKey)
-                : metersPerPixel;
+              const neighborMetersValue = metersPerPixel;
               neighborMeters.push(neighborMetersValue);
               const metersLocation = shader.locations[neighbor.metersUniform];
               if (metersLocation != null) {
@@ -2971,6 +3147,8 @@ void main() {
           gl.uniformMatrix4fv(shader.locations.u_projection_fallback_matrix, false, projectionData.fallbackMatrix);
         }
         if (shader.locations.u_dimension != null) {
+          // Pass the actual DEM dimension (e.g. 512) so that 1.0/u_dimension.x
+          // correctly targets a single texel.
           gl.uniform2f(shader.locations.u_dimension, tileSize, tileSize);
         }
         if (shader.locations.u_original_vertex_count != null) {
@@ -2980,18 +3158,18 @@ void main() {
           gl.uniform1f(shader.locations.u_terrain_exaggeration, 1.0);
         }
         const rgbaFactors = {
-            r: 256.0,
-            g: 1.0,
-            b: 1.0 / 256.0,
-            base: 32768.0
+          r: 256.0,
+          g: 1.0,
+          b: 1.0 / 256.0,
+          base: 32768.0
         };
         if (shader.locations.u_terrain_unpack != null) {
           gl.uniform4f(
-              shader.locations.u_terrain_unpack,
-              rgbaFactors.r,
-              rgbaFactors.g,
-              rgbaFactors.b,
-              rgbaFactors.base
+            shader.locations.u_terrain_unpack,
+            rgbaFactors.r,
+            rgbaFactors.g,
+            rgbaFactors.b,
+            rgbaFactors.base
           );
         }
         if (shader.locations.u_latrange != null) {
@@ -3001,7 +3179,7 @@ void main() {
           gl.uniform1f(shader.locations.u_zoom, canonical.z);
         }
         let horizonEntry = null;
-        if (useH4Daylight && engine && engine.supported) {
+        if (useH4 && engine && engine.supported) {
           horizonEntry = engine.ensureTileResources({
             tileKey: tile.tileID.key,
             tileSize,
@@ -3012,9 +3190,11 @@ void main() {
             maxDistance: shadowMaxDistance,
             stepMultiplier: shadowRayStepMultiplier
           });
+          // Horizon generation binds a different program; restore ours before setting uniforms.
+          gl.useProgram(shader.program);
         }
 
-        if (useH4Daylight && (!engine || !engine.supported || !horizonEntry || !lutInfo || !lutInfo.texture)) {
+        if (useH4 && (!engine || !engine.supported || !horizonEntry || (needsLut && (!lutInfo || !lutInfo.texture)))) {
           skippedCount++;
           continue;
         }
@@ -3051,23 +3231,60 @@ void main() {
           }
         }
 
-        if (useH4Daylight && engine && engine.supported && horizonEntry && lutInfo && lutInfo.texture) {
+        if (useH4 && engine && engine.supported && horizonEntry) {
           const horizonTextureUnit = baseAdditionalTextureUnit;
-          const lutTextureUnit = baseAdditionalTextureUnit + 1;
           bindTextureArrayNearest(horizonEntry.texture, horizonTextureUnit, 'u_h4Horizon');
-          bindTextureNearest2D(lutInfo.texture, lutTextureUnit, 'u_h4Lut');
           if (shader.locations.u_h4AzimuthCount != null) {
             gl.uniform1i(shader.locations.u_h4AzimuthCount, engine.azimuthCount);
           }
           if (shader.locations.u_h4QuantizationLevels != null) {
             gl.uniform1i(shader.locations.u_h4QuantizationLevels, engine.quantizationLevels);
           }
-          if (shader.locations.u_h4MinutesToHours != null) {
-            gl.uniform1f(shader.locations.u_h4MinutesToHours, MINUTES_TO_HOURS);
+          if (shader.locations.u_h4AngleMin != null) {
+            gl.uniform1f(shader.locations.u_h4AngleMin, engine.angleMin);
           }
-          if (shader.locations.u_h4MaxHours != null) {
-            const maxHours = lutInfo.maxMinutes ? lutInfo.maxMinutes * MINUTES_TO_HOURS : 0;
-            gl.uniform1f(shader.locations.u_h4MaxHours, Math.max(maxHours, 0));
+          if (shader.locations.u_h4AngleMax != null) {
+            gl.uniform1f(shader.locations.u_h4AngleMax, engine.angleMax);
+          }
+          if (needsLut && lutInfo && lutInfo.texture) {
+            const lutTextureUnit = baseAdditionalTextureUnit + 1;
+            bindTextureNearest2D(lutInfo.texture, lutTextureUnit, 'u_h4Lut');
+            if (shader.locations.u_h4MinutesToHours != null) {
+              gl.uniform1f(shader.locations.u_h4MinutesToHours, MINUTES_TO_HOURS);
+            }
+            if (shader.locations.u_h4MaxHours != null) {
+              const maxHours = lutInfo.maxMinutes ? lutInfo.maxMinutes * MINUTES_TO_HOURS : 0;
+              gl.uniform1f(shader.locations.u_h4MaxHours, Math.max(maxHours, 0));
+            }
+            if (currentMode === "daylight" && shader.locations.u_daylightMode != null) {
+              gl.uniform1i(shader.locations.u_daylightMode, daylightMode);
+            }
+
+            if (currentMode === "daylight" && (shader.locations.u_sunriseRange != null || shader.locations.u_sunsetRange != null)) {
+              const center = this.map ? this.map.getCenter() : { lat: 0, lng: 0 };
+              const date = getShadowDateTime();
+              const times = SunCalc.getTimes(date, center.lat, center.lng);
+
+              // Default to 6:00 and 18:00 if calculation fails
+              let sunriseMins = 6 * 60;
+              let sunsetMins = 18 * 60;
+
+              if (times.sunrise instanceof Date && !isNaN(times.sunrise)) {
+                sunriseMins = times.sunrise.getHours() * 60 + times.sunrise.getMinutes();
+              }
+              if (times.sunset instanceof Date && !isNaN(times.sunset)) {
+                sunsetMins = times.sunset.getHours() * 60 + times.sunset.getMinutes();
+              }
+
+              if (shader.locations.u_sunriseRange != null) {
+                // Sunrise: Focus on early light (peaks before sunrise)
+                gl.uniform2f(shader.locations.u_sunriseRange, sunriseMins - 45, sunriseMins + 15);
+              }
+              if (shader.locations.u_sunsetRange != null) {
+                // Sunset: Focus on late light (peaks after sunset)
+                gl.uniform2f(shader.locations.u_sunsetRange, sunsetMins - 15, sunsetMins + 45);
+              }
+            }
           }
         }
 
@@ -3173,6 +3390,10 @@ void main() {
       const textureCache = new Map();
       const metersPerPixelCache = new Map();
       const persistentTextureCache = this.terrainTextureCache || (this.terrainTextureCache = new Map());
+      const sharedViewMetersPerPixel = this.map && typeof this.map.getMetersPerPixelAtLatitude === 'function'
+        ? this.map.getMetersPerPixelAtLatitude((this.map.getCenter() || { lat: 0 }).lat || 0)
+        : null;
+
       for (const tile of renderableTiles) {
         const sourceTile = tileManager.getSourceTile(tile.tileID, true);
         if (!sourceTile || sourceTile.tileID.key !== tile.tileID.key) continue;
@@ -3214,7 +3435,9 @@ void main() {
         }
         if (cacheKey) {
           textureCache.set(cacheKey, terrainTexture);
-          const metersPerPixel = computeMetersPerPixelForTile(canonical, tileSize);
+          const metersPerPixel = Number.isFinite(sharedViewMetersPerPixel)
+            ? sharedViewMetersPerPixel
+            : computeMetersPerPixelForTile(canonical, tileSize);
           metersPerPixelCache.set(cacheKey, metersPerPixel);
         }
       }
@@ -3229,7 +3452,8 @@ void main() {
         tileManager,
         terrainDataCache,
         textureCache,
-        metersPerPixelCache
+        metersPerPixelCache,
+        viewMetersPerPixel: sharedViewMetersPerPixel
       };
 
       let lastDebug = null;
@@ -3288,7 +3512,7 @@ void main() {
           gl.depthFunc(gl.LESS);
           gl.colorMask(false, false, false, false);
           gl.clear(gl.DEPTH_BUFFER_BIT);
-          this.renderTiles(gl, shader, shared.renderableTiles, shared.terrainInterface, shared.tileManager, shared.terrainDataCache, shared.textureCache, shared.metersPerPixelCache, debugMetrics);
+          this.renderTiles(gl, shader, shared.renderableTiles, shared.terrainInterface, shared.tileManager, shared.terrainDataCache, shared.textureCache, shared.metersPerPixelCache, debugMetrics, shared.viewMetersPerPixel);
 
           gl.colorMask(true, true, true, true);
           gl.depthFunc(gl.LEQUAL);
@@ -3299,20 +3523,23 @@ void main() {
             gl.ONE,
             gl.ONE_MINUS_SRC_ALPHA
           );
-          this.renderTiles(gl, shader, shared.renderableTiles, shared.terrainInterface, shared.tileManager, shared.terrainDataCache, shared.textureCache, shared.metersPerPixelCache, debugMetrics);
+          this.renderTiles(gl, shader, shared.renderableTiles, shared.terrainInterface, shared.tileManager, shared.terrainDataCache, shared.textureCache, shared.metersPerPixelCache, debugMetrics, shared.viewMetersPerPixel);
+        } else if (mode === "shadow") {
+          // Render like other overlays: ignore terrain depth so shadows sit above MapLibre terrain.
+          gl.disable(gl.POLYGON_OFFSET_FILL);
+          gl.depthFunc(gl.ALWAYS);
+          gl.depthMask(false);
+          gl.enable(gl.BLEND);
+          gl.blendEquation(gl.FUNC_ADD);
+          gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+          this.renderTiles(gl, shader, shared.renderableTiles, shared.terrainInterface, shared.tileManager, shared.terrainDataCache, shared.textureCache, shared.metersPerPixelCache, debugMetrics, shared.viewMetersPerPixel);
+          gl.depthMask(true);
         } else {
           gl.depthFunc(gl.LEQUAL);
           gl.clear(gl.DEPTH_BUFFER_BIT);
           gl.enable(gl.BLEND);
           gl.blendEquation(gl.FUNC_ADD);
-          if (mode === "shadow") {
-            gl.blendFuncSeparate(
-              gl.ZERO,
-              gl.SRC_COLOR,
-              gl.ZERO,
-              gl.ONE
-            );
-          } else if (mode === "daylight") {
+          if (mode === "daylight") {
             gl.blendFuncSeparate(
               gl.SRC_ALPHA,
               gl.ONE_MINUS_SRC_ALPHA,
@@ -3322,7 +3549,7 @@ void main() {
           } else {
             gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
           }
-          this.renderTiles(gl, shader, shared.renderableTiles, shared.terrainInterface, shared.tileManager, shared.terrainDataCache, shared.textureCache, shared.metersPerPixelCache, debugMetrics);
+          this.renderTiles(gl, shader, shared.renderableTiles, shared.terrainInterface, shared.tileManager, shared.terrainDataCache, shared.textureCache, shared.metersPerPixelCache, debugMetrics, shared.viewMetersPerPixel);
         }
 
         return {
@@ -3339,7 +3566,7 @@ void main() {
       }
     }
   };
-  
+
   // Map setup and initialization.
   map = new maplibregl.Map({
     container: 'map',
@@ -3558,7 +3785,7 @@ void main() {
   const originalGetTerrain = typeof map.getTerrain === 'function'
     ? map.getTerrain.bind(map)
     : null;
-  map.setTerrain = function(specification) {
+  map.setTerrain = function (specification) {
     if (specification) {
       lastTerrainSpecification = { ...lastTerrainSpecification, ...specification };
       const nextExaggeration = typeof specification.exaggeration === 'number'
@@ -3585,14 +3812,14 @@ void main() {
   };
 
   if (originalGetTerrain) {
-    map.getTerrain = function() {
+    map.getTerrain = function () {
       if (isTerrainFlattened) {
         return null;
       }
       return originalGetTerrain();
     };
   }
-  
+
   map.on('load', () => {
     console.log("Map loaded");
     applySkySettings();
@@ -3638,11 +3865,6 @@ void main() {
     }
   });
 
-  map.on('moveend', () => {
-    if (terrainWireframeLayerVisible) {
-      rebuildTerrainWireframe();
-    }
-  });
 
   map.on('terrain', () => {
     const previousTerrain = cachedTerrainInterface;
@@ -3663,15 +3885,12 @@ void main() {
       terrainNormalLayer.frameCount = 0;
       map.triggerRepaint();
     }
-    if (terrainWireframeLayerVisible) {
-      rebuildTerrainWireframe();
-    }
   });
-  
+
   map.addControl(new maplibregl.NavigationControl({ showCompass: true, visualizePitch: true }));
   map.addControl(new maplibregl.GlobeControl());
   map.addControl(new maplibregl.TerrainControl());
-  
+
   // Button click event listeners to toggle rendering modes.
   const hillShadeNativeBtn = document.getElementById('hillShadeNativeBtn');
   if (hillShadeNativeBtn) {

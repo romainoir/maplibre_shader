@@ -144,19 +144,6 @@ ${SHADER_NEIGHBOR_METERS_UNIFORM_BLOCK}    uniform vec2 u_latrange;
       return minBound + reflected;
     }
 
-    vec2 clampTexCoord(vec2 pos) {
-      float borderX = 0.5 / u_dimension.x;
-      float borderY = 0.5 / u_dimension.y;
-      float minX = borderX;
-      float maxX = 1.0 - borderX;
-      float minY = borderY;
-      float maxY = 1.0 - borderY;
-      return vec2(
-        reflectCoord(pos.x, minX, maxX),
-        reflectCoord(pos.y, minY, maxY)
-      );
-    }
-
     vec2 resolveNeighborCoords(vec2 pos, out ivec2 offset) {
       vec2 tilePos = pos;
       offset = ivec2(0);
@@ -199,7 +186,13 @@ ${SHADER_NEIGHBOR_METERS_UNIFORM_BLOCK}    uniform vec2 u_latrange;
       }
       offset.x = clamp(offset.x, -MAX_OFFSET, MAX_OFFSET);
       offset.y = clamp(offset.y, -MAX_OFFSET, MAX_OFFSET);
-      return clampTexCoord(tilePos);
+      // Do NOT clamp here. We want the exact 0..1 coords for the neighbor tile.
+      // Clamping introduces a 0.5 texel error at the border.
+      return tilePos;
+    }
+
+    vec2 clamp01(vec2 v) {
+      return clamp(v, vec2(0.0), vec2(1.0));
     }
 
     float fetchElevationForOffset(ivec2 offset, vec2 tilePos) {
@@ -220,10 +213,25 @@ ${SHADER_NEIGHBOR_METERS_UNIFORM_BLOCK}    uniform vec2 u_latrange;
       }${SHADER_NEIGHBOR_METERS_BLOCK}      return max(u_metersPerPixel, 0.0);
     }
 
+    bool isOffsetValid(ivec2 offset) {
+      const int MAX_OFFSET = ${SHADER_MAX_NEIGHBOR_OFFSET};
+      return abs(offset.x) <= MAX_OFFSET && abs(offset.y) <= MAX_OFFSET && (abs(offset.x) + abs(offset.y)) <= MAX_OFFSET;
+    }
+
+    float fetchElevationBlended(ivec2 offset, vec2 tilePos) {
+      // With correct neighbor sampling and texture coordinates, 
+      // explicit blending is no longer needed and can cause artifacts.
+      return fetchElevationForOffset(offset, tilePos);
+    }
+
+    float fetchElevationBlendedLod(ivec2 offset, vec2 tilePos, float lod) {
+      return fetchElevationForOffsetLod(offset, tilePos, lod);
+    }
+
     float getElevationExtended(vec2 pos) {
       ivec2 offset;
       vec2 tilePos = resolveNeighborCoords(pos, offset);
-      return fetchElevationForOffset(offset, tilePos);
+      return fetchElevationBlended(offset, tilePos);
     }
 
     float computeRaySampleLod(float horizontalMeters, float metersPerPixel) {
@@ -235,6 +243,7 @@ ${SHADER_NEIGHBOR_METERS_UNIFORM_BLOCK}    uniform vec2 u_latrange;
     float sampleElevationAdaptive(vec2 pos, float horizontalMeters, float metersPerPixel) {
       ivec2 offset;
       vec2 tilePos = resolveNeighborCoords(pos, offset);
+      tilePos = clamp01(tilePos);
       float localMetersPerPixel = getMetersPerPixelForOffset(offset);
       if (localMetersPerPixel <= 0.0) {
         localMetersPerPixel = metersPerPixel;
@@ -242,9 +251,9 @@ ${SHADER_NEIGHBOR_METERS_UNIFORM_BLOCK}    uniform vec2 u_latrange;
       localMetersPerPixel = max(localMetersPerPixel, 0.0001);
       float lod = computeRaySampleLod(horizontalMeters, localMetersPerPixel);
       if (lod <= 0.001) {
-        return fetchElevationForOffset(offset, tilePos);
+        return fetchElevationBlended(offset, tilePos);
       }
-      return fetchElevationForOffsetLod(offset, tilePos, lod);
+      return fetchElevationBlendedLod(offset, tilePos, lod);
     }
 
     float computeAdaptiveStepGrowth(float horizontalMeters) {
@@ -253,23 +262,33 @@ ${SHADER_NEIGHBOR_METERS_UNIFORM_BLOCK}    uniform vec2 u_latrange;
     }
 
     vec2 computeSobelGradient(vec2 pos) {
-      float samplingDistance = 0.5;
-      vec2 safePos = clampTexCoord(pos);
-      float metersPerPixel = 1.5 * pow(2.0, 16.0 - u_zoom);
-      float metersPerTile  = metersPerPixel * 256.0;
-      float delta = samplingDistance / metersPerTile;
+      // Use Central Difference for crisper edges (less smoothing than Sobel)
+      float metersPerPixel = max(u_metersPerPixel, 0.0001);
+      float metersPerTile  = metersPerPixel * u_dimension.x;
+      float sampleDist = metersPerPixel; // one texel in meters
+      float delta = sampleDist / metersPerTile;
+      float denom = 2.0 * sampleDist;
 
-      float tl = getElevationExtended(safePos + vec2(-delta, -delta));
-      float tm = getElevationExtended(safePos + vec2(0.0, -delta));
-      float tr = getElevationExtended(safePos + vec2(delta, -delta));
-      float ml = getElevationExtended(safePos + vec2(-delta, 0.0));
-      float mr = getElevationExtended(safePos + vec2(delta, 0.0));
-      float bl = getElevationExtended(safePos + vec2(-delta, delta));
-      float bm = getElevationExtended(safePos + vec2(0.0, delta));
-      float br = getElevationExtended(safePos + vec2(delta, delta));
+      // Repeat the edge gradient for a small band (2 px) so borders/skirts reuse the same derivative.
+      float band = delta * 2.0;
+      vec2 center = clamp(pos, band, 1.0 - band);
 
-      float gx = (-tl + tr - 2.0 * ml + 2.0 * mr - bl + br) / (8.0 * samplingDistance);
-      float gy = (-tl - 2.0 * tm - tr + bl + 2.0 * bm + br) / (8.0 * samplingDistance);
+      vec2 dx = vec2(delta, 0.0);
+      vec2 dy = vec2(0.0, delta);
+
+      float l = getElevationExtended(center - dx);
+      float r = getElevationExtended(center + dx);
+      float t = getElevationExtended(center - dy);
+      float b = getElevationExtended(center + dy);
+
+      // Use global Equator scale
+      float globalMetersPerPixel = 40075016.7 / (pow(2.0, u_zoom) * u_dimension.x);
+      
+      // Scale factor: 2.0 * metersPerPixel (distance between left and right sample)
+      float scale = 2.0 * max(globalMetersPerPixel, 0.001);
+
+      float gx = (r - l) / scale;
+      float gy = (b - t) / scale;
 
       return vec2(gx, gy);
     }
@@ -279,7 +298,14 @@ ${SHADER_NEIGHBOR_METERS_UNIFORM_BLOCK}    uniform vec2 u_latrange;
     }
 
     vec2 samplePrefilteredHillshadeGradient(vec2 pos) {
-      vec2 safePos = clampTexCoord(pos);
+      // Mirror sampling at tile edges to keep prefiltered gradients continuous (matches raw sampler above).
+      float border = 0.5 / u_dimension.x;
+      float minCoord = border;
+      float maxCoord = 1.0 - border;
+      vec2 safePos = vec2(
+        reflectCoord(pos.x, minCoord, maxCoord),
+        reflectCoord(pos.y, minCoord, maxCoord)
+      );
       vec2 encoded = texture(u_hillshade_gradient, safePos).rg;
       float latitude = computeLatitudeForTexCoord(safePos.y);
       float scaleFactor = max(abs(cos(radians(latitude))), 0.000001);
@@ -295,7 +321,7 @@ ${SHADER_NEIGHBOR_METERS_UNIFORM_BLOCK}    uniform vec2 u_latrange;
   `,
 
   // Vertex shader
-  getVertexShader: function(shaderDescription, extent) {
+  getVertexShader: function (shaderDescription, extent) {
     return `#version 300 es
       precision highp float;
       precision highp int;
@@ -324,21 +350,41 @@ ${SHADER_NEIGHBOR_METERS_UNIFORM_BLOCK}    uniform vec2 u_latrange;
       }
 
       void main() {
+        // 1. Calculate texture coordinates from the original position (including skirt/padding)
+        // We need the original coordinates to determine if a vertex is part of the wall/skirt.
         v_texCoord   = a_pos / float(${extent});
-        float elev   = getElevation(v_texCoord);
+        
+        // 2. Identify wall vertices
+        // Any vertex outside the [0,1] range is part of the skirt/wall.
+        v_isWall     = float(v_texCoord.x < 0.0 || v_texCoord.x > 1.0 || v_texCoord.y < 0.0 || v_texCoord.y > 1.0);
+
+        // 3. Clamp geometry position to tile bounds
+        // This forces the skirt vertices to align exactly with the tile edge, creating a 
+        // perfectly vertical wall. This prevents the skirt from overlapping/z-fighting 
+        // with the neighbor's terrain surface.
+        vec2 clampedPos = clamp(a_pos, 0.0, float(${extent}));
+        
+        // 4. Fetch elevation using the clamped coordinates (edge elevation)
+        // The wall should start at the exact height of the terrain edge.
+        vec2 clampedTexCoord = clampedPos / float(${extent});
+        float elev   = getElevation(clampedTexCoord);
         v_elevation  = elev;
-        v_isWall     = float(gl_VertexID >= u_original_vertex_count);
-        v_uv         = v_texCoord;
+        v_uv         = v_texCoord; // Pass original UVs if needed for other effects, or clamped? 
+                                   // Usually original is better for debugging, but for shadows/gradient 
+                                   // the fragment shader clamps anyway.
+
+        // 5. Drop the wall vertices
         float finalE = (v_isWall > 0.5)
                        ? elev - 50.0
                        : elev;
-        gl_Position  = projectTileFor3D(a_pos, finalE);
+                       
+        gl_Position  = projectTileFor3D(clampedPos, finalE);
         v_depth      = gl_Position.z / gl_Position.w;
       }`;
   },
 
-  // Fragment shaders
-  getFragmentShader: function(mode) {
+  // Fragment shaders-
+  getFragmentShader: function (mode) {
     const registry = typeof window !== 'undefined' ? window.terrainCustomShaderSources : null;
     if (registry && typeof registry[mode] === 'function') {
       return registry[mode](this.commonFunctions);
@@ -346,4 +392,3 @@ ${SHADER_NEIGHBOR_METERS_UNIFORM_BLOCK}    uniform vec2 u_latrange;
     return '';
   }
 };
-
