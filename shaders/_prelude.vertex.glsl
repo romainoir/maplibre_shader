@@ -108,8 +108,13 @@ highp float unpack(highp vec4 color) {
 // calculate the opacity behind terrain, returns a value between 0 and 1.
 highp float depthOpacity(vec3 frag) {
     #ifdef TERRAIN3D
+        // The depth texture stores clip-space depth encoded into 0..1. Convert
+        // it back into clip space before comparing with the fragment depth so
+        // visibility calculations have the expected range.
+        highp float encodedDepth = unpack(texture(u_depth, frag.xy * 0.5 + 0.5));
+        highp float clipDepth = encodedDepth * 2.0 - 1.0;
         // create the delta between frag.z + terrain.z.
-        highp float d = unpack(texture(u_depth, frag.xy * 0.5 + 0.5)) + 0.0001 - frag.z;
+        highp float d = clipDepth + 0.0001 - frag.z;
         // visibility range is between 0 and 0.002. 0 is visible, 0.002 is fully invisible.
         return 1.0 - max(0.0, min(1.0, -d * 500.0));
     #else
